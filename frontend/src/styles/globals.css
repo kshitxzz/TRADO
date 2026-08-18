@@ -1,0 +1,548 @@
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800;900&family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Backgrounds */
+  --bg-primary:       #08080A;
+  --bg-sidebar:       #0E0E10;
+  --bg-topbar:        #07070A;
+  --bg-card:          #131217;
+  --bg-card-hover:    #1A1820;
+  --bg-landing:       #110B22;
+  --bg-landing-alt:   #15102A;
+
+  /* Brand Purple */
+  --accent-purple:       #8B5CF6;
+  --accent-purple-light: #A78BFA;
+  --accent-purple-deep:  #7C3AED;
+  --gradient-primary:    linear-gradient(135deg, #8B5CF6 0%, #6D28D9 50%, #4F46E5 100%);
+  --gradient-text:       linear-gradient(135deg, #C4B5FD 0%, #A78BFA 50%, #818CF8 100%);
+
+  /* Secondary accents */
+  --accent-teal:  #2DD4BF;
+  --accent-cyan:  #22D3EE;
+
+  /* Semantic */
+  --positive-green:        #22C55E;
+  --positive-green-bright: #34D399;
+  --negative-red:          #F43F5E;
+  --warning-orange:        #F59E0B;
+
+  /* Text */
+  --text-primary:   #FFFFFF;
+  --text-secondary: #9CA3AF;
+  --text-muted:     #6B7280;
+
+  /* Borders */
+  --border-subtle: rgba(255, 255, 255, 0.06);
+  --border-glow:   rgba(139, 92, 246, 0.4);
+
+  --gradient-teal: linear-gradient(135deg, #22D3EE 0%, #06B6D4 100%);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+  font-family: 'Poppins', 'Inter', system-ui, sans-serif;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: var(--bg-primary); }
+::-webkit-scrollbar-thumb { background: rgba(139,92,246,0.3); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(139,92,246,0.6); }
+
+/* Gradient text utility */
+.gradient-text {
+  background: var(--gradient-text);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.gradient-text-teal {
+  background: linear-gradient(135deg, #2DD4BF 0%, #22D3EE 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Glass card */
+.glass-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  transition: all 250ms ease;
+}
+
+.glass-card:hover {
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+/* Dashboard stat tile — flatter, more rounded than .glass-card, no lift-on-hover */
+.stat-tile {
+  background: #0F0F12;
+  border: 1px solid var(--border-subtle);
+  border-radius: 20px;
+  transition: border-color 200ms ease;
+}
+
+.stat-tile:hover {
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+/* Purple gradient button */
+.btn-primary {
+  background: var(--gradient-primary);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 20px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 200ms ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-primary:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(139, 92, 246, 0.4);
+  filter: brightness(1.1);
+}
+
+.btn-primary:active {
+  transform: translateY(0);
+}
+
+/* Teal gradient button — Connect & Sync only */
+.btn-teal {
+  background: var(--gradient-teal);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 20px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 200ms ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-teal:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(34, 211, 238, 0.3);
+  filter: brightness(1.1);
+}
+
+/* Glass outline button */
+.btn-outline {
+  background: rgba(255,255,255,0.04);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 10px 20px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 200ms ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-outline:hover {
+  background: rgba(139,92,246,0.1);
+  border-color: var(--border-glow);
+  color: var(--text-primary);
+}
+
+/* Stat chip */
+.stat-chip {
+  background: rgba(139,92,246,0.08);
+  border: 1px solid rgba(139,92,246,0.15);
+  border-radius: 20px;
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+/* Animations */
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-8px); }
+}
+
+@keyframes marquee {
+  0% { transform: translateX(0%); }
+  100% { transform: translateX(-50%); }
+}
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes drawIn {
+  from { stroke-dashoffset: 1000; }
+  to   { stroke-dashoffset: 0; }
+}
+
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+@keyframes pulse-ring {
+  0% { box-shadow: 0 0 0 0 rgba(139,92,246,0.4); }
+  70% { box-shadow: 0 0 0 10px rgba(139,92,246,0); }
+  100% { box-shadow: 0 0 0 0 rgba(139,92,246,0); }
+}
+
+/* Depleting countdown bar on the notification toast (NotificationToast.jsx) */
+@keyframes trado-toast-bar {
+  from { width: 100%; }
+  to   { width: 0%; }
+}
+
+.animate-float { animation: float 4s ease-in-out infinite; }
+.animate-marquee { animation: marquee 30s linear infinite; }
+.animate-fade-in-up { animation: fadeInUp 0.6s ease forwards; }
+.animate-spin-slow { animation: spin-slow 3s linear infinite; }
+.animate-pulse-ring { animation: pulse-ring 2s ease-in-out infinite; }
+
+/* Input styles */
+.input-dark {
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  color: var(--text-primary);
+  padding: 10px 14px;
+  width: 100%;
+  font-size: 14px;
+  transition: all 200ms ease;
+  outline: none;
+}
+
+.input-dark::placeholder { color: var(--text-muted); }
+
+.input-dark option {
+  background: #14141c;
+  color: var(--text-primary);
+}
+
+html.light .input-dark option {
+  background: #FFFFFF;
+  color: #0A0A0F;
+}
+
+.input-dark:focus {
+  border-color: var(--accent-purple);
+  box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.15);
+}
+
+/* Sidebar nav item */
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 10px 13px;
+  border-radius: 9px;
+  cursor: pointer;
+  transition: background 150ms ease, color 150ms ease;
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: 14.5px;
+  font-weight: 500;
+  position: relative;
+}
+
+/* Hover and active use the identical treatment (confirmed against the
+   reference recording — hovering any item shows the same pill it gets when
+   it's the active page, and it reverts the instant the cursor leaves). */
+.nav-item:hover,
+.nav-item.active {
+  background: rgba(90, 67, 183, 0.15);
+  color: var(--text-primary);
+}
+
+/* Icon takes the accent color; label text stays white (verified via
+   pixel-sampling the reference video — only the icon glyph turns purple). */
+.nav-item:hover svg,
+.nav-item.active svg {
+  color: #5A43B7;
+}
+
+/* Table row hover */
+.table-row-hover:hover {
+  background: var(--bg-card-hover);
+}
+
+/* Pill status */
+.pill-buy  { background: rgba(34,197,94,0.15);  color: #22C55E; border-radius: 20px; padding: 3px 10px; font-size: 12px; font-weight: 600; }
+.pill-sell { background: rgba(244,63,94,0.15);  color: #F43F5E; border-radius: 20px; padding: 3px 10px; font-size: 12px; font-weight: 600; }
+
+/* Backdrop blur panel */
+.blur-panel {
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+/* Landing ✕ decoration */
+.landing-glyph {
+  position: absolute;
+  color: rgba(139,92,246,0.1);
+  font-size: 18px;
+  font-weight: 300;
+  pointer-events: none;
+  user-select: none;
+  transition: transform 0.1s ease;
+}
+
+/* Tab bar */
+.tab-btn {
+  padding: 7px 16px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 200ms ease;
+  color: var(--text-muted);
+  border: none;
+  background: none;
+  white-space: nowrap;
+}
+
+.tab-btn.active {
+  background: var(--accent-purple);
+  color: white;
+}
+
+.tab-btn:not(.active):hover {
+  background: rgba(139,92,246,0.1);
+  color: var(--text-primary);
+}
+
+/* Progress bar */
+.progress-bar-track {
+  background: rgba(255,255,255,0.06);
+  border-radius: 100px;
+  height: 6px;
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  border-radius: 100px;
+  background: var(--gradient-primary);
+  transition: width 1s ease-out;
+}
+
+/* Toggle switch */
+.toggle-track {
+  width: 40px;
+  height: 22px;
+  border-radius: 11px;
+  background: rgba(255,255,255,0.1);
+  position: relative;
+  cursor: pointer;
+  transition: background 200ms ease;
+}
+
+.toggle-track.on { background: var(--accent-purple); }
+
+.toggle-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: white;
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  transition: transform 200ms ease;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+}
+
+.toggle-track.on .toggle-thumb { transform: translateX(18px); }
+
+/* Marquee strip */
+.marquee-container {
+  overflow: hidden;
+  display: flex;
+}
+
+.marquee-inner {
+  display: flex;
+  gap: 24px;
+  animation: marquee 30s linear infinite;
+  white-space: nowrap;
+}
+
+.marquee-inner:hover {
+  animation-play-state: paused;
+}
+
+/* Tooltip */
+.tooltip {
+  position: absolute;
+  background: var(--bg-card);
+  border: 1px solid var(--border-glow);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  z-index: 100;
+  pointer-events: none;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+}
+
+/* Skeleton loading */
+.skeleton {
+  background: linear-gradient(90deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.08) 50%, rgba(255,255,255,0.04) 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: 6px;
+}
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* ═══════════════════════════════════════════
+   LIGHT MODE
+   ═══════════════════════════════════════════ */
+html.light {
+  --bg-primary:       #F0EFF6;
+  --bg-sidebar:       #FFFFFF;
+  --bg-topbar:        #FFFFFF;
+  --bg-card:          #FFFFFF;
+  --bg-card-hover:    #F5F4FA;
+  --bg-landing:       #F0EFF6;
+  --bg-landing-alt:   #E8E7F2;
+
+  --text-primary:     #0A0A0F;
+  --text-secondary:   #374151;
+  --text-muted:       #6B7280;
+
+  --border-subtle:    rgba(0, 0, 0, 0.08);
+  --border-glow:      rgba(139, 92, 246, 0.35);
+
+  --positive-green:        #16A34A;
+  --positive-green-bright: #15803D;
+  --negative-red:          #DC2626;
+  --warning-orange:        #D97706;
+}
+
+html.light body,
+html.light #root {
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+html.light .glass-card {
+  background: #FFFFFF;
+  border: 1px solid rgba(0,0,0,0.08);
+  box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+}
+
+html.light .glass-card:hover {
+  border-color: rgba(0, 0, 0, 0.16);
+}
+
+html.light .stat-tile {
+  background: #FFFFFF;
+  border: 1px solid rgba(0,0,0,0.08);
+}
+
+html.light .stat-tile:hover {
+  border-color: rgba(0,0,0,0.16);
+}
+
+html.light .input-dark {
+  background: #F8F7FC;
+  border-color: rgba(0,0,0,0.1);
+  color: #0A0A0F;
+}
+
+html.light .input-dark::placeholder { color: #9CA3AF; }
+
+html.light .input-dark:focus {
+  border-color: var(--accent-purple);
+  background: #FFFFFF;
+}
+
+html.light .nav-item {
+  color: #6B7280;
+}
+
+html.light .nav-item:hover,
+html.light .nav-item.active {
+  background: rgba(90, 67, 183, 0.1);
+  color: #0A0A0F;
+}
+
+html.light .nav-item:hover svg,
+html.light .nav-item.active svg {
+  color: #5A43B7;
+}
+
+html.light .btn-outline {
+  background: rgba(0,0,0,0.03);
+  border-color: rgba(0,0,0,0.1);
+  color: #374151;
+}
+
+html.light .btn-outline:hover {
+  background: rgba(139,92,246,0.08);
+  border-color: var(--border-glow);
+  color: #0A0A0F;
+}
+
+html.light .table-row-hover:hover {
+  background: #F5F4FA;
+}
+
+html.light .skeleton {
+  background: linear-gradient(90deg, #F0EFF6 0%, #E8E7F2 50%, #F0EFF6 100%);
+}
+
+html.light .stat-chip {
+  background: rgba(139,92,246,0.06);
+  border-color: rgba(139,92,246,0.15);
+  color: #374151;
+}
+
+html.light .tab-btn {
+  color: #6B7280;
+}
+
+html.light .tab-btn:not(.active):hover {
+  background: rgba(139,92,246,0.08);
+  color: #0A0A0F;
+}
+
+html.light .pill-buy  { background: rgba(22,163,74,0.12);  color: #16A34A; }
+html.light .pill-sell { background: rgba(220,38,38,0.12);  color: #DC2626; }
+
+html.light .progress-bar-track {
+  background: rgba(0,0,0,0.08);
+}
+
+html.light .toggle-track {
+  background: rgba(0,0,0,0.12);
+}
