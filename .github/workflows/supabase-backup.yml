@@ -9,15 +9,12 @@ jobs:
   backup:
     runs-on: ubuntu-latest
     steps:
-      - name: Install PostgreSQL client
-        run: sudo apt-get update && sudo apt-get install -y postgresql-client
-
       - name: Dump database
         env:
           DATABASE_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
-          pg_dump "$DATABASE_URL" --no-owner --no-privileges -F c \
-            -f "trado_backup_$(date +%Y-%m-%d).dump"
+          docker run --rm -v "$PWD":/backup -e DATABASE_URL postgres:17 \
+            sh -c 'pg_dump "$DATABASE_URL" --no-owner --no-privileges -F c -f /backup/trado_backup_$(date +%Y-%m-%d).dump'
 
       - name: Upload backup as workflow artifact
         uses: actions/upload-artifact@v4
