@@ -1,13 +1,6 @@
 import { Link, useNavigate } from 'react-router-dom'
 import Logo from '../ui/Logo'
 
-// ─── Shared shell for /terms, /privacy, /refund-policy ─────────────────────
-// Deliberately does NOT force dark mode the way Landing/Pricing do — these
-// are long-form reading pages, so they respect whichever theme the visitor
-// already has set (via var(--text-primary) etc.), same as the authenticated
-// app pages. That also sidesteps the hardcoded `text-white` pattern those
-// two pages use, which only stays legible because they force dark mode.
-
 export function LegalH2({ children }) {
   return (
     <h2 className="text-base sm:text-lg font-bold mt-8 mb-3 first:mt-0"
