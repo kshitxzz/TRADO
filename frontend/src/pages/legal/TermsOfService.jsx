@@ -116,8 +116,8 @@ export default function TermsOfService() {
       <LegalH2>12. Contact</LegalH2>
       <LegalP>
         Questions about these Terms? Reach us at{' '}
-        <a href="mailto:support@[yourdomain].com" style={{ color: 'var(--accent-purple-light)' }}>
-          support@[yourdomain].com
+        <a href="mailto:trado.app.noreply@gmail.com" style={{ color: 'var(--accent-purple-light)' }}>
+          trado.app.noreply@gmail.com
         </a>.
       </LegalP>
 

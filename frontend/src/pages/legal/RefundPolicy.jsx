@@ -30,7 +30,7 @@ export default function RefundPolicy() {
       <LegalH2>4. How to Request a Refund</LegalH2>
       <LegalP>
         Email us at{' '}
-        <a href="mailto:support@[yourdomain].com" style={{ color: 'var(--accent-purple-light)' }}>
+        <a href="trado.app.noreply@gmail.com" style={{ color: 'var(--accent-purple-light)' }}>
           support@[yourdomain].com
         </a>{' '}
         with your account email and the reason for your request. We'll confirm eligibility and
@@ -57,8 +57,8 @@ export default function RefundPolicy() {
       <LegalH2>7. Contact</LegalH2>
       <LegalP>
         Questions before you buy, or about an existing charge? Reach us at{' '}
-        <a href="mailto:support@[yourdomain].com" style={{ color: 'var(--accent-purple-light)' }}>
-          support@[yourdomain].com
+        <a href="mailto:trado.app.noreply@gmail.com" style={{ color: 'var(--accent-purple-light)' }}>
+          trado.app.noreply@gmail.com
         </a>.
       </LegalP>
 
