@@ -4,6 +4,7 @@ import { useAuth } from './hooks/useAuth'
 import { ThemeProvider } from './hooks/useTheme'
 import { AccountsProvider } from './hooks/useAccounts'
 import { NotificationsProvider } from './hooks/useNotifications'
+import { PostTradeChecklistProvider } from './hooks/usePostTradeChecklist'
 import { useDailyWisdom } from './hooks/useDailyWisdom'
 import DailyWisdomModal from './components/ui/DailyWisdomModal'
 import DefaultToast from './components/notifications/DefaultToast'
@@ -70,6 +71,7 @@ export default function App() {
     <ThemeProvider>
     <AccountsProvider>
     <NotificationsProvider>
+    <PostTradeChecklistProvider>
     <BrowserRouter>
       <Toaster
         position="top-right"
@@ -118,6 +120,7 @@ export default function App() {
         <Route path="*" element={<NotFound />} />
       </Routes>
     </BrowserRouter>
+    </PostTradeChecklistProvider>
     </NotificationsProvider>
     </AccountsProvider>
     </ThemeProvider>
