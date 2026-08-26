@@ -59,6 +59,22 @@ export function useTrades(userId) {
   // seeing that on the next manual refresh, we subscribe to Postgres changes
   // on this user's rows and merge them straight into local state — this is
   // what makes Open Trades / the dashboard's Today card feel live.
+  //
+  // Mobile-only gap this closes: when a phone's screen locks or the browser
+  // tab is backgrounded, iOS Safari / Android Chrome suspend JS execution
+  // and drop the underlying WebSocket to save battery. Supabase's realtime
+  // client reconnects the socket on its own, but it does NOT backfill
+  // whatever Postgres changes happened while it was disconnected — so a
+  // trade that closed while the phone was locked silently never arrives,
+  // and the P&L on screen stays frozen at its last value even though the
+  // connection "looks" fine again. Desktop tabs rarely get suspended this
+  // aggressively, which is exactly why this only shows up on mobile.
+  // `reconnectTick` forces a full teardown + fresh channel (rather than
+  // trusting the client's own reconnect state, which can end up in a
+  // stuck "connected" state after a long suspension), and the effect below
+  // pairs it with an immediate refetch to catch up on anything missed.
+  const [reconnectTick, setReconnectTick] = useState(0)
+
   useEffect(() => {
     if (!userId) return
 
@@ -95,7 +111,28 @@ export function useTrades(userId) {
       .subscribe()
 
     return () => { supabase.removeChannel(channel) }
-  }, [userId])
+  }, [userId, reconnectTick])
+
+  // Fires when the tab/app comes back to the foreground — screen unlock,
+  // app switch back, browser tab refocus. Refetches immediately (so any
+  // trade that closed while backgrounded shows up right away) and bumps
+  // reconnectTick to force the realtime channel above to reconnect fresh
+  // instead of relying on a possibly-stuck existing connection.
+  useEffect(() => {
+    function handleForeground() {
+      if (document.visibilityState !== 'visible') return
+      fetchTrades()
+      setReconnectTick(t => t + 1)
+    }
+    document.addEventListener('visibilitychange', handleForeground)
+    window.addEventListener('focus', handleForeground)
+    window.addEventListener('pageshow', handleForeground)
+    return () => {
+      document.removeEventListener('visibilitychange', handleForeground)
+      window.removeEventListener('focus', handleForeground)
+      window.removeEventListener('pageshow', handleForeground)
+    }
+  }, [fetchTrades])
 
   // ── Derived flags ──────────────────────────────────────────────────────────
   const isManualAccount = account?.account_type === 'prop_firm' || account?.account_type === 'live'

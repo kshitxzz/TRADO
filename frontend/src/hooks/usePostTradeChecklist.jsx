@@ -36,25 +36,39 @@ export function PostTradeChecklistProvider({ children }) {
   const [current, setCurrent] = useState(null) // trade shown in the modal right now
   const [saving, setSaving] = useState(false)
 
+  // Forces the effect below to tear down and rebuild the realtime channel
+  // + do a fresh catch-up fetch. Bumped on visibilitychange/focus — see the
+  // effect further down for why that matters on mobile.
+  const [reconnectTick, setReconnectTick] = useState(0)
+
   // id -> last known status. Lets us tell "just flipped open -> closed" (pop
   // the checklist) apart from "already was closed" (e.g. a P&L tweak on an
   // already-reviewed trade, which must NOT re-trigger the popup) — without
   // needing REPLICA IDENTITY FULL on the trades table just to read
-  // payload.old.
+  // payload.old. Deliberately NOT reset on every effect run — only when the
+  // user changes — so a reconnect (see below) compares against real history
+  // instead of a wiped-clean map.
   const knownStatusRef = useRef(new Map())
+  const seededForUserRef = useRef(null)
 
   const enqueue = useCallback((row) => {
     setQueue(q => (q.some(t => t.id === row.id) ? q : [...q, row]))
   }, [])
 
   useEffect(() => {
-    knownStatusRef.current = new Map()
-    setQueue([])
-    setCurrent(null)
-    if (!userId) return
+    if (!userId) {
+      knownStatusRef.current = new Map()
+      seededForUserRef.current = null
+      setQueue([])
+      setCurrent(null)
+      return
+    }
 
     let cancelled = false
-    let seeded = false
+    // True if we already built a baseline for this exact user in a
+    // previous run of this effect — i.e. this run is a reconnect (mobile
+    // tab regaining focus), not the first-ever mount for this user.
+    let seeded = seededForUserRef.current === userId
 
     function evaluate(row, prevStatus) {
       if (row.status !== 'closed') return
@@ -85,34 +99,65 @@ export function PostTradeChecklistProvider({ children }) {
           const prevStatus = knownStatusRef.current.get(row.id)
           knownStatusRef.current.set(row.id, row.status)
 
-          // Ignore the brief window before the initial seed below finishes —
-          // without a baseline we can't tell "just closed" from "loaded
-          // already closed", and the seed only takes one fast query.
+          // Ignore the brief window before the catch-up fetch below
+          // finishes — without a baseline we can't tell "just closed" from
+          // "loaded already closed", and it only takes one fast query.
           if (!seeded) return
           evaluate(row, prevStatus)
         }
       )
       .subscribe()
 
-    // Seed the baseline so trades that were already closed before this tab
-    // opened never trigger the popup — only a live transition does.
+    // Catch-up fetch. On the very first mount for this user this just
+    // seeds the baseline map (no evaluate() calls yet — matches the
+    // original behaviour of never popping for trades that were already
+    // closed before this tab opened). On a RECONNECT — phone unlocked,
+    // tab refocused after being backgrounded — `seeded` is already true
+    // from the prior run, so every closed trade here gets compared
+    // against the map built up earlier in the session. Any trade that
+    // flipped open -> closed while the phone was locked (and whose
+    // realtime event never arrived, because mobile Safari/Chrome silently
+    // drop the WebSocket when backgrounded) is caught here instead of
+    // being missed forever.
     supabase
       .from('trades')
-      .select('id,status')
+      .select('*')
       .eq('user_id', userId)
+      .eq('status', 'closed')
       .then(({ data }) => {
-        if (cancelled) return
-        for (const t of (data || [])) {
-          if (!knownStatusRef.current.has(t.id)) knownStatusRef.current.set(t.id, t.status)
+        if (cancelled || !data) return
+        for (const row of data) {
+          const prevStatus = knownStatusRef.current.get(row.id)
+          knownStatusRef.current.set(row.id, row.status)
+          if (seeded) evaluate(row, prevStatus)
         }
         seeded = true
+        seededForUserRef.current = userId
       })
 
     return () => {
       cancelled = true
       supabase.removeChannel(channel)
     }
-  }, [userId, enqueue])
+  }, [userId, reconnectTick, enqueue])
+
+  // Mobile fix: force a reconnect + catch-up the moment the tab/app comes
+  // back to the foreground, instead of leaving a possibly-dead connection
+  // sitting there until the person happens to reload the page.
+  useEffect(() => {
+    function handleForeground() {
+      if (document.visibilityState !== 'visible') return
+      setReconnectTick(t => t + 1)
+    }
+    document.addEventListener('visibilitychange', handleForeground)
+    window.addEventListener('focus', handleForeground)
+    window.addEventListener('pageshow', handleForeground)
+    return () => {
+      document.removeEventListener('visibilitychange', handleForeground)
+      window.removeEventListener('focus', handleForeground)
+      window.removeEventListener('pageshow', handleForeground)
+    }
+  }, [])
 
   // Show one trade at a time — pull the next off the queue once nothing is
   // currently on screen.

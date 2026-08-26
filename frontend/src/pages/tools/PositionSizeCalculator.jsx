@@ -199,7 +199,7 @@ export default function PositionSizeCalculator() {
         </div>
       </div>
 
-      <div className="grid lg:grid-cols-2 gap-5 items-start">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 items-start">
         {/* ───────── LEFT: inputs ───────── */}
         <div className="space-y-5">
 
@@ -217,7 +217,7 @@ export default function PositionSizeCalculator() {
               <span className="text-sm" style={{ color: 'var(--text-muted)' }}>$</span>
               <input type="text" inputMode="decimal" placeholder="10,000" value={balance}
                      onChange={e => setBalance(sanitizeDecimal(e.target.value))}
-                     className="bg-transparent flex-1 outline-none text-sm" style={{ color: 'var(--text-primary)' }} />
+                     className="bg-transparent flex-1 min-w-0 outline-none text-sm" style={{ color: 'var(--text-primary)' }} />
             </div>
             <p className="text-[11px] mt-2" style={{ color: 'var(--text-muted)' }}>Enter your trading account balance</p>
           </div>
@@ -270,7 +270,7 @@ export default function PositionSizeCalculator() {
                  }}>
               <input type="text" inputMode="decimal" placeholder="20" value={stopLoss}
                      onChange={e => setStopLoss(sanitizeDecimal(e.target.value))}
-                     className="bg-transparent flex-1 outline-none text-sm" style={{ color: 'var(--text-primary)' }} />
+                     className="bg-transparent flex-1 min-w-0 outline-none text-sm" style={{ color: 'var(--text-primary)' }} />
               <span style={{ width: 1, height: 16, background: 'var(--border-subtle)' }} />
               <span className="text-xs" style={{ color: 'var(--text-muted)' }}>pips</span>
             </div>
@@ -308,7 +308,7 @@ export default function PositionSizeCalculator() {
                       <DollarSign size={14} style={{ color: 'var(--text-muted)' }} />
                       <input type="text" inputMode="decimal" placeholder={String(defaultPip)} value={customPip}
                              onChange={e => setCustomPip(sanitizeDecimal(e.target.value))}
-                             className="bg-transparent flex-1 outline-none text-sm" style={{ color: 'var(--text-primary)' }} />
+                             className="bg-transparent flex-1 min-w-0 outline-none text-sm" style={{ color: 'var(--text-primary)' }} />
                     </div>
                   </div>
                 </motion.div>
