@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, Check, ClipboardCheck, TrendingUp, TrendingDown } from 'lucide-react'
 import PairIcon from './PairIcon'
-import { TRADE_CHECKLIST_ITEMS } from '../../data/tradeChecklist'
+import { DEFAULT_EXECUTION_CHECKLIST } from '../../data/executionChecklist'
 
 // ── Motion choreography ───────────────────────────────────────────────────────
 // The reference behaviour: the instant a trade closes, the backdrop blurs in
@@ -22,17 +22,27 @@ const cardVariants = {
 }
 
 export default function PostTradeChecklistModal({ trade, saving, onSave, onSkip }) {
-  const [checked, setChecked] = useState({})
+  // Keyed by item id -> bool. Simpler to toggle than mutating an array, and
+  // gets rebuilt into the canonical [{id,label,checked}] shape on Save.
+  const [checkedMap, setCheckedMap] = useState({})
 
   // Fresh checklist for every new trade — including when the next one in
   // the queue takes over immediately after this one is answered/skipped.
-  useEffect(() => { setChecked({}) }, [trade?.id])
+  useEffect(() => { setCheckedMap({}) }, [trade?.id])
 
-  function toggle(item) {
-    setChecked(c => ({ ...c, [item]: !c[item] }))
+  function toggle(id) {
+    setCheckedMap(m => ({ ...m, [id]: !m[id] }))
   }
 
-  const checkedCount = Object.values(checked).filter(Boolean).length
+  function handleSave() {
+    const checklist = DEFAULT_EXECUTION_CHECKLIST.map(item => ({
+      ...item,
+      checked: !!checkedMap[item.id],
+    }))
+    onSave(checklist)
+  }
+
+  const checkedCount = Object.values(checkedMap).filter(Boolean).length
   const isLong = trade?.side === 'BUY' || trade?.side === 'long'
   const pnl = trade?.pnl ?? 0
 
@@ -94,13 +104,13 @@ export default function PostTradeChecklistModal({ trade, saving, onSave, onSkip 
 
             {/* ── Checklist items ── */}
             <div className="px-5 pb-2 space-y-2">
-              {TRADE_CHECKLIST_ITEMS.map(item => {
-                const isChecked = !!checked[item]
+              {DEFAULT_EXECUTION_CHECKLIST.map(item => {
+                const isChecked = !!checkedMap[item.id]
                 return (
                   <button
-                    key={item}
+                    key={item.id}
                     type="button"
-                    onClick={() => toggle(item)}
+                    onClick={() => toggle(item.id)}
                     className="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-left transition-colors"
                     style={{
                       background: isChecked ? 'rgba(34,197,94,0.08)' : 'transparent',
@@ -117,7 +127,7 @@ export default function PostTradeChecklistModal({ trade, saving, onSave, onSkip 
                       {isChecked && <Check size={12} strokeWidth={3} color="#fff" />}
                     </span>
                     <span className="text-sm" style={{ color: isChecked ? 'var(--text-primary)' : 'var(--text-secondary)' }}>
-                      {item}
+                      {item.label}
                     </span>
                   </button>
                 )
@@ -127,7 +137,7 @@ export default function PostTradeChecklistModal({ trade, saving, onSave, onSkip 
             {/* ── Footer ── */}
             <div className="flex items-center justify-between px-5 pt-3 pb-5">
               <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                {checkedCount}/{TRADE_CHECKLIST_ITEMS.length} checked
+                {checkedCount}/{DEFAULT_EXECUTION_CHECKLIST.length} checked
               </span>
               <div className="flex items-center gap-4">
                 <button onClick={onSkip} disabled={saving}
@@ -135,7 +145,7 @@ export default function PostTradeChecklistModal({ trade, saving, onSave, onSkip 
                         style={{ color: 'var(--text-muted)' }}>
                   Skip
                 </button>
-                <button onClick={() => onSave(checked)} disabled={saving}
+                <button onClick={handleSave} disabled={saving}
                         className="btn-primary py-2 px-5 text-sm disabled:opacity-60">
                   {saving ? 'Saving…' : 'Save'}
                 </button>

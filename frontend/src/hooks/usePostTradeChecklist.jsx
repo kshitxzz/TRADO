@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState, useCallback } from 'react'
+import toast from 'react-hot-toast'
 import { supabase } from '../lib/supabaseClient'
 import { useAuth } from './useAuth'
 import PostTradeChecklistModal from '../components/ui/PostTradeChecklistModal'
@@ -16,11 +17,22 @@ const PostTradeChecklistContext = createContext(null)
 // "Trade Closed" specifically means a live close pushed by the TradoSync EA
 // (source: 'ea_sync') — never a CSV/HTML import or a manual add, so bulk
 // historical imports (or editing a manual trade) never spam this popup.
+//
+// IMPORTANT: on Save, this writes into trades.execution_checklist +
+// journaled_at — the SAME fields Journal.jsx's manual journal editor uses.
+// That's deliberate: those two columns are what already feed
+// computeTradeQualityScore, computeJournalStats, computeRiskBreakdown,
+// computeTradeQualityAggregate ("Common Issues"), and the Gemini prompts in
+// backend/routes/ai.js (both the per-trade autopsy and the weekly report).
+// So every trade answered here automatically becomes real input to Trado
+// AI and every analytics screen — no separate storage, no extra plumbing.
+// On Skip, neither field is touched, so a skipped trade correctly stays
+// "not journaled" instead of polluting those stats with an empty checklist.
 export function PostTradeChecklistProvider({ children }) {
   const { user } = useAuth()
   const userId = user?.id
 
-  const [queue, setQueue] = useState([])     // trades waiting to be reviewed
+  const [queue, setQueue] = useState([])       // trades waiting to be reviewed
   const [current, setCurrent] = useState(null) // trade shown in the modal right now
   const [saving, setSaving] = useState(false)
 
@@ -47,8 +59,9 @@ export function PostTradeChecklistProvider({ children }) {
     function evaluate(row, prevStatus) {
       if (row.status !== 'closed') return
       if (row.source !== 'ea_sync') return           // only genuine live EA closes
-      if (row.checklist_responded_at) return         // already answered/skipped (e.g. another tab)
-      if (prevStatus === 'closed') return             // wasn't a fresh open -> closed transition
+      if (row.checklist_responded_at) return         // already answered/skipped this popup (e.g. another tab)
+      if (row.journaled_at) return                    // already journaled by hand — don't bug them again
+      if (prevStatus === 'closed') return              // wasn't a fresh open -> closed transition
       enqueue(row)
     }
 
@@ -110,23 +123,28 @@ export function PostTradeChecklistProvider({ children }) {
     }
   }, [current, queue])
 
-  async function handleSave(answers) {
+  // checklist = the canonical [{id,label,checked}] array built by the modal.
+  async function handleSave(checklist) {
     if (!current) return
     setSaving(true)
-    await supabase.from('trades').update({
-      checklist_answers:      answers,
+    const { error } = await supabase.from('trades').update({
+      execution_checklist:    checklist,
+      journaled_at:            current.journaled_at || new Date().toISOString(),
       checklist_skipped:      false,
       checklist_responded_at: new Date().toISOString(),
     }).eq('id', current.id)
     setSaving(false)
     setCurrent(null)
+    if (error) toast.error('Failed to save checklist: ' + error.message)
+    else toast.success(`Checklist saved — ${current.symbol} journaled`)
   }
 
   function handleSkip() {
     if (!current) return
     const id = current.id
     setCurrent(null)
-    // Fire-and-forget — no need to block the UI on a skip.
+    // Fire-and-forget — no need to block the UI on a skip. Deliberately
+    // does NOT touch execution_checklist/journaled_at (see comment above).
     supabase.from('trades').update({
       checklist_skipped:      true,
       checklist_responded_at: new Date().toISOString(),

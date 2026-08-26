@@ -8,7 +8,6 @@ import ImportTradesPanel from './ImportTradesPanel'
 import { detectSession, SESSION_UTC } from '../../hooks/useTimezone'
 import { calcPnl } from '../../lib/pnlCalculator'
 import { useTrades } from '../../hooks/useTrades'
-import { TRADE_CHECKLIST_ITEMS } from '../../data/tradeChecklist'
 
 // ── Symbol metadata: category + accent color + short tag ──────────────────────
 const SYMBOLS = [
@@ -31,7 +30,14 @@ const SYMBOLS = [
   { symbol:'ETHUSD', name:'Ethereum / US Dollar',      cat:'Crypto',  tag:'ETH', color:'#627EEA' },
 ]
 
-const CHECKLIST = TRADE_CHECKLIST_ITEMS
+const CHECKLIST = [
+  'Trend identified',
+  'Key level respected',
+  'Risk/Reward ≥ 1:2',
+  'Entry confirmed by structure',
+  'Stop loss placed',
+  'No FOMO — waited for confirmation',
+]
 
 export default function AddTradeModal({ open, onClose, onSave, userId, brokerAccountId, onImported }) {
   const now = new Date()

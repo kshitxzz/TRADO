@@ -11,15 +11,10 @@ import PairIcon from '../components/ui/PairIcon'
 import { useAuth } from '../hooks/useAuth'
 import { useTrades } from '../hooks/useTrades'
 import { formatPnl } from '../lib/utils'
+import { DEFAULT_EXECUTION_CHECKLIST } from '../data/executionChecklist'
 
 // ── Defaults ─────────────────────────────────────────────────────────────────
-const DEFAULT_CHECKLIST = [
-  { id: 'higher_tf',     label: 'Checked higher timeframe',    checked: false },
-  { id: 'risk_limits',   label: 'Risk within limits',           checked: false },
-  { id: 'trading_plan',  label: 'Fits my trading plan',         checked: false },
-  { id: 'key_levels',    label: 'Key levels identified',        checked: false },
-  { id: 'econ_calendar', label: 'Economic calendar checked',    checked: false },
-]
+const DEFAULT_CHECKLIST = DEFAULT_EXECUTION_CHECKLIST
 
 function fmtDateTime(iso) {
   if (!iso) return ''
