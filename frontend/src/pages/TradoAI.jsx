@@ -138,7 +138,7 @@ function useAIAnalysis(trades, account) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filteredTrades.length, period, nonce])
 
-  return { period, setPeriod, custom, setCustom, computed, ai, aiLoading, regenerate: () => setNonce(n => n + 1) }
+  return { period, setPeriod, custom, setCustom, computed, ai, aiLoading, regenerate: () => setNonce(n => n + 1), filteredTrades, accountBalance }
 }
 
 export default function TradoAIPage() {
@@ -148,7 +148,7 @@ export default function TradoAIPage() {
 
   const [activeTab, setActiveTab] = useState(location.state?.tab && TABS.some(t => t.key === location.state.tab) ? location.state.tab : 'Overview')
 
-  const { period, setPeriod, custom, setCustom, computed, ai, aiLoading, regenerate } = useAIAnalysis(trades, account)
+  const { period, setPeriod, custom, setCustom, computed, ai, aiLoading, regenerate, filteredTrades, accountBalance } = useAIAnalysis(trades, account)
 
   const closedCount = computed.overallStats.tradeCount
 
@@ -201,7 +201,13 @@ export default function TradoAIPage() {
           {activeTab === 'Behavior & Discipline' && <BehaviorDisciplineTab computed={computed} />}
           {activeTab === 'Performance' && <PerformanceTab computed={computed} ai={ai} aiLoading={aiLoading} />}
           {activeTab === 'Risk & Sizing' && <RiskSizingTab computed={computed} ai={ai} />}
-          {activeTab === 'Patterns & Timing' && <PatternsTimingTab computed={computed} ai={ai} />}
+          {activeTab === 'Patterns & Timing' && (
+            <PatternsTimingTab
+              computed={computed} ai={ai}
+              trades={filteredTrades} accountBalance={accountBalance}
+              accountId={account?.id} period={period} custom={custom}
+            />
+          )}
         </>
       )}
     </PageWrapper>

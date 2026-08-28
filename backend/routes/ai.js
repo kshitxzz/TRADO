@@ -855,4 +855,113 @@ Respond ONLY with valid JSON (no markdown fences, no preamble), matching this ex
   res.json({ aiAvailable: true, ...empty, ...parsed })
 })
 
+// ═══════════════════════════════════════════════════════════════════════
+// Smart Insights Report — the full AI-generated performance report shown
+// on the "Smart Insights" tab. Every number in the facts sheet below (P&L,
+// win rate, pair/session breakdowns, sizing, journal compliance) was
+// computed on the frontend by lib/analytics.js#computeSmartReportFacts.
+// Gemini's job here is narrow and strict: pick which of the given
+// blindspot/pattern CANDIDATES are worth surfacing (by id only — it cannot
+// invent a new one) and write the coaching copy around the evidence
+// numbers it was handed. It never calculates or restates a number that
+// isn't already in the facts sheet.
+// ═══════════════════════════════════════════════════════════════════════
+function buildSmartReportFacts(context = {}) {
+  const {
+    stats = {}, bestPair, worstPair, topSession, sessionDominancePct,
+    riskSizing = {}, avgHoldSec, blindspotCandidates = [], patternCandidates = [],
+  } = context
+  const lines = []
+
+  lines.push(
+    `OVERALL: ${formatPnl(stats.totalPnl)} net P&L across ${stats.tradeCount} trades, ${formatPct(stats.winRate)} win rate, ` +
+    `profit factor ${stats.profitFactor >= 999 ? '∞' : (stats.profitFactor || 0).toFixed(2)}. ` +
+    `Biggest win ${formatPnl(stats.bestTrade)}, biggest loss ${formatPnl(stats.worstTrade)}. ` +
+    `Avg reward:risk ${(riskSizing.avgRR || 0).toFixed(2)}:1.` +
+    (avgHoldSec != null ? ` Avg hold time ${Math.round(avgHoldSec / 60)}m.` : '')
+  )
+  if (bestPair) lines.push(`BEST SYMBOL: ${bestPair.symbol} — ${bestPair.count} trades, ${formatPct(bestPair.winRate)} win rate, ${formatPnl(bestPair.pnl)}.`)
+  if (worstPair) lines.push(`WORST SYMBOL: ${worstPair.symbol} — ${worstPair.count} trades, ${formatPct(worstPair.winRate)} win rate, ${formatPnl(worstPair.pnl)}.`)
+  else lines.push('WORST SYMBOL: none — no losing symbol this period.')
+  if (topSession) lines.push(`TOP SESSION: ${topSession.session} — ${formatPct(sessionDominancePct)} of volume, ${formatPct(topSession.winRate)} win rate, ${formatPnl(topSession.pnl)}.`)
+
+  if (blindspotCandidates.length) {
+    lines.push('BLINDSPOT CANDIDATES (choose the most important 1-3 by id; use ONLY these ids; do not invent others; if none feel significant, return fewer):')
+    blindspotCandidates.forEach(c => lines.push(`- id="${c.id}" severity="${c.severity}": ${c.evidence}`))
+  } else {
+    lines.push('BLINDSPOT CANDIDATES: none given — return an empty blindspots array.')
+  }
+
+  if (patternCandidates.length) {
+    lines.push('RECURRING PATTERN CANDIDATES (use ONLY these ids; do not invent others):')
+    patternCandidates.forEach(p => lines.push(`- id="${p.id}" title="${p.title}": ${p.evidence}, net ${formatPnl(p.pnl)}.`))
+  } else {
+    lines.push('RECURRING PATTERN CANDIDATES: none given — return an empty recurringPatterns array.')
+  }
+
+  return lines.join('\n')
+}
+
+router.post('/smart-report', AI_LIMITER, async (req, res) => {
+  const { context = {} } = req.body
+  const empty = { title: null, narrative: null, blindspots: [], recurringPatterns: [], actionPlan: [] }
+
+  if (!context.stats || !context.stats.tradeCount) {
+    return res.json({ aiAvailable: false, reason: 'no_data', message: 'Not enough closed trades yet to generate a report.', ...empty })
+  }
+
+  const facts = buildSmartReportFacts(context)
+  const positive = !!context.verdict?.positive
+
+  const prompt = `You are Trado AI — a sharp, direct trading performance coach writing a personalized report for a trader. Below is a FACTS SHEET computed from their real trade history. Every number in it is already correct and final — this trader is currently ${positive ? 'profitable' : 'not yet net-profitable'} for this period.
+
+RULES (critical):
+- Use ONLY the numbers and ids given in the facts sheet. NEVER calculate, estimate, invent, or restate a number differently than given.
+- For "blindspots" and "recurringPatterns", the "id" field MUST exactly match one of the candidate ids listed in the facts sheet. Never invent a new id. Only include candidates that are genuinely worth surfacing — quality over quantity.
+- Be specific and direct — write like a sharp coach reviewing real performance, not a generic motivational message.
+- Keep every field SHORT and punchy as specified below.
+- "actionPlan" must have exactly 3 items, ordered by priority, grounded in the blindspots/patterns you identified above (or in the overall stats if there are no blindspots).
+
+FACTS SHEET:
+${facts}
+
+Respond ONLY with valid JSON (no markdown fences, no preamble), matching this exact shape:
+{
+  "reportLabel": "3-4 word all-caps-style label like PROFITABLE PERIOD, STRONG MOMENTUM, CHOPPY PERIOD, or NOT YET PROFITABLE — must match whether the trader is profitable (given above)",
+  "title": "a punchy 4-8 word headline capturing this trader's defining edge or issue this period, e.g. 'Elite Precision with a Gold Specialization'",
+  "narrative": "2-3 sentences in a coaching voice, citing real numbers from OVERALL, explaining WHY the period went the way it did",
+  "blindspots": [
+    { "id": "<candidate id from the facts sheet>", "description": "2-3 sentences on why this matters for this trader, referencing the evidence given", "recommendation": "1 short, concrete, specific action sentence" }
+  ],
+  "recurringPatterns": [
+    { "id": "<candidate id from the facts sheet>", "description": "1-2 sentences on the likely technical or psychological reason behind this pattern" }
+  ],
+  "actionPlan": [
+    { "title": "short imperative headline, e.g. 'Cap Maximum Lot Size to 4.00'", "priority": "Do this first" or "Important" or "Nice to have", "description": "1-2 sentences on what to do and why it matters", "measure": "1 short sentence on how to measure success, e.g. 'Zero trades exceeding 4.00 lots for the next 14 days.'" }
+  ]
+}`
+
+  const result = await callGemini(prompt, { json: true, temperature: 0.65, maxOutputTokens: 2000 })
+  if (!result.ok) return res.json({ aiAvailable: false, reason: result.reason, message: result.message, ...empty })
+
+  const parsed = parseJsonLoose(result.text)
+  if (!parsed) {
+    const cutOff = result.finishReason === 'MAX_TOKENS'
+    console.error(`[Gemini JSON parse failed: smart-report, finishReason=${result.finishReason}] raw:`, result.text.slice(0, 800))
+    return res.json({
+      aiAvailable: false, reason: 'parse_error',
+      message: cutOff ? "Gemini's response was cut off before finishing — try again." : humanizeError('parse_error'),
+      ...empty,
+    })
+  }
+
+  // Guard against Gemini surfacing a candidate id that wasn't offered.
+  const validBlindspotIds = new Set((context.blindspotCandidates || []).map(c => c.id))
+  const validPatternIds = new Set((context.patternCandidates || []).map(p => p.id))
+  if (Array.isArray(parsed.blindspots)) parsed.blindspots = parsed.blindspots.filter(b => validBlindspotIds.has(b.id))
+  if (Array.isArray(parsed.recurringPatterns)) parsed.recurringPatterns = parsed.recurringPatterns.filter(p => validPatternIds.has(p.id))
+
+  res.json({ aiAvailable: true, ...empty, ...parsed })
+})
+
 export default router

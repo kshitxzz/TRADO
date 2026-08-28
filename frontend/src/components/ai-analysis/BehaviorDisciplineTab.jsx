@@ -7,6 +7,7 @@ import {
   SubTabs, MetricCard, InsightCard,
   ProgressRow, GaugeBar, GradeBadge, formatPnl, pnlColor,
 } from './shared'
+import CoachingModal from './CoachingModal'
 
 const FLAG_ICONS = { Repeat, Brain, TrendingUp, ClipboardCheck }
 
@@ -32,6 +33,7 @@ export default function BehaviorDisciplineTab({ computed }) {
 function BehavioralFlagsSection({ computed }) {
   const { scalingVerdict, behavioralFlags } = computed
   const bannerColor = scalingVerdict.positive === true ? 'var(--positive-green)' : scalingVerdict.positive === false ? 'var(--warning-orange)' : 'var(--text-muted)'
+  const [coachingTopic, setCoachingTopic] = useState(null)
 
   return (
     <div className="space-y-5">
@@ -44,7 +46,9 @@ function BehavioralFlagsSection({ computed }) {
             <h3 className="font-bold text-base mb-1.5" style={{ color: bannerColor }}>{scalingVerdict.title}</h3>
             <p className="text-sm leading-relaxed mb-3" style={{ color: 'var(--text-secondary)' }}>{scalingVerdict.text}</p>
             {scalingVerdict.cta && (
-              <button className="text-xs font-semibold px-3.5 py-2 rounded-lg" style={{ background: `${bannerColor}18`, color: bannerColor, border: `1px solid ${bannerColor}40` }}>
+              <button
+                onClick={() => setCoachingTopic({ key: scalingVerdict.positive ? 'scaling_guide' : 'improvement_guide', context: computed.overallStats })}
+                className="text-xs font-semibold px-3.5 py-2 rounded-lg" style={{ background: `${bannerColor}18`, color: bannerColor, border: `1px solid ${bannerColor}40` }}>
                 {scalingVerdict.title.includes('Profitable') ? '🚀' : ''} {scalingVerdict.cta}
               </button>
             )}
@@ -88,7 +92,9 @@ function BehavioralFlagsSection({ computed }) {
                         </div>
                       )}
                       {f.cta && (
-                        <button className="text-xs font-semibold px-3 py-1.5 rounded-lg" style={{ background: `${color}18`, color, border: `1px solid ${color}40` }}>
+                        <button
+                          onClick={() => setCoachingTopic({ key: f.id, context: f })}
+                          className="text-xs font-semibold px-3 py-1.5 rounded-lg" style={{ background: `${color}18`, color, border: `1px solid ${color}40` }}>
                           {f.cta} →
                         </button>
                       )}
@@ -100,6 +106,8 @@ function BehavioralFlagsSection({ computed }) {
           </div>
         )}
       </div>
+
+      <CoachingModal topic={coachingTopic} onClose={() => setCoachingTopic(null)} />
     </div>
   )
 }

@@ -546,3 +546,16 @@ html.light .progress-bar-track {
 html.light .toggle-track {
   background: rgba(0,0,0,0.12);
 }
+/* ── Smart Insights report — print / "Generate PDF" support ────────────── */
+/* When printing, hide everything except an element flagged as the active
+   print target (Sidebar/Topbar included) so "Save as PDF" from the browser
+   print dialog produces a clean report instead of the whole app chrome. */
+@media print {
+  body * { visibility: hidden; }
+  .print-report, .print-report * { visibility: visible; }
+  .print-report {
+    position: absolute; inset: 0; width: 100%; padding: 16px;
+    background: #0A0A0F !important;
+  }
+  .no-print { display: none !important; }
+}

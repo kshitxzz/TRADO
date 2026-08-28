@@ -1,11 +1,12 @@
 import { useState } from 'react'
-import { Clock, Link2, Sparkles, Sunrise, Sun, Moon, Search } from 'lucide-react'
+import { Clock, Link2, Sparkles, Sunrise, Sun, Moon } from 'lucide-react'
 import { AICard, formatPnl, pnlColor } from './shared'
+import SmartReportsHub from './SmartReportsHub'
 
 const SESSION_ICON = { Asian: Sunrise, London: Sun, 'New York': Moon }
 const WEEKDAYS_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
-export default function PatternsTimingTab({ computed, ai }) {
+export default function PatternsTimingTab({ computed, ai, trades, accountBalance, accountId, period, custom }) {
   const [sub, setSub] = useState('time')
   const tabs = [
     { key: 'time', label: 'Time Insights', icon: Clock },
@@ -29,7 +30,7 @@ export default function PatternsTimingTab({ computed, ai }) {
       </div>
       {sub === 'time' && <TimeInsightsSection computed={computed} ai={ai} />}
       {sub === 'correlations' && <CorrelationsSection computed={computed} ai={ai} />}
-      {sub === 'smart' && <SmartInsightsSection computed={computed} />}
+      {sub === 'smart' && <SmartReportsHub trades={trades} accountBalance={accountBalance} accountId={accountId} period={period} custom={custom} />}
     </div>
   )
 }
@@ -155,48 +156,4 @@ function CorrelationsSection({ computed, ai }) {
       <AICard type="CORRELATION INSIGHTS" title={c.insight ? `Best Symbol: ${c.insight.symbol}` : 'Not Enough Data'} text={text} severity="info" />
     </div>
   )
-}
-
-// ─── Smart Insights ──────────────────────────────────────────────────────
-function SmartInsightsSection({ computed }) {
-  const s = computed.smartInsights
-
-  if (!s.ready) {
-    return (
-      <div className="glass-card p-10 text-center">
-        <Search size={26} className="mx-auto mb-3" style={{ color: 'var(--text-muted)' }} />
-        <p className="text-sm font-medium mb-1" style={{ color: 'var(--text-primary)' }}>Not Enough Data</p>
-        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Log {s.needed} more closed trade{s.needed === 1 ? '' : 's'} to unlock smart insights.</p>
-      </div>
-    )
-  }
-
-  if (!s.insights.length) {
-    return (
-      <div className="glass-card p-10 text-center">
-        <Sparkles size={26} className="mx-auto mb-3" style={{ color: 'var(--positive-green)' }} />
-        <p className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>No standout patterns detected right now — that's a good sign.</p>
-      </div>
-    )
-  }
-
-  return (
-    <div className="grid md:grid-cols-2 gap-3">
-      {s.insights.map(ins => (
-        <AICard key={ins.id} type={ins.category?.toUpperCase()} title={ins.title} text={smartInsightText(ins)} severity="info" />
-      ))}
-    </div>
-  )
-}
-
-function smartInsightText(ins) {
-  const f = ins.facts || {}
-  switch (ins.id) {
-    case 'your_edge':       return `${f.symbol} · ${f.session} · ${f.side} is your strongest combo — ${f.winRate.toFixed(0)}% win rate across ${f.count} trades, netting ${formatPnl(f.pnl)}.`
-    case 'bleeding_zone':    return `${f.symbol} · ${f.session} · ${f.side} is bleeding — ${f.winRate.toFixed(0)}% win rate across ${f.count} trades, ${formatPnl(f.pnl)}.`
-    case 'fatigue_curve':    return `Your win rate drops from ${f.earlyWinRate.toFixed(0)}% on your first ${f.afterNth} trades of the day to ${f.laterWinRate.toFixed(0)}% after that — fatigue may be creeping in.`
-    case 'hold_time_edge':   return `Trades held under ${f.thresholdMin}min win ${f.underWinRate.toFixed(0)}% of the time vs ${f.overWinRate.toFixed(0)}% for longer holds.`
-    case 'eerie_pattern':    return `${f.day}s around ${f.hour}:00 UTC have been a consistent red zone — ${f.redCount}/${f.count} losers, netting ${formatPnl(f.pnl)}.`
-    default: return ''
-  }
 }

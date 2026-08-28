@@ -1349,6 +1349,144 @@ export function computeSmartInsights(trades = []) {
   return { ready: true, needed: 0, insights }
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// Smart Insights — full AI report. Every number below (P&L, win rate,
+// pair/session breakdowns, sizing, journal compliance, trend points) is
+// computed here, deterministically, from real trade rows. The candidate
+// arrays (`blindspotCandidates` / `patternCandidates`) are the ONLY things
+// Gemini is allowed to pick from and narrate — it never invents an id, a
+// number, or a pair/session that isn't already in these lists. The `evidence`
+// string on each candidate is what actually gets displayed in the UI; the
+// backend only ever supplies the surrounding narrative copy.
+// ═══════════════════════════════════════════════════════════════════════
+const MIN_REPORT_SAMPLE = 3
+
+export function computeSmartReportFacts(trades = [], accountBalance = null) {
+  const closed = trades.filter(t => t.status === 'closed')
+  if (closed.length < MIN_REPORT_SAMPLE) {
+    return { ready: false, needed: MIN_REPORT_SAMPLE - closed.length }
+  }
+
+  const stats = computeStats(trades)
+  const symbols = computeSymbolBreakdown(trades)
+  const sessions = computeSessionBreakdown(trades)
+  const journal = computeJournalStats(trades)
+  const riskSizing = computeRiskSizing(trades, accountBalance)
+  const verdict = computeScalingVerdict(stats)
+
+  const withDuration = closed.filter(t => t.opened_at && t.closed_at)
+  const avgHoldSec = withDuration.length
+    ? withDuration.reduce((s, t) => s + (getDurationSeconds(t) || 0), 0) / withDuration.length
+    : null
+
+  const sizes = closed.map(t => t.size).filter(s => s != null && s > 0)
+  const minSize = sizes.length ? Math.min(...sizes) : 0
+  const maxSize = sizes.length ? Math.max(...sizes) : 0
+  const sizeVariance = minSize > 0 ? maxSize / minSize : (maxSize > 0 ? maxSize : 0)
+
+  const bestPair = symbols[0] || null
+  const losingPairs = symbols.filter(s => s.pnl < 0).sort((a, b) => a.pnl - b.pnl)
+  const worstPair = losingPairs[0] || null
+
+  const topSession = sessions[0] || null
+  const sessionDominancePct = topSession && closed.length ? (topSession.count / closed.length) * 100 : 0
+
+  // Performance trend — cumulative win rate / profit factor / avg R:R, sampled
+  // once per calendar day that had a closed trade, in chronological order.
+  const byDay = {}
+  closed.filter(t => t.closed_at).forEach(t => {
+    const d = t.closed_at.slice(0, 10)
+    if (!byDay[d]) byDay[d] = []
+    byDay[d].push(t)
+  })
+  const days = Object.keys(byDay).sort()
+  let running = []
+  const trend = days.map(d => {
+    running = running.concat(byDay[d])
+    const wins = running.filter(t => t.pnl > 0)
+    const losses = running.filter(t => t.pnl < 0)
+    const winRate = (wins.length / running.length) * 100
+    const grossProfit = wins.reduce((s, t) => s + t.pnl, 0)
+    const grossLoss = Math.abs(losses.reduce((s, t) => s + t.pnl, 0))
+    const profitFactor = grossLoss > 0 ? Math.min(grossProfit / grossLoss, 10) : (grossProfit > 0 ? 10 : 0)
+    const avgWin = wins.length ? grossProfit / wins.length : 0
+    const avgLoss = losses.length ? grossLoss / losses.length : 0
+    const rr = avgLoss > 0 ? Math.min(avgWin / avgLoss, 10) : (avgWin > 0 ? 10 : 0)
+    return { date: d, winRate, profitFactor, rr }
+  })
+
+  // ── Blindspot candidates (deterministic thresholds decide WHICH issues
+  // are even eligible — Gemini only ever narrates ones on this list) ──────
+  const blindspotCandidates = []
+  if (journal.journaledRate < 50 && closed.length >= 3) {
+    blindspotCandidates.push({
+      id: 'journal_gap',
+      severity: journal.journaledRate === 0 ? 'warning' : 'minor',
+      title: 'Process Documentation Gap',
+      evidence: `Journal compliance is ${journal.journaledCount}/${journal.closedCount} (${journal.journaledRate.toFixed(0)}%) despite a ${stats.winRate.toFixed(0)}% win rate.`,
+    })
+  }
+  if (sizes.length >= 3 && sizeVariance >= 2) {
+    blindspotCandidates.push({
+      id: 'erratic_sizing',
+      severity: sizeVariance >= 4 ? 'warning' : 'minor',
+      title: 'Erratic Position Sizing',
+      evidence: `Position size variation is ${sizeVariance.toFixed(1)}x, ranging from ${minSize.toFixed(2)} to ${maxSize.toFixed(2)} lots.`,
+    })
+  }
+  if (closed.length >= 5 && riskSizing.avgRR > 0 && riskSizing.avgRR < 1.2) {
+    blindspotCandidates.push({
+      id: 'weak_rr',
+      severity: 'warning',
+      title: 'Thin Reward-to-Risk',
+      evidence: `Average reward-to-risk is ${riskSizing.avgRR.toFixed(2)}:1 across ${closed.length} trades.`,
+    })
+  }
+  if (bestPair && symbols.length === 1 && bestPair.count >= 3) {
+    blindspotCandidates.push({
+      id: 'single_symbol_dependency',
+      severity: 'minor',
+      title: 'Single-Symbol Dependency',
+      evidence: `100% of your trades (${bestPair.count}/${closed.length}) were on ${bestPair.symbol} alone — no other symbol has been tested yet.`,
+    })
+  }
+  if (stats.streak >= 5 && stats.streakType === 'win') {
+    blindspotCandidates.push({
+      id: 'hot_streak_risk',
+      severity: 'minor',
+      title: 'Unbroken Win Streak',
+      evidence: `Current streak is ${stats.streak} consecutive winners with no losing trade to pressure-test risk controls yet.`,
+    })
+  }
+
+  // ── Recurring pattern candidates ────────────────────────────────────────
+  const patternCandidates = []
+  if (bestPair) {
+    patternCandidates.push({
+      id: 'top_symbol',
+      title: `${bestPair.symbol} Specialist`,
+      pnl: bestPair.pnl,
+      evidence: `${bestPair.count} out of ${closed.length} trades, ${bestPair.winRate.toFixed(0)}% win rate.`,
+    })
+  }
+  if (topSession && sessionDominancePct >= 50) {
+    patternCandidates.push({
+      id: 'top_session',
+      title: `${topSession.session} Overlap Dominance`,
+      pnl: topSession.pnl,
+      evidence: `${sessionDominancePct.toFixed(0)}% of trade volume, ${topSession.winRate.toFixed(0)}% win rate.`,
+    })
+  }
+
+  return {
+    ready: true,
+    stats, symbols, sessions, journal, riskSizing, verdict,
+    avgHoldSec, minSize, maxSize, sizeVariance,
+    bestPair, worstPair, topSession, sessionDominancePct,
+    trend, blindspotCandidates, patternCandidates,
+  }
+}
+
 
 // ═══════════════════════════════════════════════════════════════════════
 // Growth Roadmap (renamed from "Progress Tracker"). Same philosophy as the
