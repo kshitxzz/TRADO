@@ -13,7 +13,14 @@ export default function PageWrapper({ children, onSync, syncing, bgColor }) {
     <div className="flex h-screen overflow-hidden" style={{ background: bgColor || 'var(--bg-primary)' }}>
       <Sidebar mobileOpen={mobileNavOpen} onCloseMobile={() => setMobileNavOpen(false)} />
       <div className="flex-1 flex flex-col overflow-hidden min-w-0">
-        <main className="flex-1 overflow-y-auto">
+        {/* overflow-x-hidden is explicit here (not just overflow-y-auto)
+            because CSS computes an unset x-axis as `auto` (scrollable) once
+            y is anything but `visible` — without this, any child that's
+            ever wider than the viewport (e.g. Topbar with a long page
+            title) makes this whole region horizontally scrollable, not
+            just clipped. Topbar + page content both live in here, which is
+            why that bug showed up as the *entire* page shifting sideways. */}
+        <main className="flex-1 overflow-y-auto overflow-x-hidden">
           <Topbar onSync={onSync} syncing={syncing} onMobileMenuClick={() => setMobileNavOpen(true)} />
           <motion.div
             initial={{ opacity: 0, y: 6 }}

@@ -112,12 +112,17 @@ export default function Topbar({ onSync, syncing, onMobileMenuClick }) {
         <Menu size={18} />
       </button>
 
-      {/* Left — page title + today's date */}
-      <div className="flex-shrink-0 min-w-0">
+      {/* Left — page title + today's date. min-w-0 (with NO flex-shrink-0)
+          lets this shrink below its natural text width so `truncate` on the
+          h1 can actually engage — long titles like "Position Size
+          Calculator" were previously forcing flex-shrink-0's full natural
+          width, pushing the whole header (and page) into horizontal
+          overflow on narrow screens. */}
+      <div className="min-w-0">
         <h1 className="text-base sm:text-lg font-bold leading-tight truncate" style={{ color: 'var(--text-primary)' }}>
           {pageTitle(location.pathname)}
         </h1>
-        <p className="text-xs leading-tight hidden sm:block" style={{ color: 'var(--text-muted)' }}>{dateLabel}</p>
+        <p className="text-xs leading-tight hidden sm:block truncate" style={{ color: 'var(--text-muted)' }}>{dateLabel}</p>
       </div>
 
       {/* Center — search (full box on tablet+, icon-only trigger on phones) */}
