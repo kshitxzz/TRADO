@@ -1,6 +1,10 @@
 import { supabase } from './supabaseClient';
 
-const API_BASE = import.meta.env.VITE_API_URL || '/api';
+// NOTE: was reading a nonexistent VITE_API_URL, which silently fell back to
+// the relative '/api' path — i.e. the Cloudflare frontend domain instead of
+// the Render backend. Every other file in the app uses VITE_BACKEND_URL
+// (see .env.example) — this now matches that convention.
+const API_BASE = `${import.meta.env.VITE_BACKEND_URL || 'http://localhost:4000'}/api`;
 
 async function request(url, options = {}) {
   const session = (await supabase.auth.getSession()).data.session;
