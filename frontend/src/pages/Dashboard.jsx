@@ -5,7 +5,7 @@ import {
   RefreshCw, Plug, Sparkles, Plus, Share2,
 } from 'lucide-react'
 import { motion } from 'framer-motion'
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
+import { LineChart, Line, BarChart, Bar, Cell, XAxis, YAxis, CartesianGrid, ReferenceLine, Tooltip, ResponsiveContainer } from 'recharts'
 import PageWrapper from '../components/layout/PageWrapper'
 import RollingNumber from '../components/ui/RollingNumber'
 import TradeScoreRadar, { computeTradeScore, TradeScoreGrid } from '../components/charts/TradeScoreRadar'
@@ -14,6 +14,11 @@ import { useAuth } from '../hooks/useAuth'
 import { useTrades } from '../hooks/useTrades'
 import { computeStats, buildEquityCurve, getTodayPnl, getMonthStats, formatPnl, pnlColor, greeting } from '../lib/utils'
 import { checkAndFireCoachAlerts } from '../lib/coachAlertRunner'
+
+// ─── Weekday ordering helpers for the P&L by Day chart (trading week first) ──
+const DOW_FULL   = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday']
+const WEEK_ORDER = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday']
+const DOW_SHORT  = { Sunday:'Sun', Monday:'Mon', Tuesday:'Tue', Wednesday:'Wed', Thursday:'Thu', Friday:'Fri', Saturday:'Sat' }
 
 // ─── Small rounded icon badge used inside stat tiles ──────────────────────────
 function IconBadge({ icon: Icon, color, bg, onClick, title }) {
@@ -157,6 +162,39 @@ export default function Dashboard() {
     return Object.values(m).sort((a, b) => Math.abs(b.pnl) - Math.abs(a.pnl)).slice(0, 6)
   }, [closedTrades])
   const maxSymbolAbs = Math.max(1, ...bySymbol.map(s => Math.abs(s.pnl)))
+
+  // ── Analytics Overview: P&L by day of week (trading-week order, only days
+  //    that actually have trades — so an FX-only trader naturally shows
+  //    Mon–Fri while a crypto trader also picks up weekends) ────────────────
+  const byDayData = useMemo(() => {
+    const map = {}
+    closedTrades.forEach(t => {
+      if (!t.closed_at) return
+      const day = DOW_FULL[new Date(t.closed_at).getDay()]
+      if (!map[day]) map[day] = { day, dayShort: DOW_SHORT[day], pnl: 0, count: 0 }
+      map[day].pnl += t.pnl || 0
+      map[day].count++
+    })
+    return WEEK_ORDER.filter(d => map[d]).map(d => map[d])
+  }, [closedTrades])
+
+  // ── Analytics Overview: win rate per symbol, most-traded first ───────────
+  const winRateBySymbol = useMemo(() => {
+    const m = {}
+    closedTrades.forEach(t => {
+      if (!t.symbol) return
+      if (!m[t.symbol]) m[t.symbol] = { symbol: t.symbol, wins: 0, count: 0 }
+      m[t.symbol].count++
+      if (t.pnl > 0) m[t.symbol].wins++
+    })
+    return Object.values(m)
+      .map(s => ({ ...s, winRate: s.count ? (s.wins / s.count) * 100 : 0 }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 6)
+  }, [closedTrades])
+
+  // ── Analytics Overview: Avg RRR = avg win size ÷ avg loss size ───────────
+  const avgRRR = stats.avgLoss !== 0 ? stats.avgWin / Math.abs(stats.avgLoss) : 0
 
   // ── Analytical Overview: equity curve, formatted for a labeled axis ──────
   const equityChartData = useMemo(() =>
@@ -429,9 +467,11 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* ── Row 4: Analytical Overview — Equity Curve + P&L by Symbol ──────── */}
+      {/* ── Row 4: Analytics Overview — Equity Curve, P&L by Symbol, P&L by
+             Day, Win Rate by Symbol, plus the Profit Factor / Avg Win /
+             Avg Loss / Avg RRR summary row ─────────────────────────────── */}
       <div className="mt-4">
-        <h2 className="text-lg font-bold mb-4" style={{ color: 'var(--text-primary)' }}>Analytical Overview</h2>
+        <h2 className="text-lg font-bold mb-4" style={{ color: 'var(--text-primary)' }}>Analytics Overview</h2>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
 
           {/* Equity Curve */}
@@ -502,6 +542,108 @@ export default function Dashboard() {
             )}
           </div>
 
+          {/* P&L by Day */}
+          <div className="glass-card p-5">
+            <h3 className="font-bold" style={{ color: 'var(--text-primary)' }}>P&L by Day</h3>
+            <p className="text-xs mt-0.5 mb-4" style={{ color: 'var(--text-muted)' }}>Which days of the week work for you</p>
+            {byDayData.length === 0 ? (
+              <div className="flex items-center justify-center" style={{ height: 240 }}>
+                <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No trade data yet</p>
+              </div>
+            ) : (
+              <div style={{ height: 240 }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={byDayData} layout="vertical" margin={{ top: 4, right: 16, left: 0, bottom: 0 }} barCategoryGap="30%">
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border-subtle)" horizontal={false} />
+                    <XAxis type="number" tick={{ fill: 'var(--text-muted)', fontSize: 11 }} axisLine={false} tickLine={false}
+                           tickFormatter={v => `$${(v / 1000).toFixed(0)}k`} />
+                    <YAxis type="category" dataKey="dayShort" width={36}
+                           tick={{ fill: 'var(--text-muted)', fontSize: 11, fontWeight: 600 }} axisLine={false} tickLine={false} />
+                    <ReferenceLine x={0} stroke="var(--border-subtle)" />
+                    <Tooltip content={({ active, payload }) => {
+                      if (!active || !payload?.length) return null
+                      const d = payload[0].payload
+                      return (
+                        <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border-glow)', borderRadius: 8, padding: '8px 12px', fontSize: 12 }}>
+                          <p style={{ color: 'var(--text-muted)', marginBottom: 4 }}>{d.day}</p>
+                          <p style={{ color: pnlColor(d.pnl), fontWeight: 700 }}>P&L: {formatPnl(d.pnl)}</p>
+                          <p style={{ color: 'var(--text-muted)', fontSize: 10, marginTop: 2 }}>{d.count} trade{d.count !== 1 ? 's' : ''}</p>
+                        </div>
+                      )
+                    }} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
+                    <Bar dataKey="pnl" radius={[4, 4, 4, 4]} maxBarSize={26}>
+                      {byDayData.map((d, i) => (
+                        <Cell key={i} fill={d.pnl >= 0 ? '#22c55e' : '#ef4444'} fillOpacity={0.85} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </div>
+
+          {/* Win Rate by Symbol */}
+          <div className="glass-card p-5">
+            <h3 className="font-bold" style={{ color: 'var(--text-primary)' }}>Win Rate by Symbol</h3>
+            <p className="text-xs mt-0.5 mb-4" style={{ color: 'var(--text-muted)' }}>Consistency across your most-traded pairs</p>
+            {winRateBySymbol.length === 0 ? (
+              <div className="flex items-center justify-center" style={{ height: 240 }}>
+                <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No trade data yet</p>
+              </div>
+            ) : (
+              <div className="space-y-3.5" style={{ minHeight: 240 }}>
+                {winRateBySymbol.map(s => (
+                  <div key={s.symbol} className="flex items-center gap-3 group">
+                    <span className="text-sm font-semibold w-20 flex-shrink-0 truncate" style={{ color: 'var(--text-primary)' }}>
+                      {s.symbol}
+                    </span>
+                    <div className="flex-1 h-2 rounded-full overflow-hidden" style={{ background: 'var(--border-subtle)' }}>
+                      <div className="transition-[filter] duration-200 group-hover:brightness-125" style={{
+                        width: `${Math.max(3, s.winRate)}%`, height: '100%',
+                        background: s.winRate >= 50 ? 'linear-gradient(90deg,#16a34a,#4ade80)' : 'linear-gradient(90deg,#dc2626,#f87171)',
+                        borderRadius: 999,
+                      }} />
+                    </div>
+                    <span className="text-sm font-bold w-12 text-right flex-shrink-0" style={{ color: s.winRate >= 50 ? 'var(--positive-green)' : 'var(--negative-red)' }}>
+                      {s.winRate.toFixed(0)}%
+                    </span>
+                    <span className="text-xs w-20 text-right flex-shrink-0" style={{ color: 'var(--text-muted)' }}>
+                      ({s.count} trade{s.count !== 1 ? 's' : ''})
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+        </div>
+
+        {/* Profit Factor · Avg Win · Avg Loss · Avg RRR ──────────────────── */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4">
+          <div className="stat-tile p-4 text-center">
+            <p className="text-[11px] font-semibold uppercase tracking-wider mb-1.5" style={{ color: 'var(--text-muted)' }}>Profit Factor</p>
+            <p className="text-xl font-bold" style={{ color: stats.profitFactor >= 1 ? 'var(--text-primary)' : 'var(--negative-red)' }}>
+              {stats.tradeCount === 0 ? '—' : stats.profitFactor >= 999 ? '∞' : stats.profitFactor.toFixed(2)}
+            </p>
+          </div>
+          <div className="stat-tile p-4 text-center">
+            <p className="text-[11px] font-semibold uppercase tracking-wider mb-1.5" style={{ color: 'var(--text-muted)' }}>Avg Win</p>
+            <p className="text-xl font-bold" style={{ color: 'var(--positive-green)' }}>
+              {stats.tradeCount === 0 ? '—' : `+$${stats.avgWin.toFixed(2)}`}
+            </p>
+          </div>
+          <div className="stat-tile p-4 text-center">
+            <p className="text-[11px] font-semibold uppercase tracking-wider mb-1.5" style={{ color: 'var(--text-muted)' }}>Avg Loss</p>
+            <p className="text-xl font-bold" style={{ color: 'var(--negative-red)' }}>
+              {stats.tradeCount === 0 ? '—' : `-$${Math.abs(stats.avgLoss).toFixed(2)}`}
+            </p>
+          </div>
+          <div className="stat-tile p-4 text-center">
+            <p className="text-[11px] font-semibold uppercase tracking-wider mb-1.5" style={{ color: 'var(--text-muted)' }}>Avg RRR</p>
+            <p className="text-xl font-bold" style={{ color: 'var(--text-primary)' }}>
+              {stats.tradeCount === 0 ? '—' : `${avgRRR.toFixed(2)}:1`}
+            </p>
+          </div>
         </div>
       </div>
 
