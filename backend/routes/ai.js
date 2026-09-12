@@ -228,10 +228,22 @@ Trading data:
 ${ctx.summary}
 
 In ONE short sentence (under 22 words), call out their single biggest strength or weakness right now. Be specific and reference an actual dimension or number. No preamble, no quotes, just the sentence.`,
+
+    trado_ai_tips: `You are the "Trado AI" coach inside a trading journal app. A trader's performance has just been scored (0–100 per dimension) directly from their real trade history — you are not calculating anything, only narrating what's already been computed: ${axesLine}. Overall: ${overall}/100.
+
+Trading data:
+${ctx.summary}
+
+Write exactly 3 short, specific tips (each under 18 words, no preamble):
+1. One concrete action to improve their WEAKEST dimension — name it and reference its number.
+2. One concrete action to improve their SECOND-weakest dimension — name it and reference its number.
+3. One encouraging line naming their STRONGEST dimension and telling them to keep leaning on it.
+
+Respond ONLY with a JSON object like: {"tips":["...","...","..."]}`,
   }
 
   const prompt = PROMPTS[scope] || PROMPTS.weekly_summary
-  const wantsJson = scope === 'behavioral_score'
+  const wantsJson = scope === 'behavioral_score' || scope === 'trado_ai_tips'
   const result = await callGemini(prompt, { json: wantsJson, temperature: 0.5 })
 
   if (!result.ok) return res.json({ aiAvailable: false, reason: result.reason, message: result.message })
@@ -243,6 +255,15 @@ In ONE short sentence (under 22 words), call out their single biggest strength o
       return res.json({ aiAvailable: false, reason: 'parse_error', message: humanizeError('parse_error') })
     }
     return res.json({ aiAvailable: true, scores: parsed })
+  }
+
+  if (scope === 'trado_ai_tips') {
+    const parsed = parseJsonLoose(result.text)
+    if (!parsed || !Array.isArray(parsed.tips) || parsed.tips.length === 0) {
+      console.error('[Gemini JSON parse failed: trado_ai_tips] raw:', result.text.slice(0, 500))
+      return res.json({ aiAvailable: false, reason: 'parse_error', message: humanizeError('parse_error') })
+    }
+    return res.json({ aiAvailable: true, tips: parsed.tips.slice(0, 3) })
   }
 
   res.json({ aiAvailable: true, content: result.text, scope })

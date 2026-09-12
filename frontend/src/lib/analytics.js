@@ -1658,3 +1658,108 @@ export function computeGoalProjection({ targetProfit, projectedWinRate, projecte
 
   return { expectedValue, tradesToGoal, estimatedDays, estimatedWeeks, progressToGoalPct }
 }
+
+// ── Trado AI Score — the fuller "Trado AI" card's 6-axis rubric ────────────
+// Deliberately separate from computeTradeScore (components/charts/
+// TradeScoreRadar.jsx), which powers the compact "Trade Score" widget and
+// whose 'Discipline' axis is read elsewhere (computeRiskBreakdown) — this
+// function never touches that one, so nothing else can regress.
+//
+// Axes, in the exact order the radar renders them (top, clockwise):
+// Win Rate → Risk/Reward → Consistency → Max Drawdown → Profitability → Recovery
+//
+// 'Max Drawdown' scores how SMALL the worst peak-to-trough decline was.
+// 'Recovery' is a distinct signal: how FAST the equity curve climbs back to
+// a prior peak after a drawdown (trades-to-recover), not just its size —
+// two accounts with the same max drawdown can recover at very different
+// speeds, and that's a meaningfully different behavioral trait.
+export function computeTradoAiScore(trades = [], curve = []) {
+  const closed = trades.filter(t => t.status === 'closed' && t.pnl != null)
+
+  const AXIS_META = [
+    { dimension: 'Win Rate',      color: '#F97316', icon: 'trendingUp',   help: 'Share of closed trades that closed in profit.' },
+    { dimension: 'Risk/Reward',   color: '#22C55E', icon: 'target',       help: 'Average win size vs. average loss size. A 3:1 ratio scores 100.' },
+    { dimension: 'Consistency',   color: '#22D3EE', icon: 'zap',          help: "How steady your trade-to-trade P&L is — big swings score lower." },
+    { dimension: 'Max Drawdown',  color: '#F43F5E', icon: 'trendingDown', help: 'How small your worst peak-to-trough equity decline has been.' },
+    { dimension: 'Profitability', color: '#3B82F6', icon: 'wallet',       help: 'Gross profit vs. gross loss (profit factor). A factor of 3.0 scores 100.' },
+    { dimension: 'Recovery',      color: '#22C55E', icon: 'heart',        help: 'How quickly your equity climbs back to a prior peak after a drawdown.' },
+  ]
+
+  if (closed.length === 0) {
+    return {
+      overall: 0, level: 'No Data', levelColor: 'var(--text-muted)',
+      axes: AXIS_META.map(a => ({ ...a, value: 0 })),
+      maxDrawdownPct: 0,
+    }
+  }
+
+  const wins   = closed.filter(t => t.pnl > 0)
+  const losses = closed.filter(t => t.pnl < 0)
+  const winRate = (wins.length / closed.length) * 100
+
+  const avgWin  = wins.length   ? wins.reduce((s, t) => s + t.pnl, 0) / wins.length   : 0
+  const avgLoss = losses.length ? losses.reduce((s, t) => s + t.pnl, 0) / losses.length : 0
+  const grossProfit = wins.reduce((s, t) => s + t.pnl, 0)
+  const grossLoss   = Math.abs(losses.reduce((s, t) => s + t.pnl, 0))
+  const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : (grossProfit > 0 ? 3 : 0)
+
+  const riskReward    = clamp((avgWin / (Math.abs(avgLoss) || 1)) / 3 * 100)
+  const profitability = clamp(profitFactor / 3 * 100)
+
+  const pnls = closed.map(t => t.pnl)
+  const meanPnl    = pnls.reduce((a, b) => a + b, 0) / pnls.length
+  const meanAbsPnl = pnls.reduce((s, v) => s + Math.abs(v), 0) / pnls.length || 1
+  const variance    = pnls.reduce((s, v) => s + Math.pow(v - meanPnl, 2), 0) / pnls.length
+  const consistency = clamp(100 - (Math.sqrt(variance) / meanAbsPnl) * 25)
+
+  // Max Drawdown — 100 = no drawdown at all; scales down with drawdown size
+  let maxDrawdownScore = 100, maxDrawdownPct = 0
+  if (curve.length > 1) {
+    let peak = -Infinity, maxDD = 0
+    curve.forEach(pt => {
+      if (pt.pnl > peak) peak = pt.pnl
+      const dd = peak - pt.pnl
+      if (dd > maxDD) maxDD = dd
+    })
+    maxDrawdownPct = peak > 0 ? (maxDD / peak) * 100 : (maxDD > 0 ? 100 : 0)
+    maxDrawdownScore = clamp(100 - maxDrawdownPct)
+  }
+
+  // Recovery — average trades-to-recover from a drawdown back to its prior
+  // peak; an account still deep in an unrecovered drawdown is scored on
+  // that open span too, so it can't hide behind past fast recoveries.
+  let recoveryScore = 100
+  if (curve.length > 2) {
+    let peak = curve[0].pnl, ddStart = -1
+    const spans = []
+    curve.forEach((pt, i) => {
+      if (pt.pnl >= peak) {
+        if (ddStart !== -1) { spans.push(i - ddStart); ddStart = -1 }
+        peak = pt.pnl
+      } else if (ddStart === -1) {
+        ddStart = i
+      }
+    })
+    if (spans.length) {
+      const avgSpan = spans.reduce((a, b) => a + b, 0) / spans.length
+      recoveryScore = clamp(100 - (avgSpan / 40) * 100)
+    }
+    if (ddStart !== -1) {
+      const openSpan = curve.length - 1 - ddStart
+      recoveryScore = Math.min(recoveryScore, clamp(100 - (openSpan / 40) * 100))
+    }
+  }
+
+  const values = [winRate, riskReward, consistency, maxDrawdownScore, profitability, recoveryScore]
+  const axes = AXIS_META.map((meta, i) => ({ ...meta, value: Math.round(clamp(values[i])) }))
+  const overall = Math.round(axes.reduce((s, a) => s + a.value, 0) / axes.length)
+
+  let level, levelColor
+  if (overall >= 85)      { level = 'Elite';        levelColor = '#22C55E' }
+  else if (overall >= 70) { level = 'Advanced';     levelColor = '#22D3EE' }
+  else if (overall >= 55) { level = 'Intermediate'; levelColor = '#3B82F6' }
+  else if (overall >= 35) { level = 'Developing';   levelColor = '#F59E0B' }
+  else                    { level = 'Beginner';     levelColor = '#EF4444' }
+
+  return { overall, level, levelColor, axes, maxDrawdownPct }
+}

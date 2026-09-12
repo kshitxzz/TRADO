@@ -9,10 +9,12 @@ import { LineChart, Line, BarChart, Bar, Cell, XAxis, YAxis, CartesianGrid, Refe
 import PageWrapper from '../components/layout/PageWrapper'
 import RollingNumber from '../components/ui/RollingNumber'
 import TradeScoreRadar, { computeTradeScore, TradeScoreGrid } from '../components/charts/TradeScoreRadar'
+import TradoAiScoreCard from '../components/charts/TradoAiScoreCard'
 import TradingHeatmap, { pickHeatmapYear } from '../components/charts/TradingHeatmap'
 import { useAuth } from '../hooks/useAuth'
 import { useTrades } from '../hooks/useTrades'
 import { computeStats, buildEquityCurve, getTodayPnl, getMonthStats, formatPnl, pnlColor, greeting } from '../lib/utils'
+import { computeTradoAiScore } from '../lib/analytics'
 import { checkAndFireCoachAlerts } from '../lib/coachAlertRunner'
 
 // ─── Weekday ordering helpers for the P&L by Day chart (trading week first) ──
@@ -146,6 +148,7 @@ export default function Dashboard() {
 
   // ── Trade Score (6-axis radar + overall score) ───────────────────────────
   const tradeScore = useMemo(() => computeTradeScore(trades, curve), [trades, curve])
+  const tradoAiScore = useMemo(() => computeTradoAiScore(trades, curve), [trades, curve])
   const heatmapYear = useMemo(() => pickHeatmapYear(trades), [trades])
   const yearTradeCount = useMemo(() =>
     closedTrades.filter(t => new Date(t.closed_at).getFullYear() === heatmapYear).length,
@@ -645,6 +648,11 @@ export default function Dashboard() {
             </p>
           </div>
         </div>
+      </div>
+
+      {/* ── Row 5: Trado AI — full score breakdown + AI-generated tips ─────── */}
+      <div className="mt-4">
+        <TradoAiScoreCard score={tradoAiScore} trades={closedTrades} backendUrl={backendUrl} />
       </div>
 
       {/* Floating help */}
