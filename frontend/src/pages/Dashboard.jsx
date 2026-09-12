@@ -10,11 +10,19 @@ import PageWrapper from '../components/layout/PageWrapper'
 import RollingNumber from '../components/ui/RollingNumber'
 import TradeScoreRadar, { computeTradeScore, TradeScoreGrid } from '../components/charts/TradeScoreRadar'
 import TradoAiScoreCard from '../components/charts/TradoAiScoreCard'
+import RecentTradesSection from '../components/dashboard/RecentTradesSection'
+import EquityCurveCard from '../components/dashboard/EquityCurveCard'
+import ProfitDistributionCard from '../components/dashboard/ProfitDistributionCard'
+import PerformanceByTimeCard from '../components/dashboard/PerformanceByTimeCard'
+import SymbolPerformanceCard from '../components/dashboard/SymbolPerformanceCard'
 import TradingHeatmap, { pickHeatmapYear } from '../components/charts/TradingHeatmap'
 import { useAuth } from '../hooks/useAuth'
 import { useTrades } from '../hooks/useTrades'
 import { computeStats, buildEquityCurve, getTodayPnl, getMonthStats, formatPnl, pnlColor, greeting } from '../lib/utils'
-import { computeTradoAiScore } from '../lib/analytics'
+import {
+  computeTradoAiScore, computeSymbolBreakdown, computeEquityCurveStats,
+  computeProfitDistribution, computeHourlyPerformance,
+} from '../lib/analytics'
 import { checkAndFireCoachAlerts } from '../lib/coachAlertRunner'
 
 // ─── Weekday ordering helpers for the P&L by Day chart (trading week first) ──
@@ -149,6 +157,12 @@ export default function Dashboard() {
   // ── Trade Score (6-axis radar + overall score) ───────────────────────────
   const tradeScore = useMemo(() => computeTradeScore(trades, curve), [trades, curve])
   const tradoAiScore = useMemo(() => computeTradoAiScore(trades, curve), [trades, curve])
+
+  // ── Data for the sections below the Trado AI card ─────────────────────────
+  const symbolBreakdown = useMemo(() => computeSymbolBreakdown(closedTrades), [closedTrades])
+  const equityStats = useMemo(() => computeEquityCurveStats(trades, currentBalance), [trades, currentBalance])
+  const profitDistribution = useMemo(() => computeProfitDistribution(trades), [trades])
+  const hourlyPerformance = useMemo(() => computeHourlyPerformance(trades), [trades])
   const heatmapYear = useMemo(() => pickHeatmapYear(trades), [trades])
   const yearTradeCount = useMemo(() =>
     closedTrades.filter(t => new Date(t.closed_at).getFullYear() === heatmapYear).length,
@@ -653,6 +667,27 @@ export default function Dashboard() {
       {/* ── Row 5: Trado AI — full score breakdown + AI-generated tips ─────── */}
       <div className="mt-4">
         <TradoAiScoreCard score={tradoAiScore} trades={closedTrades} backendUrl={backendUrl} />
+      </div>
+
+      {/* ── Row 6: Recent Trades + Performance + AI Insights ───────────────── */}
+      <div className="mt-4">
+        <RecentTradesSection closedTrades={closedTrades} stats={stats} />
+      </div>
+
+      {/* ── Row 7: Equity Curve (balance-based, Peak/Max DD/Current/Return) ── */}
+      <div className="mt-4">
+        <EquityCurveCard equity={equityStats} />
+      </div>
+
+      {/* ── Row 8: Profit Distribution + Performance by Time ───────────────── */}
+      <div className="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <ProfitDistributionCard distribution={profitDistribution} />
+        <PerformanceByTimeCard hourly={hourlyPerformance} />
+      </div>
+
+      {/* ── Row 9: Symbol Performance ───────────────────────────────────────── */}
+      <div className="mt-4">
+        <SymbolPerformanceCard bySymbol={symbolBreakdown} />
       </div>
 
       {/* Floating help */}

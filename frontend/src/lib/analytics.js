@@ -1763,3 +1763,99 @@ export function computeTradoAiScore(trades = [], curve = []) {
 
   return { overall, level, levelColor, axes, maxDrawdownPct }
 }
+
+// ── Equity Curve (balance-based) — powers the big "Equity Curve" dashboard
+// card: Peak / Max DD / Current / Total Return, all measured against the
+// account's real starting balance, not just cumulative P&L. Max DD here is
+// a % of peak BALANCE (the number traders actually mean by "drawdown"),
+// which is a different — and larger — denominator than a P&L-only curve.
+export function computeEquityCurveStats(trades = [], currentBalance = 0) {
+  const curve = buildEquityCurve(trades)
+  const lastCumPnl = curve.length ? curve[curve.length - 1].pnl : 0
+  const initialBalance = currentBalance - lastCumPnl
+
+  const points = curve.map(pt => ({ date: pt.date, balance: initialBalance + pt.pnl }))
+
+  if (!points.length) {
+    return { points: [], initialBalance, peak: initialBalance, current: initialBalance, maxDrawdownPct: 0, totalReturnPct: 0 }
+  }
+
+  let peak = initialBalance, maxDD = 0
+  points.forEach(pt => {
+    if (pt.balance > peak) peak = pt.balance
+    const dd = peak - pt.balance
+    if (dd > maxDD) maxDD = dd
+  })
+  const maxDrawdownPct = peak > 0 ? (maxDD / peak) * 100 : 0
+  const current = points[points.length - 1].balance
+  const totalReturnPct = initialBalance > 0 ? ((current - initialBalance) / initialBalance) * 100 : 0
+
+  return { points, initialBalance, peak, current, maxDrawdownPct, totalReturnPct }
+}
+
+// ── Profit Distribution — categorizes every closed trade into one of four
+// buckets by count, split around the trader's own avgWin/avgLoss (so "big"
+// vs "small" is relative to their actual behavior, not an arbitrary $ cutoff).
+// This is deliberately by TRADE COUNT, not dollar size, so the donut answers
+// "how often do I..." rather than duplicating the $ figures shown below it.
+export function computeProfitDistribution(trades = []) {
+  const closed = trades.filter(t => t.status === 'closed' && t.pnl != null)
+  const wins   = closed.filter(t => t.pnl > 0)
+  const losses = closed.filter(t => t.pnl < 0)
+
+  const avgWin  = wins.length   ? wins.reduce((s, t) => s + t.pnl, 0) / wins.length   : 0
+  const avgLoss = losses.length ? losses.reduce((s, t) => s + t.pnl, 0) / losses.length : 0
+
+  const bigWinCount   = wins.filter(t => t.pnl >= avgWin).length
+  const smallWinCount = wins.length - bigWinCount
+  const bigLossCount   = losses.filter(t => Math.abs(t.pnl) >= Math.abs(avgLoss)).length
+  const smallLossCount = losses.length - bigLossCount
+
+  const total = closed.length || 1
+  const segments = [
+    { key: 'smallWin',  label: 'Small Wins',   count: smallWinCount,  pct: (smallWinCount  / total) * 100, color: '#2DD4BF' },
+    { key: 'bigWin',    label: 'Big Wins',     count: bigWinCount,    pct: (bigWinCount    / total) * 100, color: '#22C55E' },
+    { key: 'bigLoss',   label: 'Big Losses',   count: bigLossCount,   pct: (bigLossCount   / total) * 100, color: '#EF4444' },
+    { key: 'smallLoss', label: 'Small Losses', count: smallLossCount, pct: (smallLossCount / total) * 100, color: '#F97316' },
+  ].filter(s => s.count > 0)
+
+  const netPnl = closed.reduce((s, t) => s + t.pnl, 0)
+  const bestTrade  = closed.length ? Math.max(...closed.map(t => t.pnl)) : 0
+  const worstTrade = closed.length ? Math.min(...closed.map(t => t.pnl)) : 0
+
+  return { segments, netPnl, bestTrade, worstTrade, avgWin, avgLoss, tradeCount: closed.length }
+}
+
+// ── Performance by Time — pure hour-of-day aggregation (0–23), independent
+// of which weekday it fell on (see computeWeekdayHourBreakdown for the
+// day+hour version used elsewhere). Best/Worst Hour require at least 2
+// trades in that hour so a single lucky/unlucky trade can't crown an hour.
+export function computeHourlyPerformance(trades = []) {
+  const closed = trades.filter(t => t.status === 'closed' && t.pnl != null && t.closed_at)
+  const buckets = Array.from({ length: 24 }, (_, h) => ({
+    hour: h, hourLabel: `${String(h).padStart(2, '0')}:00`, pnl: 0, count: 0,
+  }))
+
+  closed.forEach(t => {
+    const h = new Date(t.closed_at).getHours()
+    buckets[h].pnl += t.pnl
+    buckets[h].count++
+  })
+
+  const active  = buckets.filter(b => b.count > 0).map(b => ({ ...b, avgPnl: b.pnl / b.count }))
+  const eligible = active.filter(b => b.count >= 2)
+  const pool = eligible.length ? eligible : active
+
+  const bestHour       = pool.length   ? pool.reduce((a, b) => (b.avgPnl > a.avgPnl ? b : a))     : null
+  const worstHour      = pool.length   ? pool.reduce((a, b) => (b.avgPnl < a.avgPnl ? b : a))     : null
+  const mostActiveHour = active.length ? active.reduce((a, b) => (b.count  > a.count  ? b : a))   : null
+
+  let insight = null
+  if (worstHour && worstHour.avgPnl < 0) {
+    insight = { tone: 'warning', title: `Consider avoiding trades at ${worstHour.hourLabel}`, detail: 'You have a negative average P&L during this hour.' }
+  } else if (bestHour && bestHour.avgPnl > 0) {
+    insight = { tone: 'positive', title: `${bestHour.hourLabel} is your strongest hour`, detail: `Averaging ${formatPnl(bestHour.avgPnl)} per trade — consider prioritizing this window.` }
+  }
+
+  return { buckets, bestHour, worstHour, mostActiveHour, insight }
+}

@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useLocation } from 'react-router-dom'
 import { Clock, Link2, Sparkles, Sunrise, Sun, Moon } from 'lucide-react'
 import { AICard, formatPnl, pnlColor } from './shared'
 import SmartReportsHub from './SmartReportsHub'
@@ -7,12 +8,15 @@ const SESSION_ICON = { Asian: Sunrise, London: Sun, 'New York': Moon }
 const WEEKDAYS_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
 export default function PatternsTimingTab({ computed, ai, trades, accountBalance, accountId, period, custom }) {
-  const [sub, setSub] = useState('time')
+  const location = useLocation()
   const tabs = [
     { key: 'time', label: 'Time Insights', icon: Clock },
     { key: 'correlations', label: 'Correlations', icon: Link2 },
     { key: 'smart', label: 'Smart Insights', icon: Sparkles },
   ]
+  const [sub, setSub] = useState(
+    location.state?.subtab && tabs.some(t => t.key === location.state.subtab) ? location.state.subtab : 'time'
+  )
 
   return (
     <div>
