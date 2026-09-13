@@ -706,33 +706,62 @@ function SymbolPerformanceRow({ data }) {
 const HEATMAP_DAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun']
 const HEATMAP_HOURS = Array.from({ length: 24 }, (_, h) => h)
 
+// Cell color intensity (fill opacity + glow strength) scales with how many
+// trades happened in that day/hour slot relative to the busiest slot on the
+// grid — a quiet 1-trade hour glows faintly, the busiest hour glows bright.
+// This is what gives the heatmap its "neon" depth instead of flat blocks.
+function heatmapCellStyle(cell, maxCount) {
+  if (!cell) {
+    return {
+      background: 'rgba(255,255,255,0.025)',
+      border: '1px solid rgba(255,255,255,0.045)',
+      boxShadow: 'none',
+      color: 'transparent',
+    }
+  }
+  const isProfit = cell.pnl >= 0
+  const rgb = isProfit ? '34,197,94' : '239,68,68'
+  const ratio = maxCount > 0 ? cell.count / maxCount : 1
+  const intensity = 0.4 + 0.6 * Math.sqrt(Math.max(0, Math.min(1, ratio))) // sqrt so mid-range counts still read as vivid
+  return {
+    background: `rgba(${rgb}, ${intensity.toFixed(2)})`,
+    border: `1px solid rgba(${rgb}, ${Math.min(1, intensity + 0.12).toFixed(2)})`,
+    boxShadow: `0 0 ${(8 + intensity * 8).toFixed(0)}px ${(intensity * 2).toFixed(1)}px rgba(${rgb}, ${(intensity * 0.6).toFixed(2)})`,
+    color: '#fff',
+  }
+}
+
 function TradingHeatmapCard({ grid }) {
-  const hasAny = Object.keys(grid).length > 0
+  const cells = Object.values(grid)
+  const hasAny = cells.length > 0
+  const maxCount = hasAny ? Math.max(...cells.map(c => c.count)) : 0
+
   return (
     <div className="glass-card p-5">
       <CardHeader icon={Grid3x3} iconBg="rgba(59,130,246,0.15)" iconColor="#60A5FA" title="Trading Heatmap" subtitle="(Day x Hour)" />
       {!hasAny ? <EmptyState /> : (
         <div className="mt-4 overflow-x-auto">
-          <div style={{ minWidth: 820 }}>
-            <div className="flex gap-1 mb-1">
+          <div style={{ minWidth: 980 }}>
+            <div className="flex gap-1.5 mb-2">
               <div style={{ width: 40, flexShrink: 0 }} />
               {HEATMAP_HOURS.map(h => (
-                <div key={h} className="flex-1 text-center text-[9px]" style={{ color:'var(--text-muted)', minWidth: 28 }}>
+                <div key={h} className="flex-1 text-center text-[10px] font-medium" style={{ color:'var(--text-muted)', minWidth: 34 }}>
                   {pad(h)}
                 </div>
               ))}
             </div>
-            <div className="space-y-1">
+            <div className="space-y-1.5">
               {HEATMAP_DAYS.map(day => (
-                <div key={day} className="flex gap-1 items-center">
-                  <div className="text-[10px] font-semibold" style={{ width: 40, flexShrink: 0, color:'var(--text-muted)' }}>{day}</div>
+                <div key={day} className="flex gap-1.5 items-center">
+                  <div className="text-[11px] font-semibold" style={{ width: 40, flexShrink: 0, color:'var(--text-muted)' }}>{day}</div>
                   {HEATMAP_HOURS.map(h => {
                     const cell = grid[`${day}|${h}`]
-                    const bg = !cell ? 'rgba(255,255,255,0.03)' : cell.pnl >= 0 ? 'rgba(34,197,94,0.78)' : 'rgba(239,68,68,0.78)'
+                    const style = heatmapCellStyle(cell, maxCount)
                     return (
-                      <div key={h} title={cell ? `${day} ${pad(h)}:00 — ${fmtFull(cell.pnl)} (${cell.count} trades)` : `${day} ${pad(h)}:00 — no trades`}
-                           className="flex-1 rounded-md flex items-center justify-center text-[10px] font-bold transition-transform hover:scale-110"
-                           style={{ background: bg, color: cell ? '#0b0a16' : 'transparent', minWidth: 28, height: 26 }}>
+                      <div key={h}
+                           title={cell ? `${day} ${pad(h)}:00 — ${fmtFull(cell.pnl)} (${cell.count} trade${cell.count !== 1 ? 's' : ''})` : `${day} ${pad(h)}:00 — no trades`}
+                           className="flex-1 rounded-lg flex items-center justify-center text-[11px] font-bold transition-transform duration-150 hover:scale-[1.12] hover:z-10"
+                           style={{ ...style, minWidth: 34, height: 30 }}>
                         {cell ? cell.count : ''}
                       </div>
                     )
@@ -742,15 +771,15 @@ function TradingHeatmapCard({ grid }) {
             </div>
             <div className="flex items-center gap-5 mt-4">
               <div className="flex items-center gap-1.5">
-                <div className="w-3 h-3 rounded" style={{ background:'rgba(239,68,68,0.78)' }} />
+                <div className="w-3 h-3 rounded" style={{ background:'#EF4444', boxShadow:'0 0 8px 1px rgba(239,68,68,0.5)' }} />
                 <span className="text-xs" style={{ color:'var(--text-muted)' }}>Loss</span>
               </div>
               <div className="flex items-center gap-1.5">
-                <div className="w-3 h-3 rounded" style={{ background:'rgba(255,255,255,0.06)' }} />
+                <div className="w-3 h-3 rounded" style={{ background:'rgba(255,255,255,0.06)', border:'1px solid rgba(255,255,255,0.08)' }} />
                 <span className="text-xs" style={{ color:'var(--text-muted)' }}>No trades</span>
               </div>
               <div className="flex items-center gap-1.5">
-                <div className="w-3 h-3 rounded" style={{ background:'rgba(34,197,94,0.78)' }} />
+                <div className="w-3 h-3 rounded" style={{ background:'#22C55E', boxShadow:'0 0 8px 1px rgba(34,197,94,0.5)' }} />
                 <span className="text-xs" style={{ color:'var(--text-muted)' }}>Profit</span>
               </div>
             </div>
