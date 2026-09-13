@@ -1,24 +1,33 @@
 import { useMemo, useState, useEffect } from 'react'
 import {
-  AreaChart, Area, BarChart, Bar,
+  AreaChart, Area, BarChart, Bar, LineChart, Line, PieChart, Pie,
   XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine,
   ResponsiveContainer, Cell,
 } from 'recharts'
 import PageWrapper from '../../components/layout/PageWrapper'
+import AnimatedNumber from '../../components/ui/AnimatedNumber'
+import InfoTip from '../../components/ui/InfoTip'
 import { useAuth } from '../../hooks/useAuth'
 import { useTrades } from '../../hooks/useTrades'
 import { computeStats, buildEquityCurve, pnlColor } from '../../lib/utils'
 import {
-  TrendingUp, TrendingDown, Clock, BarChart2, Target, Zap,
-  Award, ChevronLeft, ChevronRight, Calendar, X,
-  DollarSign, Activity, Scale, LayoutGrid, CheckCircle, LineChart,
-  ClipboardList,
+  computeAssetClassBreakdown, rankHourlyPerformance, computeDrawdownSeries,
+  computeStreakTracking, computeSymbolBreakdown, computeTradingHeatmap,
+  computeRiskAdjustedMetrics, sharpeRatingLabel, sortinoRatingLabel, kellyRatingLabel,
+  computeAvgHoldTimeByOutcome, computePnlHistogram, computeRollingPerformance,
+  computeCalendarPnl,
+} from '../../lib/analytics'
+import {
+  TrendingUp, TrendingDown, Clock, BarChart2, Target, Award, ChevronLeft, ChevronRight,
+  Calendar, X, DollarSign, Activity, Scale, ClipboardList, Flame, PieChart as PieChartIcon,
+  Grid3x3,
 } from 'lucide-react'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const MONTHS = ['January','February','March','April','May','June',
                 'July','August','September','October','November','December']
 const MON_S  = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+const DOW    = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat']
 const pad    = n => String(n).padStart(2,'0')
 
 function fmtK(n, alwaysSign = false) {
@@ -32,10 +41,14 @@ function fmtFull(n) {
   if (n == null || isNaN(n)) return '$0.00'
   return (n >= 0 ? '+$' : '-$') + Math.abs(n).toFixed(2)
 }
-function fmtDate(str) {
+function fmtShortDate(str) {
   if (!str) return ''
-  const d = new Date(str)
+  const d = new Date(str + 'T00:00:00')
   return `${MON_S[d.getMonth()]} ${d.getDate()}`
+}
+function fmtMin(min) {
+  if (min == null || isNaN(min)) return '0 min'
+  return `${Math.round(min)} min`
 }
 function pfLabel(pf) {
   if (!isFinite(pf) || pf > 3) return 'Excellent'
@@ -45,48 +58,101 @@ function pfLabel(pf) {
   return 'Below 1'
 }
 
+// ─── Shared bits ──────────────────────────────────────────────────────────────
+function EmptyState({ text = 'Not enough data yet' }) {
+  return (
+    <div className="flex items-center justify-center" style={{ minHeight: 160 }}>
+      <p className="text-sm text-center px-4" style={{ color: 'var(--text-muted)' }}>{text}</p>
+    </div>
+  )
+}
+
+function CardHeader({ icon: Icon, iconBg, iconColor, title, subtitle, info, right }) {
+  return (
+    <div className="flex items-start justify-between gap-3 flex-wrap mb-1">
+      <div className="flex items-center gap-2.5">
+        <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: iconBg }}>
+          <Icon size={15} style={{ color: iconColor }} />
+        </div>
+        <div>
+          <div className="flex items-center gap-1.5">
+            <h3 className="font-bold text-[15px]" style={{ color: 'var(--text-primary)' }}>{title}</h3>
+            {info && <InfoTip text={info} />}
+          </div>
+          {subtitle && <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>{subtitle}</p>}
+        </div>
+      </div>
+      {right}
+    </div>
+  )
+}
+
+function MiniStat({ label, value, color }) {
+  return (
+    <div className="rounded-xl p-3 text-center" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.05)' }}>
+      <p className="text-[9px] font-bold uppercase tracking-wider mb-1" style={{ color: 'var(--text-muted)' }}>{label}</p>
+      <p className="text-sm font-bold" style={{ color }}>{value}</p>
+    </div>
+  )
+}
+
+function ChartTooltip({ title, value, valueColor, sub }) {
+  return (
+    <div style={{ background: '#181722', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10, padding: '8px 14px', fontSize: 12 }}>
+      <p style={{ color: 'rgba(255,255,255,0.4)', marginBottom: 4 }}>{title}</p>
+      <p style={{ color: valueColor, fontWeight: 700 }}>{value}</p>
+      {sub && <p style={{ color: 'rgba(255,255,255,0.3)', fontSize: 10, marginTop: 2 }}>{sub}</p>}
+    </div>
+  )
+}
+
 // ─── Hero Stats Row ───────────────────────────────────────────────────────────
+function GlowBlob({ color }) {
+  return (
+    <div className="absolute rounded-full pointer-events-none" style={{
+      width: 150, height: 150, right: -45, top: -55,
+      background: `radial-gradient(circle, ${color} 0%, transparent 72%)`,
+    }} />
+  )
+}
+
 function HeroStats({ stats, wins, losses, closed, expectancy }) {
   const cards = [
     {
-      icon: Target,
-      iconBg: 'rgba(139,92,246,0.2)', iconColor: '#8B5CF6',
-      badge: 'Key Metric',
-      label: 'WIN RATE',
-      value: `${stats.winRate.toFixed(1)}%`,
+      icon: Target, iconBg: 'rgba(139,92,246,0.2)', iconColor: '#8B5CF6', glow: 'rgba(139,92,246,0.3)',
+      badge: 'Key Metric', label: 'WIN RATE',
       valueColor: stats.winRate >= 50 ? 'var(--positive-green)' : 'var(--text-primary)',
+      render: () => <AnimatedNumber value={stats.winRate} decimals={1} suffix="%" />,
       sub: `${wins.length}W / ${losses.length}L`,
     },
     {
-      icon: TrendingUp,
-      iconBg: 'rgba(34,197,94,0.18)', iconColor: '#22C55E',
+      icon: TrendingUp, iconBg: 'rgba(34,197,94,0.18)', iconColor: '#22C55E', glow: 'rgba(34,197,94,0.28)',
       label: 'PROFIT FACTOR',
-      value: stats.profitFactor > 99 ? '∞' : stats.profitFactor.toFixed(2),
       valueColor: stats.profitFactor >= 1.5 ? 'var(--positive-green)' : stats.profitFactor >= 1 ? '#F59E0B' : 'var(--negative-red)',
+      render: () => stats.profitFactor > 99 ? '∞' : <AnimatedNumber value={stats.profitFactor} decimals={2} />,
       sub: pfLabel(stats.profitFactor),
     },
     {
-      icon: Activity,
-      iconBg: 'rgba(59,130,246,0.18)', iconColor: '#3B82F6',
+      icon: Activity, iconBg: 'rgba(59,130,246,0.18)', iconColor: '#3B82F6', glow: 'rgba(59,130,246,0.28)',
       label: 'EXPECTANCY',
-      value: fmtFull(expectancy),
       valueColor: expectancy >= 0 ? 'var(--positive-green)' : 'var(--negative-red)',
+      render: () => <AnimatedNumber value={expectancy} formatter={fmtFull} />,
       sub: 'Per trade average',
     },
     {
-      icon: DollarSign,
-      iconBg: 'rgba(34,197,94,0.18)', iconColor: '#22C55E',
+      icon: DollarSign, iconBg: 'rgba(34,197,94,0.18)', iconColor: '#22C55E', glow: 'rgba(34,197,94,0.28)',
       label: 'TOTAL P&L',
-      value: fmtFull(stats.totalPnl),
       valueColor: pnlColor(stats.totalPnl),
+      render: () => <AnimatedNumber value={stats.totalPnl} formatter={fmtFull} />,
       sub: `${closed.length} trades`,
     },
   ]
   return (
     <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
       {cards.map((c) => (
-        <div key={c.label} className="glass-card p-5">
-          <div className="flex items-start justify-between mb-3">
+        <div key={c.label} className="glass-card p-5 relative overflow-hidden">
+          <GlowBlob color={c.glow} />
+          <div className="relative flex items-start justify-between mb-3">
             <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
                  style={{ background: c.iconBg }}>
               <c.icon size={18} style={{ color: c.iconColor }} />
@@ -99,10 +165,10 @@ function HeroStats({ stats, wins, losses, closed, expectancy }) {
               </span>
             )}
           </div>
-          <p className="text-[10px] font-bold uppercase tracking-widest mb-1.5"
+          <p className="relative text-[10px] font-bold uppercase tracking-widest mb-1.5"
              style={{ color:'var(--text-muted)' }}>{c.label}</p>
-          <p className="text-2xl font-bold leading-tight mb-1" style={{ color: c.valueColor }}>{c.value}</p>
-          <p className="text-xs" style={{ color:'var(--text-muted)' }}>{c.sub}</p>
+          <p className="relative text-2xl font-bold leading-tight mb-1" style={{ color: c.valueColor }}>{c.render()}</p>
+          <p className="relative text-xs" style={{ color:'var(--text-muted)' }}>{c.sub}</p>
         </div>
       ))}
     </div>
@@ -111,337 +177,671 @@ function HeroStats({ stats, wins, losses, closed, expectancy }) {
 
 // ─── Secondary Stats Row ──────────────────────────────────────────────────────
 function SecondaryStats({ stats }) {
-  const avgRR = stats.avgLoss !== 0
-    ? `${(Math.abs(stats.avgWin) / Math.abs(stats.avgLoss)).toFixed(2)}:1`
-    : '∞'
+  const avgRR = stats.avgLoss !== 0 ? (Math.abs(stats.avgWin) / Math.abs(stats.avgLoss)) : null
   const rows = [
-    { icon: TrendingUp,   iconColor:'#22C55E', label:'AVG WIN',
-      value:fmtFull(stats.avgWin),       color:'var(--positive-green)' },
-    { icon: TrendingDown, iconColor:'#EF4444', label:'AVG LOSS',
-      value:fmtFull(stats.avgLoss), color:'var(--negative-red)' },
-    { icon: Award,        iconColor:'#22C55E', label:'LARGEST WIN',
-      value:fmtFull(Math.max(0, stats.bestTrade)), color:'var(--positive-green)' },
-    { icon: TrendingDown, iconColor:'#EF4444', label:'LARGEST LOSS',
-      value:fmtFull(Math.min(0, stats.worstTrade)), color:'var(--negative-red)' },
-    { icon: Scale, iconColor:'rgba(255,255,255,0.4)', label:'AVG R:R',
-      value:avgRR, color:'var(--text-primary)' },
+    { icon: TrendingUp,   iconColor:'#22C55E', label:'AVG WIN',      value: stats.avgWin,                   color:'var(--positive-green)' },
+    { icon: TrendingDown, iconColor:'#EF4444', label:'AVG LOSS',     value: stats.avgLoss,                  color:'var(--negative-red)' },
+    { icon: Award,        iconColor:'#22C55E', label:'LARGEST WIN',  value: Math.max(0, stats.bestTrade),   color:'var(--positive-green)' },
+    { icon: TrendingDown, iconColor:'#EF4444', label:'LARGEST LOSS', value: Math.min(0, stats.worstTrade),  color:'var(--negative-red)' },
   ]
   return (
     <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
       {rows.map(r => (
         <div key={r.label} className="glass-card px-4 py-3.5 flex items-center gap-3">
-          <div className="flex-shrink-0">
-            <r.icon size={15} style={{ color: r.iconColor }} />
-          </div>
+          <r.icon size={15} style={{ color: r.iconColor }} className="flex-shrink-0" />
           <div>
             <p className="text-[10px] font-bold uppercase tracking-wider mb-0.5"
                style={{ color:'var(--text-muted)' }}>{r.label}</p>
-            <p className="text-sm font-bold" style={{ color: r.color }}>{r.value}</p>
+            <p className="text-sm font-bold" style={{ color: r.color }}>
+              <AnimatedNumber value={r.value} formatter={fmtFull} />
+            </p>
           </div>
         </div>
       ))}
+      <div className="glass-card px-4 py-3.5 flex items-center gap-3">
+        <Scale size={15} style={{ color:'rgba(255,255,255,0.4)' }} className="flex-shrink-0" />
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-wider mb-0.5" style={{ color:'var(--text-muted)' }}>AVG R:R</p>
+          <p className="text-sm font-bold" style={{ color:'var(--text-primary)' }}>
+            {avgRR == null ? '∞' : <><AnimatedNumber value={avgRR} decimals={2} />:1</>}
+          </p>
+        </div>
+      </div>
     </div>
   )
 }
 
-// ─── Animated Equity Curve ────────────────────────────────────────────────────
+// ─── P&L by period (Year / Month / Week, with navigation) ────────────────────
+function PnlPeriodCard({ closed }) {
+  const [view, setView] = useState('month')
+  const [refDate, setRefDate] = useState(new Date())
 
-const PERIODS = ['1W','1M','3M','6M','ALL']
-const DOW     = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat']
-const padN    = n => String(n).padStart(2,'0')
-const toStr   = d => `${d.getFullYear()}-${padN(d.getMonth()+1)}-${padN(d.getDate())}`
+  const { buckets, total, title } = useMemo(
+    () => computeCalendarPnl(closed, view, refDate),
+    [closed, view, refDate]
+  )
+  const hasAny = buckets.some(b => b.count > 0)
 
-// ─── Tooltip ──────────────────────────────────────────────────────────────────
-function EquityTooltip({ active, payload }) {
-  if (!active || !payload?.length) return null
-  const item  = payload[0]?.payload
-  if (!item) return null
-  const pnl   = item.pnl ?? 0
-  const isPos = pnl >= 0
-  const color = isPos ? '#22C55E' : '#EF4444'
-  const d     = new Date(item.date + 'T00:00:00')
+  function nav(dir) {
+    setRefDate(d => {
+      const nd = new Date(d)
+      if (view === 'month') nd.setMonth(nd.getMonth() + dir)
+      else if (view === 'week') nd.setDate(nd.getDate() + dir * 7)
+      else nd.setFullYear(nd.getFullYear() + dir)
+      return nd
+    })
+  }
 
   return (
+    <div className="glass-card p-5 flex flex-col">
+      <div className="flex items-center justify-between flex-wrap gap-3 mb-4">
+        <div className="flex items-center gap-2.5">
+          <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background:'rgba(139,92,246,0.18)' }}>
+            <BarChart2 size={15} style={{ color:'#A78BFA' }} />
+          </div>
+          <h3 className="font-bold text-[15px]" style={{ color:'var(--text-primary)' }}>P&L</h3>
+        </div>
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="flex items-center gap-0.5 p-1 rounded-lg" style={{ background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.07)' }}>
+            {['Year','Month','Week'].map(v => {
+              const key = v.toLowerCase()
+              const active = view === key
+              return (
+                <button key={v} onClick={() => setView(key)}
+                        className="px-2.5 py-1 rounded-md text-xs font-semibold transition-all"
+                        style={{ background: active ? 'rgba(139,92,246,0.3)' : 'transparent',
+                                 color: active ? '#C4B5FD' : 'rgba(255,255,255,0.4)' }}>
+                  {v}
+                </button>
+              )
+            })}
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={() => nav(-1)} className="w-6 h-6 rounded-md flex items-center justify-center hover:bg-white/5 transition-colors" style={{ color:'var(--text-muted)' }}>
+              <ChevronLeft size={13} />
+            </button>
+            <div className="text-center" style={{ minWidth: 118 }}>
+              <p className="text-sm font-bold" style={{ color:'var(--text-primary)' }}>{title}</p>
+              <p className="text-xs font-semibold" style={{ color: total >= 0 ? 'var(--positive-green)' : 'var(--negative-red)' }}>{fmtK(total, true)}</p>
+            </div>
+            <button onClick={() => nav(1)} className="w-6 h-6 rounded-md flex items-center justify-center hover:bg-white/5 transition-colors" style={{ color:'var(--text-muted)' }}>
+              <ChevronRight size={13} />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {!hasAny ? <EmptyState text="No trades in this period" /> : (
+        <div style={{ height: 230 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={buckets} margin={{ top: 4, right: 0, left: 0, bottom: 0 }}>
+              <XAxis dataKey="label" tick={{ fill:'rgba(255,255,255,0.35)', fontSize: 10 }} axisLine={false} tickLine={false}
+                     interval={view === 'month' ? 2 : 0} />
+              <YAxis tick={{ fill:'rgba(255,255,255,0.35)', fontSize: 10 }} axisLine={false} tickLine={false} width={54}
+                     tickFormatter={v => fmtK(v)} />
+              <ReferenceLine y={0} stroke="rgba(255,255,255,0.12)" />
+              <Tooltip cursor={{ fill:'rgba(255,255,255,0.04)' }}
+                       content={({ active, payload, label }) => {
+                         if (!active || !payload?.length) return null
+                         const d = payload[0].payload
+                         return <ChartTooltip title={view === 'month' ? `Day ${label}` : label}
+                                               value={fmtFull(d.pnl)} valueColor={d.pnl >= 0 ? '#22C55E' : '#EF4444'}
+                                               sub={`${d.count} trade${d.count !== 1 ? 's' : ''}`} />
+                       }} />
+              <Bar dataKey="pnl" radius={[4,4,4,4]} maxBarSize={view === 'month' ? 18 : 46} isAnimationActive animationDuration={900}>
+                {buckets.map((b, i) => <Cell key={i} fill={b.pnl >= 0 ? '#22C55E' : '#EF4444'} fillOpacity={b.count > 0 ? 0.85 : 0.12} />)}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Win / Loss donut ─────────────────────────────────────────────────────────
+function WinLossCard({ wins, losses }) {
+  const total = wins.length + losses.length
+  const data = [
+    { name: 'Wins',   value: wins.length,   color: '#22C55E' },
+    { name: 'Losses', value: losses.length, color: '#EF4444' },
+  ].filter(d => d.value > 0)
+
+  return (
+    <div className="glass-card p-5 flex flex-col">
+      <div className="flex items-center gap-2.5 mb-2">
+        <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background:'rgba(139,92,246,0.18)' }}>
+          <PieChartIcon size={15} style={{ color:'#A78BFA' }} />
+        </div>
+        <h3 className="font-bold text-[15px]" style={{ color:'var(--text-primary)' }}>Win/Loss</h3>
+      </div>
+      {total === 0 ? <EmptyState /> : (
+        <>
+          <div className="flex-1" style={{ minHeight: 190 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie data={data} dataKey="value" nameKey="name" innerRadius="62%" outerRadius="88%"
+                     startAngle={90} endAngle={-270} paddingAngle={data.length > 1 ? 3 : 0}
+                     isAnimationActive animationDuration={1100} animationEasing="ease-out">
+                  {data.map((d, i) => <Cell key={i} fill={d.color} stroke="none" />)}
+                </Pie>
+                <Tooltip content={({ active, payload }) => {
+                  if (!active || !payload?.length) return null
+                  const d = payload[0]
+                  const pct = total > 0 ? ((d.value / total) * 100).toFixed(1) : 0
+                  return <ChartTooltip title={d.name} value={`${d.value} trades (${pct}%)`} valueColor={d.payload.color} />
+                }} />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+          <div className="flex items-center justify-center gap-5 mt-1">
+            <div className="flex items-center gap-1.5">
+              <div className="w-2.5 h-2.5 rounded-full" style={{ background:'#22C55E' }} />
+              <span className="text-xs" style={{ color:'var(--text-muted)' }}>Wins</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <div className="w-2.5 h-2.5 rounded-full" style={{ background:'#EF4444' }} />
+              <span className="text-xs" style={{ color:'var(--text-muted)' }}>Losses</span>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+// ─── Equity Curve (per closed trade, chronological) ──────────────────────────
+function EquityTooltip({ active, payload }) {
+  if (!active || !payload?.length) return null
+  const item = payload[0]?.payload
+  if (!item) return null
+  const pnl = item.pnl ?? 0
+  const isPos = pnl >= 0
+  const color = isPos ? '#22C55E' : '#EF4444'
+  const d = item.fullDate ? new Date(item.fullDate + 'T00:00:00') : null
+  return (
     <div style={{
-      background: 'rgba(13,12,26,0.97)',
-      border: `1px solid ${isPos ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'}`,
-      borderRadius: 12, padding: '12px 16px', minWidth: 180,
-      boxShadow: `0 16px 48px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.04)`,
-      backdropFilter: 'blur(20px)', fontFamily: 'Poppins, sans-serif',
+      background: 'rgba(13,12,26,0.97)', border: `1px solid ${isPos ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'}`,
+      borderRadius: 12, padding: '12px 16px', minWidth: 170,
+      boxShadow: '0 16px 48px rgba(0,0,0,0.5)',
     }}>
-      <p style={{ color:'rgba(255,255,255,0.4)', fontSize:11, marginBottom:8, fontWeight:500 }}>
-        {DOW[d.getDay()]}, {MON_S[d.getMonth()]} {d.getDate()}, {d.getFullYear()}
+      <p style={{ color:'rgba(255,255,255,0.4)', fontSize: 11, marginBottom: 8, fontWeight: 500 }}>
+        {d ? `${DOW[d.getDay()]}, ${MON_S[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}` : item.label}
       </p>
-      <p style={{ color, fontSize:22, fontWeight:700, letterSpacing:'-0.5px', marginBottom:4 }}>
-        {pnl >= 0 ? '+$' : '-$'}{Math.abs(pnl).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}
+      <p style={{ color, fontSize: 20, fontWeight: 700, letterSpacing: '-0.5px', marginBottom: 4 }}>
+        {fmtFull(pnl)}
       </p>
-      <p style={{ color:'rgba(255,255,255,0.25)', fontSize:10, fontWeight:600, letterSpacing:'0.08em', textTransform:'uppercase' }}>
+      <p style={{ color:'rgba(255,255,255,0.25)', fontSize: 10, fontWeight: 600, letterSpacing:'0.08em', textTransform:'uppercase' }}>
         Cumulative P&L
       </p>
     </div>
   )
 }
 
-// ─── Equity Chart ─────────────────────────────────────────────────────────────
-function EquityChart({ curve }) {
-  const [period,  setPeriod]  = useState('ALL')
-  const [mounted, setMounted] = useState(false)
+function EquityCurveSection({ closed }) {
+  const [period, setPeriod] = useState('ALL')
+  const curve = useMemo(() => buildEquityCurve(closed), [closed])
 
-  useEffect(() => { const t = setTimeout(() => setMounted(true), 100); return () => clearTimeout(t) }, [])
-  useEffect(() => {
-    setMounted(false)
-    const t = setTimeout(() => setMounted(true), 60)
-    return () => clearTimeout(t)
-  }, [period])
-
-  // Period-filtered sparse trade points
-  const data = useMemo(() => {
-    if (!curve?.length) return []
-    if (period === 'ALL') return curve
+  const filtered = useMemo(() => {
+    if (period === 'ALL' || !curve.length) return curve
     const now = new Date()
     const cutoffs = {
-      '1W': new Date(now - 7*864e5),
-      '1M': new Date(now.getFullYear(), now.getMonth()-1, now.getDate()),
-      '3M': new Date(now.getFullYear(), now.getMonth()-3, now.getDate()),
-      '6M': new Date(now.getFullYear(), now.getMonth()-6, now.getDate()),
+      '1W': new Date(now.getTime() - 7 * 86400000),
+      '1M': new Date(now.getFullYear(), now.getMonth() - 1, now.getDate()),
+      '3M': new Date(now.getFullYear(), now.getMonth() - 3, now.getDate()),
+      '6M': new Date(now.getFullYear(), now.getMonth() - 6, now.getDate()),
     }
-    return curve.filter(p => p.date && new Date(p.date+'T00:00:00') >= cutoffs[period])
+    const cutoff = cutoffs[period]
+    return curve.filter(p => p.date && new Date(p.date + 'T00:00:00') >= cutoff)
   }, [curve, period])
 
-  // Expand to one point per calendar day — non-trade days carry pnl forward (flat line)
-  // IMPORTANT: start from the period's cutoff date (not just the first trade date) so
-  // that all grid-line tick timestamps fall within the chart's x-axis domain.
-  const dailyData = useMemo(() => {
-    if (!data.length) return []
-    const tradeMap = {}
-    data.forEach(p => { tradeMap[p.date] = p.pnl })
+  const chartData = useMemo(() => filtered.map((p, i) => ({
+    idx: i,
+    pnl: p.pnl,
+    label: p.date ? fmtShortDate(p.date) : '',
+    fullDate: p.date,
+  })), [filtered])
 
-    const firstTrade = new Date(data[0].date + 'T00:00:00')
-    const last       = new Date(data[data.length-1].date + 'T00:00:00')
-
-    // Period start: use month/week boundaries (not "today minus N days") so the
-    // domain always reaches back to the very first tick label on the x-axis.
-    const now = new Date()
-    const periodStartMap = {
-      '1W': new Date(now - 7*864e5),                                       // 7 calendar days back
-      '1M': new Date(now.getFullYear(), now.getMonth()-1, 1),               // 1st of prev month
-      '3M': new Date(now.getFullYear(), now.getMonth()-3, 1),               // 1st of 3 months ago
-      '6M': new Date(now.getFullYear(), now.getMonth()-6, 1),               // 1st of 6 months ago
-    }
-    const periodStart = period === 'ALL'
-      ? new Date(firstTrade.getTime() - 864e5)
-      : periodStartMap[period]
-
-    // Start from whichever comes first: period start or one day before first trade
-    const startDate = periodStart < firstTrade ? periodStart : new Date(firstTrade.getTime() - 864e5)
-
-    const result = []
-    let carry = 0
-    const cur = new Date(startDate)
-    while (cur <= last) {
-      const key = toStr(cur)
-      if (tradeMap[key] !== undefined) carry = tradeMap[key]
-      result.push({ date: key, ts: cur.getTime(), pnl: carry, hasTraded: !!tradeMap[key] })
-      cur.setDate(cur.getDate() + 1)
-    }
-    return result
-  }, [data, period])
-
-  const lastPnl    = data.length ? (data[data.length-1]?.pnl ?? 0) : 0
-  const periodGain = data.length > 1 ? lastPnl - (data[0]?.pnl ?? 0) : 0
-  const isPos      = lastPnl >= 0
-
-  const minY = dailyData.length ? Math.min(0, ...dailyData.map(d => d.pnl)) : 0
-  const maxY = dailyData.length ? Math.max(0, ...dailyData.map(d => d.pnl)) : 1
+  const minY = chartData.length ? Math.min(0, ...chartData.map(d => d.pnl)) : 0
+  const maxY = chartData.length ? Math.max(0, ...chartData.map(d => d.pnl)) : 1
   const yPad = (maxY - minY) * 0.15 || 80
+  const domainMin = minY - yPad, domainMax = maxY + yPad
+  const domainRange = domainMax - domainMin
+  const zeroPercent = domainRange > 0 ? Math.max(0, Math.min(100, (domainMax / domainRange) * 100)) : (minY >= 0 ? 100 : 0)
 
-  // Where y=0 sits as % from top of SVG for split gradient
-  const domainRange = (maxY + yPad) - (minY - yPad)
-  const zeroPercent = domainRange > 0
-    ? Math.max(0, Math.min(100, ((maxY + yPad) / domainRange) * 100))
-    : (minY >= 0 ? 100 : 0)
-
-  // Calendar tick timestamps (exact calendar positions, not snapped to trades)
-  const tickTs = useMemo(() => {
-    if (!dailyData.length) return []
-    const first = new Date(dailyData[0].date + 'T00:00:00')
-    const last  = new Date(dailyData[dailyData.length-1].date + 'T00:00:00')
-    const ts = []
-    if (period === '1W') {
-      const c = new Date(first)
-      while (c <= last) { ts.push(c.getTime()); c.setDate(c.getDate()+1) }
-    } else if (period === '1M') {
-      const ms = new Date(first.getFullYear(), first.getMonth(), 1)
-      for (let day = 2; day <= 31; day += 4) {
-        const t = new Date(ms.getFullYear(), ms.getMonth(), day)
-        if (t > last) break
-        ts.push(t.getTime())
-      }
-      const me = new Date(first.getFullYear(), first.getMonth()+1, 0)
-      if (me <= last && !ts.includes(me.getTime())) ts.push(me.getTime())
-    } else if (period === '3M') {
-      const c = new Date(first.getFullYear(), first.getMonth(), 1)
-      while (c <= last) { ts.push(c.getTime()); c.setDate(c.getDate()+14) }
-    } else if (period === '6M') {
-      const c = new Date(first.getFullYear(), first.getMonth(), 1)
-      while (c <= last) { ts.push(c.getTime()); c.setMonth(c.getMonth()+1) }
-    } else {
-      const totalM = (last.getFullYear()-first.getFullYear())*12 + (last.getMonth()-first.getMonth())
-      const step   = Math.max(1, Math.ceil(totalM/7))
-      const c      = new Date(first.getFullYear(), first.getMonth(), 1)
-      while (c <= last) { ts.push(c.getTime()); c.setMonth(c.getMonth()+step) }
-    }
-    return ts
-  }, [dailyData, period])
-
-  function fmtTick(ts) {
-    const d  = new Date(ts)
-    const mo = MON_S[d.getMonth()]; const day = d.getDate(); const yr = d.getFullYear()
-    if (period === '1W') return `${DOW[d.getDay()].slice(0,2)} ${day}`
-    if (period === '1M') return `${mo} ${day}`
-    if (period === '3M') return `${mo} ${day}`
-    if (period === '6M') return mo
-    const fy = dailyData.length ? new Date(dailyData[0].date+'T00:00:00').getFullYear() : yr
-    return fy !== yr ? `${mo} '${String(yr).slice(2)}` : mo
-  }
+  const lastPnl = chartData.length ? chartData[chartData.length - 1].pnl : 0
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Header */}
-      <div className="flex items-center justify-between mb-4">
-        <div>
-          <h3 className="font-bold text-sm" style={{ color:'var(--text-primary)' }}>Equity Curve</h3>
-          <p className="text-xs mt-0.5" style={{ color:'var(--text-muted)' }}>Cumulative P&L — hover any day</p>
-        </div>
-        <div className="flex items-center gap-0.5 p-1 rounded-lg"
-             style={{ background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.07)' }}>
-          {PERIODS.map(p => (
-            <button key={p} onClick={() => setPeriod(p)}
-                    className="px-2.5 py-1 rounded-md text-xs font-semibold transition-all"
-                    style={{ background: period===p?'rgba(139,92,246,0.3)':'transparent',
-                             color: period===p?'#C4B5FD':'rgba(255,255,255,0.35)' }}>
-              {p}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Summary stats */}
-      <div className="flex items-center gap-6 mb-4">
-        <div>
-          <p className="text-[10px] uppercase tracking-wider mb-0.5" style={{ color:'rgba(255,255,255,0.35)' }}>Equity</p>
-          <p className="text-xl font-bold" style={{ color:isPos?'#22C55E':'#EF4444' }}>
-            {lastPnl>=0?'+$':'-$'}{Math.abs(lastPnl).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}
-          </p>
-        </div>
-        {data.length > 1 && (
-          <div>
-            <p className="text-[10px] uppercase tracking-wider mb-0.5" style={{ color:'rgba(255,255,255,0.35)' }}>Period Gain</p>
-            <p className="text-xl font-bold" style={{ color:periodGain>=0?'#22C55E':'#EF4444' }}>
-              {periodGain>=0?'+$':'-$'}{Math.abs(periodGain).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}
-            </p>
+    <div className="glass-card p-5">
+      <div className="flex items-center justify-between mb-1 flex-wrap gap-3">
+        <div className="flex items-center gap-2.5">
+          <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background:'rgba(34,197,94,0.18)' }}>
+            <TrendingUp size={15} style={{ color:'#22C55E' }} />
           </div>
-        )}
-        <div>
-          <p className="text-[10px] uppercase tracking-wider mb-0.5" style={{ color:'rgba(255,255,255,0.35)' }}>Trades</p>
-          <p className="text-xl font-bold" style={{ color:'var(--text-primary)' }}>{data.length}</p>
+          <div>
+            <h3 className="font-bold text-[15px]" style={{ color:'var(--text-primary)' }}>Equity Curve</h3>
+            <p className="text-xs" style={{ color:'var(--text-muted)' }}>Cumulative P&L, trade by trade</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-3 flex-wrap">
+          <span className="text-lg font-bold" style={{ color: lastPnl >= 0 ? 'var(--positive-green)' : 'var(--negative-red)' }}>
+            {fmtFull(lastPnl)}
+          </span>
+          <div className="flex items-center gap-0.5 p-1 rounded-lg" style={{ background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.07)' }}>
+            {['1W','1M','3M','6M','ALL'].map(p => (
+              <button key={p} onClick={() => setPeriod(p)}
+                      className="px-2.5 py-1 rounded-md text-xs font-semibold transition-all"
+                      style={{ background: period === p ? 'rgba(139,92,246,0.3)' : 'transparent',
+                               color: period === p ? '#C4B5FD' : 'rgba(255,255,255,0.35)' }}>
+                {p}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
-      {/* Chart */}
-      {dailyData.length === 0 ? (
-        <div className="flex-1 flex items-center justify-center rounded-xl"
-             style={{ background:'rgba(255,255,255,0.02)', border:'1px solid rgba(255,255,255,0.05)', minHeight:200 }}>
-          <p className="text-sm" style={{ color:'rgba(255,255,255,0.25)' }}>No data for this period</p>
+      {chartData.length === 0 ? <EmptyState text="No data for this period" /> : (
+        <div style={{ height: 270, marginTop: 12 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={chartData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+              <defs>
+                <linearGradient id="perfEqLineGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset={`${zeroPercent}%`} stopColor="#22C55E" />
+                  <stop offset={`${zeroPercent}%`} stopColor="#EF4444" />
+                </linearGradient>
+                <linearGradient id="perfEqAreaGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#22C55E" stopOpacity={0.22} />
+                  <stop offset={`${zeroPercent}%`} stopColor="#22C55E" stopOpacity={0.03} />
+                  <stop offset={`${zeroPercent}%`} stopColor="#EF4444" stopOpacity={0.03} />
+                  <stop offset="100%" stopColor="#EF4444" stopOpacity={0.18} />
+                </linearGradient>
+                <filter id="perfDotGlowG" x="-100%" y="-100%" width="300%" height="300%">
+                  <feGaussianBlur in="SourceGraphic" stdDeviation="4" result="b" />
+                  <feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge>
+                </filter>
+                <filter id="perfDotGlowR" x="-100%" y="-100%" width="300%" height="300%">
+                  <feGaussianBlur in="SourceGraphic" stdDeviation="4" result="b" />
+                  <feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge>
+                </filter>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" vertical={false} />
+              <ReferenceLine y={0} stroke="rgba(255,255,255,0.2)" strokeDasharray="4 4" />
+              <XAxis dataKey="label" tick={{ fill:'rgba(255,255,255,0.3)', fontSize: 10 }} axisLine={false} tickLine={false}
+                     interval="preserveStartEnd" minTickGap={40} />
+              <YAxis tick={{ fill:'rgba(255,255,255,0.3)', fontSize: 10 }} axisLine={false} tickLine={false} width={58}
+                     domain={[domainMin, domainMax]} tickFormatter={v => fmtK(v, true)} />
+              <Tooltip content={<EquityTooltip />} cursor={{ stroke:'rgba(255,255,255,0.25)', strokeWidth: 1, strokeDasharray:'4 4' }} />
+              <Area type="monotone" dataKey="pnl" stroke="url(#perfEqLineGrad)" strokeWidth={2} fill="url(#perfEqAreaGrad)"
+                    isAnimationActive animationDuration={1400} animationEasing="ease-out" dot={false}
+                    activeDot={(props) => {
+                      const { cx, cy, payload } = props
+                      const pos = (payload?.pnl ?? 0) >= 0
+                      const col = pos ? '#22C55E' : '#EF4444'
+                      return (
+                        <g key={`peqd-${cx}-${cy}`}>
+                          <circle cx={cx} cy={cy} r={13} fill={pos ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)'} />
+                          <circle cx={cx} cy={cy} r={8} fill={pos ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.12)'} />
+                          <circle cx={cx} cy={cy} r={4} fill={col} stroke="#0b0a16" strokeWidth={2}
+                                  filter={`url(#${pos ? 'perfDotGlowG' : 'perfDotGlowR'})`} />
+                        </g>
+                      )
+                    }} />
+            </AreaChart>
+          </ResponsiveContainer>
         </div>
-      ) : (
-        <div className="flex-1" style={{ minHeight:200 }}>
-          {mounted ? (
+      )}
+    </div>
+  )
+}
+
+// ─── Asset Class Performance ──────────────────────────────────────────────────
+function AssetClassCard({ data }) {
+  return (
+    <div className="glass-card p-5">
+      <CardHeader icon={Scale} iconBg="rgba(99,102,241,0.18)" iconColor="#818CF8" title="Asset Class Performance" />
+      {data.length === 0 ? <EmptyState /> : (
+        <>
+          <div style={{ height: 160 }} className="mt-4">
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={dailyData} margin={{ top:8, right:4, left:0, bottom:0 }}>
+              <BarChart data={data} layout="vertical" margin={{ top: 0, right: 20, left: 0, bottom: 0 }} barCategoryGap="35%">
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" horizontal={false} />
+                <XAxis type="number" tick={{ fill:'rgba(255,255,255,0.3)', fontSize: 10 }} axisLine={false} tickLine={false}
+                       tickFormatter={v => fmtK(v)} />
+                <YAxis type="category" dataKey="assetClass" width={92} tick={{ fill:'rgba(255,255,255,0.55)', fontSize: 11, fontWeight: 600 }}
+                       axisLine={false} tickLine={false} />
+                <ReferenceLine x={0} stroke="rgba(255,255,255,0.12)" />
+                <Tooltip cursor={{ fill:'rgba(255,255,255,0.04)' }}
+                         content={({ active, payload }) => {
+                           if (!active || !payload?.length) return null
+                           const d = payload[0].payload
+                           return <ChartTooltip title={d.assetClass} value={fmtFull(d.pnl)} valueColor={d.pnl >= 0 ? '#22C55E' : '#EF4444'}
+                                                 sub={`${d.count} trades · ${d.winRate.toFixed(0)}% win`} />
+                         }} />
+                <Bar dataKey="pnl" radius={[4,4,4,4]} maxBarSize={32} isAnimationActive animationDuration={1000}>
+                  {data.map((d, i) => <Cell key={i} fill={d.pnl >= 0 ? '#22C55E' : '#EF4444'} fillOpacity={0.85} />)}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+          <div className="space-y-2 mt-4 pt-4" style={{ borderTop:'1px solid rgba(255,255,255,0.05)' }}>
+            {data.map(d => (
+              <div key={d.assetClass} className="flex items-center justify-between">
+                <span className="text-sm font-semibold" style={{ color:'var(--text-primary)' }}>{d.assetClass}</span>
+                <span className="text-xs" style={{ color:'var(--text-muted)' }}>{d.count} trades &middot; {d.winRate.toFixed(0)}% win</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+// ─── Time of Day Performance ──────────────────────────────────────────────────
+function TimeOfDayCard({ ranked }) {
+  const chartData = ranked.map((b, i) => ({ idx: i, pnl: b.pnl, hourLabel: b.hourLabel }))
+  const top3 = ranked.slice(0, 3)
+  return (
+    <div className="glass-card p-5">
+      <CardHeader icon={Clock} iconBg="rgba(245,158,11,0.18)" iconColor="#F59E0B" title="Time of Day Performance" />
+      {ranked.length === 0 ? <EmptyState /> : (
+        <>
+          <div style={{ height: 160 }} className="mt-4">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={chartData} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
                 <defs>
-                  <linearGradient id="eqLineGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset={`${zeroPercent}%`} stopColor="#22C55E" />
-                    <stop offset={`${zeroPercent}%`} stopColor="#EF4444" />
+                  <linearGradient id="todGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#3B82F6" stopOpacity={0.35} />
+                    <stop offset="100%" stopColor="#3B82F6" stopOpacity={0.02} />
                   </linearGradient>
-                  <linearGradient id="eqAreaGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%"                stopColor="#22C55E" stopOpacity={0.2} />
-                    <stop offset={`${zeroPercent}%`} stopColor="#22C55E" stopOpacity={0.03} />
-                    <stop offset={`${zeroPercent}%`} stopColor="#EF4444" stopOpacity={0.03} />
-                    <stop offset="100%"              stopColor="#EF4444" stopOpacity={0.18} />
-                  </linearGradient>
-                  <filter id="dotGlowG" x="-100%" y="-100%" width="300%" height="300%">
-                    <feGaussianBlur in="SourceGraphic" stdDeviation="4" result="b"/>
-                    <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
-                  </filter>
-                  <filter id="dotGlowR" x="-100%" y="-100%" width="300%" height="300%">
-                    <feGaussianBlur in="SourceGraphic" stdDeviation="4" result="b"/>
-                    <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
-                  </filter>
                 </defs>
-
-                {/* Full grid — vertical lines align to XAxis ticks now that
-                    domain includes the period start, so all tickTs are in range */}
-                <CartesianGrid
-                  strokeDasharray="3 3"
-                  stroke="rgba(255,255,255,0.07)"
-                  vertical={true}
-                />
-
-                {/* Zero baseline — slightly brighter so it reads clearly */}
-                <ReferenceLine y={0} stroke="rgba(255,255,255,0.22)" strokeDasharray="4 4" />
-
-                <XAxis
-                  dataKey="ts" type="number" scale="time"
-                  domain={['dataMin','dataMax']}
-                  ticks={tickTs} tickFormatter={fmtTick}
-                  tick={{ fill:'rgba(255,255,255,0.3)', fontSize:10, fontFamily:'Poppins,sans-serif' }}
-                  axisLine={false} tickLine={false}
-                />
-                <YAxis
-                  tick={{ fill:'rgba(255,255,255,0.3)', fontSize:10, fontFamily:'Poppins,sans-serif' }}
-                  axisLine={false} tickLine={false} width={58}
-                  domain={[minY-yPad, maxY+yPad]}
-                  tickFormatter={v => {
-                    const a = Math.abs(v)
-                    return `${v<0?'-':''}$${a>=1000?(a/1000).toFixed(1)+'k':a.toFixed(0)}`
-                  }}
-                />
-
-                <Tooltip
-                  content={<EquityTooltip />}
-                  cursor={{ stroke:'rgba(255,255,255,0.25)', strokeWidth:1, strokeDasharray:'4 4' }}
-                />
-
-                <Area
-                  type="monotone" dataKey="pnl"
-                  stroke="url(#eqLineGrad)" strokeWidth={2}
-                  fill="url(#eqAreaGrad)"
-                  isAnimationActive={true}
-                  animationDuration={1400} animationEasing="ease-out"
-                  dot={false}
-                  activeDot={(p) => {
-                    const { cx, cy, payload } = p
-                    const pos = (payload?.pnl ?? 0) >= 0
-                    const col = pos ? '#22C55E' : '#EF4444'
-                    return (
-                      <g key={`adot-${cx}-${cy}`}>
-                        <circle cx={cx} cy={cy} r={13}
-                          fill={pos?'rgba(34,197,94,0.08)':'rgba(239,68,68,0.08)'} stroke="none"/>
-                        <circle cx={cx} cy={cy} r={8}
-                          fill={pos?'rgba(34,197,94,0.15)':'rgba(239,68,68,0.12)'} stroke="none"/>
-                        <circle cx={cx} cy={cy} r={4}
-                          fill={col} stroke="#0b0a16" strokeWidth={2}
-                          filter={`url(#${pos?'dotGlowG':'dotGlowR'})`}/>
-                      </g>
-                    )
-                  }}
-                />
+                <XAxis dataKey="hourLabel" tick={{ fill:'rgba(255,255,255,0.3)', fontSize: 9 }} axisLine={false} tickLine={false}
+                       interval="preserveStartEnd" minTickGap={20} />
+                <YAxis tick={{ fill:'rgba(255,255,255,0.3)', fontSize: 10 }} axisLine={false} tickLine={false} width={54} tickFormatter={v => fmtK(v)} />
+                <ReferenceLine y={0} stroke="rgba(255,255,255,0.12)" />
+                <Tooltip content={({ active, payload }) => {
+                  if (!active || !payload?.length) return null
+                  const d = payload[0].payload
+                  return <ChartTooltip title={d.hourLabel} value={fmtFull(d.pnl)} valueColor={d.pnl >= 0 ? '#22C55E' : '#EF4444'} />
+                }} />
+                <Area type="monotone" dataKey="pnl" stroke="#3B82F6" strokeWidth={2} fill="url(#todGrad)"
+                      isAnimationActive animationDuration={1100} dot={false} />
               </AreaChart>
             </ResponsiveContainer>
-          ) : (
-            <div className="w-full h-full rounded-xl animate-pulse"
-                 style={{ minHeight:200, background:'rgba(139,92,246,0.05)' }} />
+          </div>
+          <div className="grid grid-cols-3 gap-2 mt-4 pt-4" style={{ borderTop:'1px solid rgba(255,255,255,0.05)' }}>
+            {[0,1,2].map(i => {
+              const h = top3[i]
+              return (
+                <div key={i} className="rounded-xl p-2.5 text-center" style={{ background:'rgba(255,255,255,0.03)' }}>
+                  <p className="text-[9px] font-bold uppercase tracking-wider mb-1" style={{ color:'var(--text-muted)' }}>#{i + 1} Best</p>
+                  {h ? (
+                    <>
+                      <p className="text-sm font-bold" style={{ color:'var(--text-primary)' }}>{h.hourLabel}</p>
+                      <p className="text-xs font-semibold mt-0.5" style={{ color: h.pnl >= 0 ? 'var(--positive-green)' : 'var(--negative-red)' }}>{fmtK(h.pnl, true)}</p>
+                    </>
+                  ) : <p className="text-xs" style={{ color:'var(--text-muted)' }}>—</p>}
+                </div>
+              )
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+// ─── Drawdown Analysis ────────────────────────────────────────────────────────
+function DrawdownCard({ series }) {
+  const { points, maxDrawdown, maxDrawdownPct, maxDate } = series
+  const chartData = points.map((p, i) => ({ idx: i, drawdown: p.drawdown, label: fmtShortDate(p.date) }))
+  return (
+    <div className="glass-card p-5">
+      <CardHeader icon={TrendingDown} iconBg="rgba(239,68,68,0.15)" iconColor="#EF4444" title="Drawdown Analysis"
+                  info="How far your cumulative P&L has fallen below its running peak, updated after every closed trade." />
+      {points.length === 0 ? <EmptyState /> : (
+        <>
+          <div style={{ height: 160 }} className="mt-4">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={chartData} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="ddGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#EF4444" stopOpacity={0.04} />
+                    <stop offset="100%" stopColor="#EF4444" stopOpacity={0.38} />
+                  </linearGradient>
+                </defs>
+                <XAxis dataKey="label" tick={{ fill:'rgba(255,255,255,0.3)', fontSize: 9 }} axisLine={false} tickLine={false}
+                       interval="preserveStartEnd" minTickGap={30} />
+                <YAxis tick={{ fill:'rgba(255,255,255,0.3)', fontSize: 10 }} axisLine={false} tickLine={false} width={58} tickFormatter={v => fmtK(v)} />
+                <Tooltip content={({ active, payload }) => {
+                  if (!active || !payload?.length) return null
+                  const d = payload[0].payload
+                  return <ChartTooltip title={d.label} value={fmtFull(d.drawdown)} valueColor="#EF4444" sub="Drawdown from peak" />
+                }} />
+                <Area type="monotone" dataKey="drawdown" stroke="#EF4444" strokeWidth={2} fill="url(#ddGrad)"
+                      isAnimationActive animationDuration={1100} dot={false} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+          <div className="grid grid-cols-3 gap-2 mt-4 pt-4" style={{ borderTop:'1px solid rgba(255,255,255,0.05)' }}>
+            <MiniStat label="Max Drawdown" value={fmtK(maxDrawdown)} color="var(--negative-red)" />
+            <MiniStat label="Max DD %" value={`${maxDrawdownPct.toFixed(1)}%`} color="var(--negative-red)" />
+            <MiniStat label="Date" value={maxDate ? fmtShortDate(maxDate.slice(0, 10)) : '—'} color="var(--text-primary)" />
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+// ─── Streak Tracking ──────────────────────────────────────────────────────────
+function StreakTrackingCard({ tracking }) {
+  const { current, currentType, longestWin, longestLoss, history } = tracking
+  const isLoss = currentType === 'loss'
+  const streakColor = current === 0 ? 'var(--text-muted)' : isLoss ? 'var(--negative-red)' : 'var(--positive-green)'
+  return (
+    <div className="glass-card p-5">
+      <CardHeader icon={Flame} iconBg="rgba(245,158,11,0.15)" iconColor="#F59E0B" title="Streak Tracking"
+                  info="Consecutive winning or losing trades, in a row, most recent first." />
+      <div className="mt-4">
+        <p className="text-[10px] font-bold uppercase tracking-wider mb-1.5" style={{ color:'var(--text-muted)' }}>Current Streak</p>
+        <div className="flex items-baseline gap-2">
+          <p className="text-3xl font-bold" style={{ color: streakColor }}><AnimatedNumber value={current} decimals={0} /></p>
+          <span className="text-sm font-semibold" style={{ color: streakColor }}>
+            {current === 0 ? 'No active streak' : isLoss ? 'Losing Streak' : 'Winning Streak'}
+          </span>
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-2 mt-4">
+        <MiniStat label="Longest Win"  value={longestWin}  color="var(--positive-green)" />
+        <MiniStat label="Longest Loss" value={longestLoss} color="var(--negative-red)" />
+      </div>
+      <div className="mt-4 pt-4" style={{ borderTop:'1px solid rgba(255,255,255,0.05)' }}>
+        <p className="text-[9px] font-bold uppercase tracking-wider mb-2" style={{ color:'var(--text-muted)' }}>History</p>
+        {history.length === 0 ? (
+          <p className="text-xs" style={{ color:'var(--text-muted)' }}>No closed trades yet</p>
+        ) : (
+          <div className="flex flex-wrap gap-1.5">
+            {history.map(h => (
+              <span key={h.id} className="px-2 py-1 rounded-md text-[11px] font-bold"
+                    style={{ background: h.isWin ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)',
+                             color: h.isWin ? '#22C55E' : '#EF4444' }}>
+                {h.isWin ? 'W' : 'L'}{h.length}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ─── Performance by Symbol ────────────────────────────────────────────────────
+function SymbolPerformanceRow({ data }) {
+  return (
+    <div className="glass-card p-5">
+      <CardHeader icon={BarChart2} iconBg="rgba(139,92,246,0.18)" iconColor="#A78BFA" title="Performance by Symbol" />
+      {data.length === 0 ? <EmptyState /> : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mt-4">
+          {data.slice(0, 8).map(s => (
+            <div key={s.symbol} className="rounded-xl px-4 py-3.5 flex items-center gap-3"
+                 style={{ background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.05)' }}>
+              <div className="w-1 rounded-full flex-shrink-0" style={{ background: s.pnl >= 0 ? '#22C55E' : '#EF4444', minHeight: 36, alignSelf:'stretch' }} />
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-bold truncate" style={{ color:'var(--text-primary)' }}>{s.symbol}</p>
+                <p className="text-[10px] mt-0.5" style={{ color:'var(--text-muted)' }}>{s.count} trade{s.count !== 1 ? 's' : ''}</p>
+              </div>
+              <span className="text-sm font-bold flex-shrink-0" style={{ color: s.pnl >= 0 ? 'var(--positive-green)' : 'var(--negative-red)' }}>
+                {fmtFull(s.pnl)}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Trading Heatmap (Day x Hour) ─────────────────────────────────────────────
+const HEATMAP_DAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun']
+const HEATMAP_HOURS = Array.from({ length: 24 }, (_, h) => h)
+
+function TradingHeatmapCard({ grid }) {
+  const hasAny = Object.keys(grid).length > 0
+  return (
+    <div className="glass-card p-5">
+      <CardHeader icon={Grid3x3} iconBg="rgba(59,130,246,0.15)" iconColor="#60A5FA" title="Trading Heatmap" subtitle="(Day x Hour)" />
+      {!hasAny ? <EmptyState /> : (
+        <div className="mt-4 overflow-x-auto">
+          <div style={{ minWidth: 820 }}>
+            <div className="flex gap-1 mb-1">
+              <div style={{ width: 40, flexShrink: 0 }} />
+              {HEATMAP_HOURS.map(h => (
+                <div key={h} className="flex-1 text-center text-[9px]" style={{ color:'var(--text-muted)', minWidth: 28 }}>
+                  {pad(h)}
+                </div>
+              ))}
+            </div>
+            <div className="space-y-1">
+              {HEATMAP_DAYS.map(day => (
+                <div key={day} className="flex gap-1 items-center">
+                  <div className="text-[10px] font-semibold" style={{ width: 40, flexShrink: 0, color:'var(--text-muted)' }}>{day}</div>
+                  {HEATMAP_HOURS.map(h => {
+                    const cell = grid[`${day}|${h}`]
+                    const bg = !cell ? 'rgba(255,255,255,0.03)' : cell.pnl >= 0 ? 'rgba(34,197,94,0.78)' : 'rgba(239,68,68,0.78)'
+                    return (
+                      <div key={h} title={cell ? `${day} ${pad(h)}:00 — ${fmtFull(cell.pnl)} (${cell.count} trades)` : `${day} ${pad(h)}:00 — no trades`}
+                           className="flex-1 rounded-md flex items-center justify-center text-[10px] font-bold transition-transform hover:scale-110"
+                           style={{ background: bg, color: cell ? '#0b0a16' : 'transparent', minWidth: 28, height: 26 }}>
+                        {cell ? cell.count : ''}
+                      </div>
+                    )
+                  })}
+                </div>
+              ))}
+            </div>
+            <div className="flex items-center gap-5 mt-4">
+              <div className="flex items-center gap-1.5">
+                <div className="w-3 h-3 rounded" style={{ background:'rgba(239,68,68,0.78)' }} />
+                <span className="text-xs" style={{ color:'var(--text-muted)' }}>Loss</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <div className="w-3 h-3 rounded" style={{ background:'rgba(255,255,255,0.06)' }} />
+                <span className="text-xs" style={{ color:'var(--text-muted)' }}>No trades</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <div className="w-3 h-3 rounded" style={{ background:'rgba(34,197,94,0.78)' }} />
+                <span className="text-xs" style={{ color:'var(--text-muted)' }}>Profit</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Risk-Adjusted Performance ────────────────────────────────────────────────
+function RiskMetricTile({ label, value, sub, barPct, barColor, valueColor, info }) {
+  return (
+    <div className="rounded-xl p-4" style={{ background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.05)' }}>
+      <div className="flex items-center gap-1.5 mb-2">
+        <p className="text-[10px] font-bold uppercase tracking-wider" style={{ color:'var(--text-muted)' }}>{label}</p>
+        <InfoTip text={info} />
+      </div>
+      <p className="text-2xl font-bold mb-1.5" style={{ color: valueColor }}>{value}</p>
+      <p className="text-[11px] mb-3" style={{ color:'var(--text-muted)' }}>{sub}</p>
+      <div className="h-1.5 rounded-full overflow-hidden" style={{ background:'rgba(255,255,255,0.06)' }}>
+        <div className="h-full rounded-full transition-all duration-700" style={{ width: `${barPct}%`, background: barColor }} />
+      </div>
+    </div>
+  )
+}
+
+function RiskAdjustedCard({ metrics }) {
+  const { sharpe, sortino, kelly, hasData } = metrics
+  const sharpePct  = Math.max(4, Math.min(100, (sharpe / 5) * 100))
+  const sortinoPct = Math.max(4, Math.min(100, (sortino / 10) * 100))
+  const kellyPct   = Math.max(4, Math.min(100, (Math.abs(kelly) / 25) * 100))
+
+  return (
+    <div className="glass-card p-5">
+      <CardHeader icon={Scale} iconBg="rgba(139,92,246,0.18)" iconColor="#A78BFA" title="Risk-Adjusted Performance"
+                  info="How your returns compare to their volatility — higher is generally better risk-adjusted efficiency." />
+      {!hasData ? <EmptyState /> : (
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-4">
+          <RiskMetricTile label="Sharpe Ratio" value={sharpe.toFixed(2)} sub={sharpeRatingLabel(sharpe)}
+                          barPct={sharpePct} barColor="#22C55E" valueColor={sharpe >= 0 ? 'var(--positive-green)' : 'var(--negative-red)'}
+                          info="Return per unit of overall volatility across all trades. Above 2 is considered strong." />
+          <RiskMetricTile label="Sortino Ratio" value={sortino >= 12 ? '12+' : sortino.toFixed(2)} sub={sortinoRatingLabel(sortino)}
+                          barPct={sortinoPct} barColor="#22C55E" valueColor={sortino >= 0 ? 'var(--positive-green)' : 'var(--negative-red)'}
+                          info="Like Sharpe, but only penalizes downside volatility from losing trades. Higher is better." />
+          <RiskMetricTile label="Kelly Criterion" value={`${kelly >= 0 ? '+' : ''}${kelly.toFixed(1)}%`} sub={kellyRatingLabel(kelly)}
+                          barPct={kellyPct} barColor="#8B5CF6" valueColor="#A78BFA"
+                          info="Theoretical optimal % of capital to risk per trade, derived from your win rate and payoff ratio." />
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Avg Hold Time: Winners vs Losers ─────────────────────────────────────────
+function AvgHoldTimeCard({ data }) {
+  const { winMin, lossMin, winCount, lossCount, insight } = data
+  const maxMin = Math.max(winMin, lossMin, 1)
+  return (
+    <div className="glass-card p-5">
+      <CardHeader icon={Clock} iconBg="rgba(45,212,191,0.15)" iconColor="#2DD4BF" title="Avg Hold Time: Winners vs Losers"
+                  info="Average time-in-trade for winning trades versus losing trades." />
+      {(winCount === 0 && lossCount === 0) ? <EmptyState /> : (
+        <div className="mt-5 space-y-4">
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-xs font-semibold" style={{ color:'var(--positive-green)' }}>Winning Trades</span>
+              <span className="text-sm font-bold" style={{ color:'var(--positive-green)' }}>{fmtMin(winMin)}</span>
+            </div>
+            <div className="h-2.5 rounded-full overflow-hidden" style={{ background:'rgba(255,255,255,0.06)' }}>
+              <div className="h-full rounded-full transition-all duration-700" style={{ width: `${Math.max(4, (winMin / maxMin) * 100)}%`, background:'linear-gradient(90deg,#16A34A,#22C55E)' }} />
+            </div>
+          </div>
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-xs font-semibold" style={{ color:'var(--negative-red)' }}>Losing Trades</span>
+              <span className="text-sm font-bold" style={{ color:'var(--negative-red)' }}>{fmtMin(lossMin)}</span>
+            </div>
+            <div className="h-2.5 rounded-full overflow-hidden" style={{ background:'rgba(255,255,255,0.06)' }}>
+              <div className="h-full rounded-full transition-all duration-700" style={{ width: `${Math.max(4, (lossMin / maxMin) * 100)}%`, background:'linear-gradient(90deg,#DC2626,#EF4444)' }} />
+            </div>
+          </div>
+          {insight && (
+            <div className="rounded-xl p-3.5 mt-1" style={{
+              background: insight.tone === 'warning' ? 'rgba(239,68,68,0.08)' : 'rgba(34,197,94,0.08)',
+              border: `1px solid ${insight.tone === 'warning' ? 'rgba(239,68,68,0.2)' : 'rgba(34,197,94,0.2)'}`,
+            }}>
+              <p className="text-xs leading-relaxed" style={{ color: insight.tone === 'warning' ? '#FCA5A5' : '#86EFAC' }}>
+                {insight.tone === 'warning' ? '⚠ ' : '✓ '}{insight.text}
+              </p>
+            </div>
           )}
         </div>
       )}
@@ -449,53 +849,99 @@ function EquityChart({ curve }) {
   )
 }
 
-// ─── Quick Stats ───────────────────────────────────────────────────────────
-function fmtQuick(n) {
-  if (n == null || isNaN(n)) return '$0.00'
-  const abs = Math.abs(n)
-  const sign = n < 0 ? '-' : ''
-  if (abs >= 1000) return `${sign}$${(abs/1000).toFixed(1)}k`
-  return `${sign}$${abs.toFixed(2)}`
-}
-
-function QuickStats({ stats, winStreak, lossStreak, openCount }) {
-  const hasLoss = Math.abs(stats.avgLoss) > 0
-  const rrRatio = hasLoss ? (stats.avgWin / Math.abs(stats.avgLoss)) : (stats.avgWin > 0 ? Infinity : 0)
-  const rrLabel = isFinite(rrRatio) ? `1:${rrRatio.toFixed(2)}` : '1:∞'
-  const rrGood  = isFinite(rrRatio) ? rrRatio >= 1 : true
-
-  const tiles = [
-    { label: 'AVG WINNER',  value: fmtQuick(stats.avgWin),                        color: '#3B82F6' },
-    { label: 'AVG LOSER',   value: fmtQuick(stats.avgLoss),                       color: 'var(--negative-red)' },
-    { label: 'BEST TRADE',  value: fmtQuick(Math.max(0, stats.bestTrade)),        color: '#3B82F6' },
-    { label: 'WORST TRADE', value: fmtQuick(Math.min(0, stats.worstTrade)),       color: 'var(--negative-red)' },
-    { label: 'WIN STREAK',  value: `${winStreak} trade${winStreak !== 1 ? 's' : ''}`,   color: 'var(--text-primary)' },
-    { label: 'LOSS STREAK', value: `${lossStreak} trade${lossStreak !== 1 ? 's' : ''}`, color: 'var(--text-primary)' },
-    { label: 'RISK:REWARD', value: rrLabel,  color: rrGood ? '#3B82F6' : 'var(--negative-red)' },
-    { label: 'OPEN TRADES', value: openCount, color: 'var(--text-primary)' },
-  ]
+// ─── P&L Distribution ─────────────────────────────────────────────────────────
+function PnlDistributionCard({ histogram }) {
+  const { buckets } = histogram
   return (
-    <div className="glass-card p-5 flex flex-col">
-      <div className="flex items-center gap-2 mb-4">
-        <LayoutGrid size={15} style={{ color: 'var(--text-primary)' }} />
-        <h3 className="font-bold text-sm" style={{ color: 'var(--text-primary)' }}>Quick Stats</h3>
-      </div>
-      <div className="grid grid-cols-2 gap-2.5 flex-1">
-        {tiles.map(t => (
-          <div key={t.label} className="rounded-xl p-3.5"
-               style={{ background: 'var(--bg-hover)', border: '1px solid var(--border-subtle)' }}>
-            <p className="text-[9px] font-bold uppercase tracking-wider mb-1.5" style={{ color: 'var(--text-muted)' }}>{t.label}</p>
-            <p className="text-lg font-bold leading-tight" style={{ color: t.color }}>{t.value}</p>
-          </div>
-        ))}
-      </div>
+    <div className="glass-card p-5">
+      <CardHeader icon={BarChart2} iconBg="rgba(245,158,11,0.15)" iconColor="#F59E0B" title="P&L Distribution"
+                  info="How many closed trades fall into each profit/loss range." />
+      {buckets.length === 0 ? <EmptyState /> : (
+        <div style={{ height: 210 }} className="mt-4">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={buckets} margin={{ top: 4, right: 0, left: 0, bottom: 20 }} barCategoryGap="18%">
+              <XAxis dataKey="label" tick={{ fill:'rgba(255,255,255,0.3)', fontSize: 9 }} axisLine={false} tickLine={false}
+                     interval={0} angle={-35} textAnchor="end" height={40} />
+              <YAxis tick={{ fill:'rgba(255,255,255,0.3)', fontSize: 10 }} axisLine={false} tickLine={false} width={26} allowDecimals={false} />
+              <Tooltip cursor={{ fill:'rgba(255,255,255,0.04)' }}
+                       content={({ active, payload }) => {
+                         if (!active || !payload?.length) return null
+                         const d = payload[0].payload
+                         return <ChartTooltip title={d.label} value={`${d.count} trade${d.count !== 1 ? 's' : ''}`} valueColor={d.isProfit ? '#22C55E' : '#EF4444'} />
+                       }} />
+              <Bar dataKey="count" radius={[4,4,0,0]} maxBarSize={28} isAnimationActive animationDuration={900}>
+                {buckets.map((b, i) => <Cell key={i} fill={b.isProfit ? '#22C55E' : '#EF4444'} fillOpacity={0.85} />)}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
     </div>
   )
 }
 
-// ─── Trading Calendar ─────────────────────────────────────────────────────────
-// Colors: profitable days/weeks use blue (#3B82F6), losing days/weeks use red
-// (#EF4444), untraded days stay neutral — matching the reference design.
+// ─── Rolling Performance ──────────────────────────────────────────────────────
+function RollingPerformanceCard({ rolling }) {
+  return (
+    <div className="glass-card p-5">
+      <CardHeader icon={Activity} iconBg="rgba(139,92,246,0.18)" iconColor="#A78BFA" title="Rolling Performance"
+                  subtitle="20-trade rolling window — tracks current form"
+                  info="Win rate and profit factor recalculated over the trailing 20 trades, trade by trade." />
+      {rolling.length === 0 ? <EmptyState /> : (
+        <>
+          <div style={{ height: 260 }} className="mt-4">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={rolling} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+                <XAxis dataKey="tradeNum" tick={{ fill:'rgba(255,255,255,0.3)', fontSize: 10 }} axisLine={false} tickLine={false}
+                       label={{ value:'Trade #', position:'insideBottom', offset: -4, fill:'rgba(255,255,255,0.3)', fontSize: 10 }} />
+                <YAxis yAxisId="left" tick={{ fill:'rgba(255,255,255,0.3)', fontSize: 10 }} axisLine={false} tickLine={false}
+                       domain={[0, 100]} tickFormatter={v => `${v}%`} />
+                <YAxis yAxisId="right" orientation="right" tick={{ fill:'rgba(255,255,255,0.3)', fontSize: 10 }} axisLine={false} tickLine={false}
+                       domain={[0, 12]} tickFormatter={v => `${v}x`} />
+                <ReferenceLine yAxisId="left" y={50} stroke="rgba(255,255,255,0.15)" strokeDasharray="4 4" />
+                <ReferenceLine yAxisId="right" y={1} stroke="rgba(139,92,246,0.25)" strokeDasharray="4 4" />
+                <Tooltip content={({ active, payload, label }) => {
+                  if (!active || !payload?.length) return null
+                  const wr = payload.find(p => p.dataKey === 'winRate')?.value
+                  const pf = payload.find(p => p.dataKey === 'profitFactor')?.value
+                  return (
+                    <div style={{ background:'#181722', border:'1px solid rgba(255,255,255,0.1)', borderRadius: 10, padding:'8px 14px', fontSize: 12 }}>
+                      <p style={{ color:'rgba(255,255,255,0.4)', marginBottom: 4 }}>Trade #{label}</p>
+                      <p style={{ color:'#22C55E' }}>Win Rate: {wr?.toFixed(1)}%</p>
+                      <p style={{ color:'#8B5CF6' }}>Profit Factor: {pf?.toFixed(2)}x</p>
+                    </div>
+                  )
+                }} />
+                <Line yAxisId="left" type="monotone" dataKey="winRate" stroke="#22C55E" strokeWidth={2} dot={false}
+                      isAnimationActive animationDuration={1200} />
+                <Line yAxisId="right" type="monotone" dataKey="profitFactor" stroke="#8B5CF6" strokeWidth={2} dot={false}
+                      isAnimationActive animationDuration={1200} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+          <div className="flex items-center justify-center gap-5 mt-2 flex-wrap">
+            <div className="flex items-center gap-1.5">
+              <div className="w-3 h-0.5 rounded-full" style={{ background:'#22C55E' }} />
+              <span className="text-xs" style={{ color:'var(--text-muted)' }}>Win Rate (left axis)</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <div className="w-3 h-0.5 rounded-full" style={{ background:'#8B5CF6' }} />
+              <span className="text-xs" style={{ color:'var(--text-muted)' }}>Profit Factor (right axis)</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <div className="w-3 h-0.5 rounded-full" style={{ background:'rgba(255,255,255,0.3)' }} />
+              <span className="text-xs" style={{ color:'var(--text-muted)' }}>50% / 1.0x baselines</span>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+// ─── Trading Calendar (kept from the existing implementation, relocated to
+// the end of the page per the reference layout) ───────────────────────────
 const CAL_BLUE = '#3B82F6'
 const CAL_RED  = '#EF4444'
 
@@ -686,7 +1132,7 @@ function TradingCalendar({ byDate, closed }) {
               )}
               <div className="px-3 py-2 space-y-1.5 max-h-72 overflow-y-auto">
                 {selTrades.map(t=>{
-                  const isLong = t.side==='long'
+                  const isLong = t.side==='BUY'
                   return(
                     <div key={t.id} className="flex items-center gap-2.5 px-3 py-2.5 rounded-xl"
                          style={{ background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.05)' }}>
@@ -717,420 +1163,96 @@ function TradingCalendar({ byDate, closed }) {
 }
 
 // ─── Main ──────────────────────────────────────────────────────────────────────
-const TIME_PERIODS = [
-  { key: 'today', label: 'Today' },
-  { key: '7d',    label: '7 Days' },
-  { key: '30d',   label: '30 Days' },
-  { key: '3m',    label: '3 Months' },
-  { key: '1y',    label: '1 Year' },
-  { key: 'all',   label: 'All Time' },
-]
-const TRADE_FILTERS = [
-  { key: 'all',     label: 'All Trades' },
-  { key: 'winners', label: 'Winners', icon: CheckCircle },
-  { key: 'losers',  label: 'Losers',  icon: X },
-]
-
 export default function Performance() {
-  const { user }  = useAuth()
+  const { user } = useAuth()
   const { trades, account, syncing, syncTrades, isManualAccount } = useTrades(user?.id)
 
-  const [timePeriod, setTimePeriod] = useState('30d')
-  const [filterBy,   setFilterBy]   = useState('all')
+  // Every stat and chart on this page derives from `closed` below — the
+  // full closed-trade history, matching the reference design (no time or
+  // winner/loser filters on this page).
+  const closed = useMemo(() => trades.filter(t => t.status === 'closed'), [trades])
 
-  const openCount = trades.filter(t => t.status !== 'closed').length
+  const stats  = useMemo(() => computeStats(closed), [closed])
+  const wins   = useMemo(() => closed.filter(t => (t.pnl || 0) > 0), [closed])
+  const losses = useMemo(() => closed.filter(t => (t.pnl || 0) <= 0), [closed])
+  const expectancy = closed.length > 0
+    ? (stats.winRate / 100) * stats.avgWin + (1 - stats.winRate / 100) * stats.avgLoss
+    : 0
 
-  const periodCutoff = useMemo(() => {
-    const now = new Date()
-    if (timePeriod === 'today') return new Date(now.getFullYear(), now.getMonth(), now.getDate())
-    if (timePeriod === '7d')    return new Date(now.getTime() - 7*864e5)
-    if (timePeriod === '30d')   return new Date(now.getTime() - 30*864e5)
-    if (timePeriod === '3m')    return new Date(now.getFullYear(), now.getMonth()-3, now.getDate())
-    if (timePeriod === '1y')    return new Date(now.getFullYear()-1, now.getMonth(), now.getDate())
-    return null // 'all'
-  }, [timePeriod])
-
-  // Every downstream stat/chart on this page derives from `closed` below, so
-  // filtering here cascades everywhere automatically — Hero Stats, Secondary
-  // Stats, Quick Stats, Equity Curve, Calendar, Top Symbols, all of it.
-  const closed = useMemo(() => {
-    let list = trades.filter(t => t.status === 'closed')
-    if (periodCutoff) list = list.filter(t => t.closed_at && new Date(t.closed_at) >= periodCutoff)
-    if (filterBy === 'winners') list = list.filter(t => (t.pnl || 0) > 0)
-    if (filterBy === 'losers')  list = list.filter(t => (t.pnl || 0) <= 0)
-    return list
-  }, [trades, periodCutoff, filterBy])
-
-  const stats  = computeStats(closed)
-  const curve  = buildEquityCurve(closed)
-
-  const wins   = closed.filter(t => (t.pnl||0)>0)
-  const losses = closed.filter(t => (t.pnl||0)<=0)
-  const total  = closed.length
-  const winPct = total>0?(wins.length/total)*100:0
-  const grossProfit = wins.reduce((s,t)=>s+(t.pnl||0),0)
-  const grossLoss   = losses.reduce((s,t)=>s+(t.pnl||0),0)
-  const expectancy  = closed.length>0
-    ? (stats.winRate/100)*stats.avgWin+(1-stats.winRate/100)*stats.avgLoss : 0
-
-  const { winStreak, lossStreak } = useMemo(() => {
-    const sorted = [...closed].sort((a,b) => new Date(a.closed_at) - new Date(b.closed_at))
-    if (!sorted.length) return { winStreak: 0, lossStreak: 0 }
-    const lastIsWin = (sorted[sorted.length-1].pnl || 0) > 0
-    let streak = 0
-    for (let i = sorted.length-1; i >= 0; i--) {
-      const isWin = (sorted[i].pnl || 0) > 0
-      if (isWin === lastIsWin) streak++
-      else break
-    }
-    return lastIsWin ? { winStreak: streak, lossStreak: 0 } : { winStreak: 0, lossStreak: streak }
+  const byDate = useMemo(() => {
+    const m = {}
+    closed.forEach(t => {
+      const k = t.closed_at?.slice(0, 10); if (!k) return
+      if (!m[k]) m[k] = { pnl: 0, count: 0 }
+      m[k].pnl += t.pnl || 0; m[k].count++
+    })
+    return m
   }, [closed])
 
-  const DAY_LABELS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun']
+  const assetClassData   = useMemo(() => computeAssetClassBreakdown(closed), [closed])
+  const hourlyRanked      = useMemo(() => rankHourlyPerformance(closed), [closed])
+  const drawdownSeries    = useMemo(() => computeDrawdownSeries(closed), [closed])
+  const streakTracking    = useMemo(() => computeStreakTracking(closed), [closed])
+  const symbolBreakdown   = useMemo(() => computeSymbolBreakdown(closed), [closed])
+  const heatmapGrid       = useMemo(() => computeTradingHeatmap(closed), [closed])
+  const riskAdjusted      = useMemo(() => computeRiskAdjustedMetrics(closed), [closed])
+  const avgHoldTime       = useMemo(() => computeAvgHoldTimeByOutcome(closed), [closed])
+  const pnlHistogram      = useMemo(() => computePnlHistogram(closed), [closed])
+  const rollingPerf       = useMemo(() => computeRollingPerformance(closed, 20), [closed])
 
-  const byDay = useMemo(() => {
-    const m={}; DAY_LABELS.forEach(d=>{m[d]={pnl:0,count:0,wins:0}})
-    closed.forEach(t=>{
-      if(!t.closed_at) return
-      const dow=new Date(t.closed_at).getDay(), name=DAY_LABELS[dow===0?6:dow-1]
-      m[name].pnl+=t.pnl||0; m[name].count++
-      if((t.pnl||0)>0) m[name].wins++
-    }); return m
-  },[closed])
-  const maxDayPnl = Math.max(...DAY_LABELS.map(d=>Math.abs(byDay[d].pnl)),1)
-
-  const topSymbols = useMemo(()=>{
-    const m={}
-    closed.forEach(t=>{
-      if(!m[t.symbol]) m[t.symbol]={pnl:0,count:0,wins:0}
-      m[t.symbol].pnl+=t.pnl||0; m[t.symbol].count++
-      if((t.pnl||0)>0) m[t.symbol].wins++
-    })
-    return Object.entries(m).map(([sym,d])=>({symbol:sym,...d})).sort((a,b)=>b.pnl-a.pnl).slice(0,5)
-  },[closed])
-
-  const byDate = useMemo(()=>{
-    const m={}
-    closed.forEach(t=>{
-      const k=t.closed_at?.slice(0,10); if(!k) return
-      if(!m[k]) m[k]={pnl:0,count:0}
-      m[k].pnl+=t.pnl||0; m[k].count++
-    }); return m
-  },[closed])
-
-  const bySymbol = useMemo(()=>{
-    const m={}
-    closed.forEach(t=>{ if(!m[t.symbol]) m[t.symbol]={symbol:t.symbol,pnl:0}; m[t.symbol].pnl+=t.pnl||0 })
-    return Object.values(m).sort((a,b)=>b.pnl-a.pnl).slice(0,8)
-  },[closed])
-
-  const recent = useMemo(()=>
-    [...closed].sort((a,b)=>new Date(b.closed_at)-new Date(a.closed_at)).slice(0,10),
-  [closed])
+  const hasAnyTrades = trades.length > 0
 
   return (
     <PageWrapper onSync={account && !isManualAccount ? syncTrades : undefined} syncing={syncing}>
-      <div className="mb-6 flex items-start justify-between flex-wrap gap-5">
-        <div className="flex items-center gap-2.5">
-          <LineChart size={20} style={{ color: '#3B82F6' }} />
-          <div>
-            <h1 className="text-2xl font-bold" style={{ color:'var(--text-primary)' }}>Performance Analytics</h1>
-            <p className="text-sm mt-0.5" style={{ color:'var(--text-muted)' }}>Analyze your trading patterns and improve your strategy</p>
-          </div>
-        </div>
-        <div className="flex items-start gap-6 flex-wrap">
-          <div>
-            <p className="text-[10px] font-bold uppercase tracking-wider mb-2" style={{ color:'var(--text-muted)' }}>Time Period</p>
-            <div className="flex gap-1.5">
-              {TIME_PERIODS.map(p => (
-                <button key={p.key} onClick={() => setTimePeriod(p.key)}
-                        className="px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap"
-                        style={timePeriod === p.key
-                          ? { background: 'var(--gradient-primary)', color: '#fff' }
-                          : { background: 'var(--bg-hover)', color: 'var(--text-muted)', border: '1px solid var(--border-subtle)' }}>
-                  {p.label}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div>
-            <p className="text-[10px] font-bold uppercase tracking-wider mb-2" style={{ color:'var(--text-muted)' }}>Filter By</p>
-            <div className="flex gap-1.5">
-              {TRADE_FILTERS.map(f => (
-                <button key={f.key} onClick={() => setFilterBy(f.key)}
-                        className="px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors flex items-center gap-1.5 whitespace-nowrap"
-                        style={filterBy === f.key
-                          ? { background: 'var(--gradient-primary)', color: '#fff' }
-                          : { background: 'var(--bg-hover)', color: 'var(--text-muted)', border: '1px solid var(--border-subtle)' }}>
-                  {f.icon && <f.icon size={12} />}
-                  {f.label}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
+      <div className="mb-6">
+        <h1 className="text-2xl font-bold" style={{ color: 'var(--text-primary)' }}>Analytics</h1>
+        <p className="text-sm mt-0.5" style={{ color: 'var(--text-muted)' }}>Deep dive into your trading performance</p>
       </div>
 
-      {trades.length===0 ? (
-        <div className="glass-card p-14 text-center">
-          <BarChart2 size={40} className="mx-auto mb-3 opacity-20" style={{ color:'var(--text-muted)' }} />
-          <p className="font-semibold mb-1" style={{ color:'var(--text-primary)' }}>No trade data yet</p>
-          <p className="text-sm" style={{ color:'var(--text-muted)' }}>Add trades to see performance analytics</p>
+      {!hasAnyTrades ? (
+        <div className="glass-card p-12 text-center">
+          <BarChart2 size={40} className="mx-auto mb-4" style={{ color: 'var(--text-muted)', opacity: 0.3 }} />
+          <p className="text-base font-semibold mb-1" style={{ color: 'var(--text-primary)' }}>No trade data yet</p>
+          <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
+            Sync your MT5 account or log a trade to unlock your performance analytics.
+          </p>
         </div>
       ) : (
-        <div className="space-y-4">
-
-          {/* ── ROW 1: Hero Stats ── */}
+        <div className="space-y-6">
           <HeroStats stats={stats} wins={wins} losses={losses} closed={closed} expectancy={expectancy} />
-
-          {/* ── ROW 2: Secondary Stats ── */}
           <SecondaryStats stats={stats} />
 
-          {/* ── ROW 3: Quick Stats + Equity Curve ── */}
-          <div className="grid gap-4" style={{ gridTemplateColumns:'320px 1fr' }}>
-            <QuickStats stats={stats} winStreak={winStreak} lossStreak={lossStreak} openCount={openCount} />
-            <div className="glass-card p-5" style={{ minHeight:300 }}>
-              <EquityChart curve={curve} />
-            </div>
+          <div className="grid grid-cols-1 xl:grid-cols-[1.6fr_1fr] gap-4">
+            <PnlPeriodCard closed={closed} />
+            <WinLossCard wins={wins} losses={losses} />
           </div>
 
-          {/* ── ROW 4: Trading Calendar ── */}
-          <TradingCalendar byDate={byDate} closed={closed} />
+          <EquityCurveSection closed={closed} />
 
-          {/* ── ROW 5: Win/Loss Distribution + Recent Trades ── */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <div className="glass-card p-5 h-[400px]">
-              <div className="flex items-center gap-2 mb-5">
-                <BarChart2 size={15} style={{ color:'var(--accent-purple)' }} />
-                <h3 className="font-bold" style={{ color:'var(--text-primary)' }}>Win/Loss Distribution</h3>
-              </div>
-              <div className="flex rounded-xl overflow-hidden mb-6" style={{ height:46 }}>
-                {total===0
-                  ? <div className="flex-1 flex items-center justify-center text-xs"
-                         style={{ background:'var(--bg-card-hover)',color:'var(--text-muted)' }}>No data</div>
-                  : <>
-                      {wins.length>0&&(
-                        <div className="flex items-center justify-center font-bold text-sm text-white select-none"
-                             style={{ width:`${winPct}%`,minWidth:44,
-                                      background:'linear-gradient(135deg,#3B82F6,#6366F1)',fontSize:13 }}>
-                          {wins.length}W
-                        </div>
-                      )}
-                      {losses.length>0&&(
-                        <div className="flex items-center justify-center font-bold text-sm text-white select-none"
-                             style={{ width:`${100-winPct}%`,minWidth:44,
-                                      background:'linear-gradient(135deg,#EF4444,#DC2626)',fontSize:13 }}>
-                          {losses.length}L
-                        </div>
-                      )}
-                    </>
-                }
-              </div>
-              <div className="space-y-3.5">
-                {[{label:'Gross Profit',value:grossProfit,dot:'#3B82F6'},
-                  {label:'Gross Loss',  value:grossLoss,  dot:'#EF4444'},
-                  {label:'Net Result',  value:grossProfit+grossLoss,dot:'#8B5CF6'},
-                ].map(r=>(
-                  <div key={r.label} className="flex items-center justify-between">
-                    <div className="flex items-center gap-2.5">
-                      <div className="w-2.5 h-2.5 rounded-full" style={{ background:r.dot }}/>
-                      <span className="text-sm" style={{ color:'var(--text-muted)' }}>{r.label}</span>
-                    </div>
-                    <span className="text-sm font-bold"
-                          style={{ color:r.value>=0?'var(--positive-green)':'var(--negative-red)' }}>
-                      {fmtK(r.value)}
-                    </span>
-                  </div>
-                ))}
-              </div>
-              <div className="mt-5 pt-4" style={{ borderTop:'1px solid var(--border-subtle)' }}>
-                <div className="flex justify-between text-xs mb-2">
-                  <span style={{ color:'var(--text-muted)' }}>Win Rate</span>
-                  <span className="font-semibold"
-                        style={{ color:winPct>=50?'var(--positive-green)':'var(--negative-red)' }}>
-                    {winPct.toFixed(1)}%
-                  </span>
-                </div>
-                <div className="h-2 rounded-full overflow-hidden" style={{ background:'var(--bg-card-hover)' }}>
-                  <div className="h-full rounded-full"
-                       style={{ width:`${winPct}%`,background:'linear-gradient(90deg,#3B82F6,#6366F1)' }}/>
-                </div>
-              </div>
-            </div>
-
-            <div className="glass-card p-5 h-[400px] flex flex-col">
-              <div className="flex items-center gap-2 mb-1">
-                <Clock size={15} style={{ color:'var(--accent-purple)' }} />
-                <h3 className="font-bold" style={{ color:'var(--text-primary)' }}>Recent Trades</h3>
-              </div>
-              <p className="text-xs mb-4" style={{ color:'var(--text-muted)' }}>Your last 10 trades</p>
-              <div className="space-y-1.5 overflow-y-auto pr-1 flex-1">
-                {recent.length===0
-                  ? <p className="text-sm text-center py-8" style={{ color:'var(--text-muted)' }}>No closed trades yet</p>
-                  : recent.map(t=>{
-                      const isBuy=t.side==='BUY', pnl=t.pnl||0
-                      return(
-                        <div key={t.id} className="flex items-center gap-3 px-3 py-2.5 rounded-xl transition-colors"
-                             style={{ background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.04)' }}
-                             onMouseEnter={e=>e.currentTarget.style.background='rgba(255,255,255,0.05)'}
-                             onMouseLeave={e=>e.currentTarget.style.background='rgba(255,255,255,0.02)'}>
-                          <div className="w-9 h-9 rounded-xl flex-shrink-0 flex items-center justify-center"
-                               style={{ background:isBuy?'rgba(59,130,246,0.14)':'rgba(239,68,68,0.12)' }}>
-                            {isBuy?<TrendingUp size={15} style={{ color:'#3B82F6' }}/>
-                                  :<TrendingDown size={15} style={{ color:'#EF4444' }}/>}
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <p className="text-sm font-bold" style={{ color:'var(--text-primary)' }}>{t.symbol}</p>
-                            <p className="text-xs" style={{ color:'var(--text-muted)' }}>
-                              {t.closed_at?new Date(t.closed_at).toLocaleDateString('en-US',{month:'short',day:'numeric'}):'—'}
-                            </p>
-                          </div>
-                          <span className="text-sm font-bold"
-                                style={{ color:pnl>=0?'var(--positive-green)':'var(--negative-red)' }}>
-                            {fmtK(pnl)}
-                          </span>
-                        </div>
-                      )
-                    })
-                }
-              </div>
-            </div>
+            <AssetClassCard data={assetClassData} />
+            <TimeOfDayCard ranked={hourlyRanked} />
           </div>
 
-          {/* ── ROW 6: Long vs Short + Day Performance + Top Symbols ── */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-            {/* Long vs Short */}
-            <div className="glass-card p-5">
-              <div className="flex items-center gap-2 mb-1">
-                <TrendingUp size={15} style={{ color:'var(--accent-purple)' }} />
-                <h3 className="font-bold" style={{ color:'var(--text-primary)' }}>Long vs Short</h3>
-              </div>
-              <p className="text-xs mb-4" style={{ color:'var(--text-muted)' }}>Performance by trade direction</p>
-              <div className="space-y-3">
-                {[
-                  { label:'Long',  Icon:TrendingUp,  trd:closed.filter(t=>t.side==='BUY'),  accent:'#3B82F6',bg:'rgba(59,130,246,0.07)' },
-                  { label:'Short', Icon:TrendingDown, trd:closed.filter(t=>t.side==='SELL'), accent:'#EF4444',bg:'rgba(239,68,68,0.06)' },
-                ].map(dir=>{
-                  const wns=dir.trd.filter(t=>(t.pnl||0)>0)
-                  const pnl=dir.trd.reduce((s,t)=>s+(t.pnl||0),0)
-                  return(
-                    <div key={dir.label} className="rounded-xl p-4"
-                         style={{ background:dir.bg,borderLeft:`3px solid ${dir.accent}` }}>
-                      <div className="flex items-center gap-2 mb-3">
-                        <dir.Icon size={14} style={{ color:dir.accent }}/>
-                        <span className="font-bold text-sm" style={{ color:'var(--text-primary)' }}>{dir.label}</span>
-                      </div>
-                      <div className="grid grid-cols-3 gap-2">
-                        {[
-                          { label:'TRADES',value:dir.trd.length },
-                          { label:'P&L',   value:fmtK(pnl),    color:pnlColor(pnl) },
-                          { label:'WIN %', value:dir.trd.length>0?`${((wns.length/dir.trd.length)*100).toFixed(1)}%`:'0.0%',
-                            color:dir.trd.length>0&&wns.length/dir.trd.length>=0.5?'var(--positive-green)':'var(--negative-red)' },
-                        ].map(s=>(
-                          <div key={s.label}>
-                            <p className="text-[10px] font-bold uppercase tracking-wider mb-1" style={{ color:'var(--text-muted)' }}>{s.label}</p>
-                            <p className="text-base font-bold" style={{ color:s.color||'var(--text-primary)' }}>{s.value}</p>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
-
-            {/* Day Performance */}
-            <div className="glass-card p-5">
-              <div className="flex items-center gap-2 mb-1">
-                <Calendar size={15} style={{ color:'var(--accent-purple)' }}/>
-                <h3 className="font-bold" style={{ color:'var(--text-primary)' }}>Day Performance</h3>
-              </div>
-              <p className="text-xs mb-5" style={{ color:'var(--text-muted)' }}>Find your best trading days</p>
-              <div className="space-y-2.5">
-                {DAY_LABELS.map(day=>{
-                  const data=byDay[day], pct=data.count>0?(Math.abs(data.pnl)/maxDayPnl)*100:0
-                  return(
-                    <div key={day} className="flex items-center gap-3">
-                      <span className="text-xs font-semibold w-8 flex-shrink-0" style={{ color:'var(--text-muted)' }}>{day}</span>
-                      <div className="flex-1 h-7 rounded-lg overflow-hidden relative"
-                           style={{ background:'rgba(255,255,255,0.04)' }}>
-                        {pct>0&&<div className="absolute left-0 top-0 h-full rounded-lg"
-                                     style={{ width:`${pct}%`,background:data.pnl>=0?'linear-gradient(90deg,#3B82F6,#6366F1)':'linear-gradient(90deg,#EF4444,#DC2626)' }}/>}
-                        {pct===0&&<div className="absolute left-0 top-0 h-full rounded-lg" style={{ width:3,background:'rgba(59,130,246,0.3)' }}/>}
-                      </div>
-                      <span className="text-xs font-bold w-14 text-right flex-shrink-0"
-                            style={{ color:data.count===0?'var(--text-muted)':pnlColor(data.pnl) }}>
-                        {data.count>0?fmtK(data.pnl):'—'}
-                      </span>
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
-
-            {/* Top Symbols */}
-            <div className="glass-card p-5">
-              <div className="flex items-center gap-2 mb-1">
-                <Award size={15} style={{ color:'var(--accent-purple)' }}/>
-                <h3 className="font-bold" style={{ color:'var(--text-primary)' }}>Top Symbols</h3>
-              </div>
-              <p className="text-xs mb-4" style={{ color:'var(--text-muted)' }}>Best performing assets</p>
-              {topSymbols.length===0
-                ? <p className="text-sm text-center py-8" style={{ color:'var(--text-muted)' }}>No data yet</p>
-                : <div className="space-y-2">
-                    {topSymbols.map((sym,i)=>(
-                      <div key={sym.symbol} className="flex items-center gap-3 p-3 rounded-xl"
-                           style={{ background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.04)' }}
-                           onMouseEnter={e=>e.currentTarget.style.background='rgba(255,255,255,0.05)'}
-                           onMouseLeave={e=>e.currentTarget.style.background='rgba(255,255,255,0.02)'}>
-                        <div className="w-7 h-7 rounded-lg flex-shrink-0 flex items-center justify-center text-xs font-bold"
-                             style={{ background:sym.pnl>=0?'rgba(59,130,246,0.2)':'rgba(239,68,68,0.15)',
-                                      color:sym.pnl>=0?'#3B82F6':'#EF4444' }}>{i+1}</div>
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm font-bold" style={{ color:'var(--text-primary)' }}>{sym.symbol}</p>
-                          <p className="text-[10px]" style={{ color:'var(--text-muted)' }}>
-                            {sym.count} trade{sym.count!==1?'s':''} · {sym.count>0?Math.round((sym.wins/sym.count)*100):0}% win
-                          </p>
-                        </div>
-                        <span className="text-sm font-bold"
-                              style={{ color:sym.pnl>=0?'var(--positive-green)':'var(--negative-red)' }}>
-                          {fmtK(sym.pnl)}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-              }
-            </div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <DrawdownCard series={drawdownSeries} />
+            <StreakTrackingCard tracking={streakTracking} />
           </div>
 
-          {/* ── ROW 7: P&L by Symbol ── */}
-          {bySymbol.length>0&&(
-            <div className="glass-card p-5">
-              <h3 className="font-bold mb-4" style={{ color:'var(--text-primary)' }}>P&L by Symbol</h3>
-              <ResponsiveContainer width="100%" height={200}>
-                <BarChart data={bySymbol} margin={{top:4,right:0,bottom:0,left:0}} barCategoryGap="35%">
-                  <XAxis dataKey="symbol"
-                         tick={{ fill:'rgba(255,255,255,0.4)',fontSize:11,fontFamily:'Poppins,sans-serif' }}
-                         axisLine={false} tickLine={false}/>
-                  <YAxis hide/>
-                  <Tooltip content={({active,payload,label})=>{
-                    if(!active||!payload?.length) return null
-                    const v=payload[0].value
-                    return(
-                      <div style={{ background:'#1a1a2e',border:'1px solid rgba(255,255,255,0.1)',
-                                    borderRadius:10,padding:'8px 14px',fontSize:12 }}>
-                        <p style={{ color:'rgba(255,255,255,0.4)',marginBottom:4 }}>{label}</p>
-                        <p style={{ color:v>=0?'#22C55E':'#EF4444',fontWeight:700 }}>{fmtK(v)}</p>
-                      </div>
-                    )
-                  }} cursor={{ fill:'rgba(255,255,255,0.04)',radius:6 }}/>
-                  <Bar dataKey="pnl" radius={[6,6,0,0]} maxBarSize={52}>
-                    {bySymbol.map((e,i)=><Cell key={i} fill={e.pnl>=0?'#22C55E':'#EF4444'} fillOpacity={0.85}/>)}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          )}
+          <SymbolPerformanceRow data={symbolBreakdown} />
+
+          <TradingHeatmapCard grid={heatmapGrid} />
+
+          <RiskAdjustedCard metrics={riskAdjusted} />
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <AvgHoldTimeCard data={avgHoldTime} />
+            <PnlDistributionCard histogram={pnlHistogram} />
+          </div>
+
+          <RollingPerformanceCard rolling={rollingPerf} />
+
+          <TradingCalendar byDate={byDate} closed={closed} />
         </div>
       )}
     </PageWrapper>

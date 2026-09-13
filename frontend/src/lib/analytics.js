@@ -1859,3 +1859,299 @@ export function computeHourlyPerformance(trades = []) {
 
   return { buckets, bestHour, worstHour, mostActiveHour, insight }
 }
+// ─────────────────────────────────────────────────────────────────────────
+// Performance tab (redesign) — additional deterministic analytics.
+// Every number below is derived straight from the trader's own closed
+// trades; nothing here is estimated or invented. These power the
+// Asset Class, Time of Day, Drawdown, Streak Tracking, Performance by
+// Symbol, Trading Heatmap, Risk-Adjusted, Avg Hold Time, P&L Distribution,
+// Rolling Performance and P&L-by-period sections of the Performance page.
+// ─────────────────────────────────────────────────────────────────────────
+
+const PERF_MONTHS    = ['January','February','March','April','May','June','July','August','September','October','November','December']
+const PERF_MON_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+const PERF_DOW_MON_FIRST = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun']
+const pad2 = n => String(n).padStart(2, '0')
+const toDateKey = d => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`
+
+// ── Asset-class classification — pattern match on symbol, not a hardcoded
+// per-symbol lookup, so any broker-fed symbol (XAUAUD, WTIUSD, etc.) that
+// wasn't anticipated still lands in a sensible bucket. ────────────────────
+const ASSET_CLASS_RULES = [
+  { assetClass: 'Crypto',      test: s => /^(BTC|ETH|SOL|XRP|LTC|DOGE|ADA|BNB|AVAX|DOT|MATIC|LINK|SHIB|TRX)/.test(s) },
+  { assetClass: 'Commodities', test: s => /^(XAU|XAG|XPT|XPD|WTI|BRENT|UKOIL|USOIL|NGAS|OIL|COPPER)/.test(s) },
+  { assetClass: 'Indices',     test: s => /^(US30|US100|US500|USTEC|SPX|NAS|GER|DE30|DE40|UK100|JP225|FRA40|AUS200|HK50|EU50|NIKKEI)/.test(s) },
+]
+export function classifyAssetClass(symbol = '') {
+  const s = String(symbol).toUpperCase()
+  const rule = ASSET_CLASS_RULES.find(r => r.test(s))
+  if (rule) return rule.assetClass
+  if (/^[A-Z]{6}$/.test(s)) return 'Forex'
+  return 'Other'
+}
+
+export function computeAssetClassBreakdown(trades = []) {
+  const map = {}
+  trades.filter(t => t.status === 'closed' && t.symbol).forEach(t => {
+    const cls = classifyAssetClass(t.symbol)
+    if (!map[cls]) map[cls] = { assetClass: cls, pnl: 0, count: 0, wins: 0 }
+    map[cls].pnl += t.pnl || 0
+    map[cls].count++
+    if (t.pnl > 0) map[cls].wins++
+  })
+  return Object.values(map)
+    .map(v => ({ ...v, winRate: v.count ? (v.wins / v.count) * 100 : 0 }))
+    .sort((a, b) => b.pnl - a.pnl)
+}
+
+// ── Hourly performance ranked best → worst by total $ P&L (not average) —
+// this is what draws the descending "ranked" curve and feeds the
+// #1/#2/#3 Best-hour cards on the Time of Day Performance chart. ─────────
+export function rankHourlyPerformance(trades = []) {
+  const { buckets } = computeHourlyPerformance(trades)
+  return buckets.filter(b => b.count > 0).sort((a, b) => b.pnl - a.pnl)
+}
+
+// ── Drawdown series — running peak-to-trough on the cumulative P&L curve,
+// one point per closed trade in chronological order. Values are <= 0. ────
+export function computeDrawdownSeries(trades = []) {
+  const closed = trades.filter(t => t.status === 'closed' && t.closed_at)
+    .slice().sort((a, b) => new Date(a.closed_at) - new Date(b.closed_at))
+  if (!closed.length) return { points: [], maxDrawdown: 0, maxDrawdownPct: 0, maxDate: null }
+
+  let cum = 0, peak = 0, maxDD = 0, maxDDPct = 0, maxDate = null
+  const points = closed.map(t => {
+    cum += t.pnl || 0
+    if (cum > peak) peak = cum
+    const drawdown = cum - peak
+    const drawdownPct = peak > 0 ? (drawdown / peak) * 100 : 0
+    if (drawdown < maxDD) { maxDD = drawdown; maxDDPct = drawdownPct; maxDate = t.closed_at }
+    return { date: t.closed_at.slice(0, 10), drawdown, equity: cum, peak }
+  })
+  return { points, maxDrawdown: maxDD, maxDrawdownPct: maxDDPct, maxDate }
+}
+
+// ── Streak tracking — current streak, longest win/loss run, and a
+// most-recent-first list of every streak "run" (e.g. W5, L4, W10…) for
+// the History strip. ──────────────────────────────────────────────────
+export function computeStreakTracking(trades = [], historyLimit = 10) {
+  const stats = computeStats(trades)
+  const { longestWinStreak, longestLossStreak } = computeStreakStats(trades)
+
+  const closed = trades.filter(t => t.status === 'closed' && t.closed_at && t.pnl != null)
+    .slice().sort((a, b) => new Date(a.closed_at) - new Date(b.closed_at))
+  const runs = []
+  closed.forEach(t => {
+    const isWin = (t.pnl || 0) > 0
+    const last = runs[runs.length - 1]
+    if (last && last.isWin === isWin) last.length++
+    else runs.push({ isWin, length: 1 })
+  })
+  const history = runs.slice(-historyLimit).reverse().map((r, i) => ({ id: i, isWin: r.isWin, length: r.length }))
+
+  return {
+    current: stats.streak, currentType: stats.streakType,
+    longestWin: longestWinStreak, longestLoss: longestLossStreak,
+    history,
+  }
+}
+
+// ── Avg hold time: winners vs losers, in minutes. ─────────────────────────
+export function computeAvgHoldTimeByOutcome(trades = []) {
+  const closed = trades.filter(t => t.status === 'closed' && t.pnl != null)
+    .map(t => ({ pnl: t.pnl, durSec: getDurationSeconds(t) }))
+    .filter(t => t.durSec != null)
+  const winners = closed.filter(t => t.pnl > 0)
+  const losers  = closed.filter(t => t.pnl < 0)
+  const avgMin  = arr => arr.length ? (arr.reduce((s, t) => s + t.durSec, 0) / arr.length) / 60 : 0
+
+  const winMin  = avgMin(winners)
+  const lossMin = avgMin(losers)
+  const diffMin = lossMin - winMin // > 0 => losers held longer than winners
+
+  let insight = null
+  if (winners.length && losers.length && diffMin !== 0) {
+    const abs = Math.abs(diffMin)
+    const fmtSpan = m => m >= 60 ? `${(m / 60).toFixed(1)} hrs` : `${Math.round(m)} min`
+    insight = diffMin > 0
+      ? { tone: 'warning',  text: `You hold losing trades ${fmtSpan(abs)} longer than winners. Classic "let losers run, cut winners short" pattern.` }
+      : { tone: 'positive', text: `You cut losers ${fmtSpan(abs)} faster than you hold winners — disciplined risk management.` }
+  }
+
+  return { winMin, lossMin, winCount: winners.length, lossCount: losers.length, diffMin, insight }
+}
+
+// ── P&L distribution histogram — every closed trade's $ P&L bucketed into
+// evenly-sized bins spanning the trader's own worst → best trade. ────────
+export function computePnlHistogram(trades = [], binCount = 12) {
+  const closed = trades.filter(t => t.status === 'closed' && t.pnl != null)
+  if (!closed.length) return { buckets: [] }
+
+  const pnls = closed.map(t => t.pnl)
+  const min = Math.min(...pnls), max = Math.max(...pnls)
+  const range = (max - min) || 1
+  const size = range / binCount
+
+  const buckets = Array.from({ length: binCount }, (_, i) => ({ lo: min + i * size, hi: min + (i + 1) * size, count: 0 }))
+  pnls.forEach(p => {
+    let idx = Math.floor((p - min) / size)
+    if (idx >= binCount) idx = binCount - 1
+    if (idx < 0) idx = 0
+    buckets[idx].count++
+  })
+
+  const fmtBucket = v => {
+    const sign = v < 0 ? '-' : ''
+    const abs = Math.abs(v)
+    return abs >= 1000 ? `${sign}$${(abs / 1000).toFixed(1)}k` : `${sign}$${Math.round(abs)}`
+  }
+
+  return {
+    buckets: buckets.map(b => ({
+      ...b,
+      label: fmtBucket((b.lo + b.hi) / 2),
+      isProfit: (b.lo + b.hi) / 2 >= 0,
+    })),
+  }
+}
+
+// ── Risk-adjusted performance — Sharpe & Sortino computed on the per-trade
+// P&L series (mean / deviation, scaled by sqrt(N) trades — the standard
+// way of turning a per-trade ratio into a strategy-level score), plus the
+// Kelly Criterion optimal-size-per-trade from win rate and payoff ratio. ──
+export function computeRiskAdjustedMetrics(trades = []) {
+  const closed = trades.filter(t => t.status === 'closed' && t.pnl != null)
+  const n = closed.length
+  if (!n) return { sharpe: 0, sortino: 0, kelly: 0, winRate: 0, payoff: 0, hasData: false }
+
+  const pnls = closed.map(t => t.pnl)
+  const mean = pnls.reduce((a, b) => a + b, 0) / n
+  const variance = pnls.reduce((s, p) => s + (p - mean) ** 2, 0) / n
+  const stdDev = Math.sqrt(variance)
+  const downsideVariance = pnls.reduce((s, p) => s + (p < 0 ? p * p : 0), 0) / n
+  const downsideDev = Math.sqrt(downsideVariance)
+
+  const sharpe  = stdDev > 0 ? (mean / stdDev) * Math.sqrt(n) : 0
+  const sortino = downsideDev > 0 ? (mean / downsideDev) * Math.sqrt(n) : (mean > 0 ? 12 : 0)
+
+  const wins = closed.filter(t => t.pnl > 0), losses = closed.filter(t => t.pnl < 0)
+  const winRate  = n ? wins.length / n : 0
+  const avgWin   = wins.length   ? wins.reduce((s, t) => s + t.pnl, 0) / wins.length : 0
+  const avgLoss  = losses.length ? Math.abs(losses.reduce((s, t) => s + t.pnl, 0) / losses.length) : 0
+  const payoff   = avgLoss > 0 ? avgWin / avgLoss : (avgWin > 0 ? 12 : 0)
+  const kelly    = payoff > 0 ? (winRate - (1 - winRate) / payoff) * 100 : 0
+
+  return { sharpe, sortino, kelly, winRate: winRate * 100, payoff, hasData: true }
+}
+
+export function sharpeRatingLabel(sharpe) {
+  if (sharpe >= 3) return 'Excellent — top tier'
+  if (sharpe >= 2) return 'Very good'
+  if (sharpe >= 1) return 'Good'
+  if (sharpe >= 0) return 'Below average'
+  return 'Poor — inconsistent edge'
+}
+export function sortinoRatingLabel(sortino) {
+  if (sortino >= 6) return 'Excellent — top tier'
+  if (sortino >= 4) return 'Very good'
+  if (sortino >= 2) return 'Good'
+  if (sortino >= 0) return 'Below average'
+  return 'Poor — inconsistent edge'
+}
+export function kellyRatingLabel(kelly) {
+  if (kelly > 5)  return 'Optimal position size per trade. Positive edge confirmed.'
+  if (kelly > 0)  return 'Optimal position size per trade. Slim but positive edge.'
+  if (kelly === 0) return 'Break-even edge — no sizing advantage either way.'
+  return 'Negative edge — reduce size or revisit the strategy.'
+}
+
+// ── Rolling performance — trailing N-trade window win rate & profit
+// factor, tracked trade-by-trade to show current "form". ────────────────
+export function computeRollingPerformance(trades = [], windowSize = 20) {
+  const closed = trades.filter(t => t.status === 'closed' && t.closed_at && t.pnl != null)
+    .slice().sort((a, b) => new Date(a.closed_at) - new Date(b.closed_at))
+
+  return closed.map((t, i) => {
+    const start = Math.max(0, i - windowSize + 1)
+    const slice = closed.slice(start, i + 1)
+    const wins  = slice.filter(x => x.pnl > 0)
+    const losses = slice.filter(x => x.pnl < 0)
+    const winRate = slice.length ? (wins.length / slice.length) * 100 : 0
+    const grossProfit = wins.reduce((s, x) => s + x.pnl, 0)
+    const grossLoss   = Math.abs(losses.reduce((s, x) => s + x.pnl, 0))
+    const rawPf = grossLoss > 0 ? grossProfit / grossLoss : (grossProfit > 0 ? 12 : 0)
+    return { tradeNum: i + 1, winRate, profitFactor: Math.min(rawPf, 12) }
+  })
+}
+
+// ── Trading heatmap — Day (Mon→Sun) × Hour (00–23), local time, count +
+// net P&L per cell. Returned as a flat lookup keyed "Day|Hour" so the UI
+// can build the full 7×24 grid (including empty cells) itself. ──────────
+export function computeTradingHeatmap(trades = []) {
+  const grid = {}
+  trades.filter(t => t.status === 'closed' && t.closed_at).forEach(t => {
+    const d = new Date(t.closed_at)
+    const day = PERF_DOW_MON_FIRST[(d.getDay() + 6) % 7]
+    const hour = d.getHours()
+    const key = `${day}|${hour}`
+    if (!grid[key]) grid[key] = { day, hour, pnl: 0, count: 0 }
+    grid[key].pnl += t.pnl || 0
+    grid[key].count++
+  })
+  return grid
+}
+
+// ── P&L by period — powers the navigable P&L bar chart (Year / Month /
+// Week view with prev/next navigation) at the top of the Performance page.
+// `refDate` is whatever day is currently "in view"; navigation just moves
+// refDate by ±1 unit and re-calls this. ──────────────────────────────────
+export function computeCalendarPnl(trades = [], view = 'month', refDate = new Date()) {
+  const closed = trades.filter(t => t.status === 'closed' && t.closed_at)
+  const byDate = {}
+  closed.forEach(t => {
+    const key = t.closed_at.slice(0, 10)
+    if (!byDate[key]) byDate[key] = { pnl: 0, count: 0 }
+    byDate[key].pnl += t.pnl || 0
+    byDate[key].count++
+  })
+
+  if (view === 'week') {
+    const d = new Date(refDate)
+    const dow = (d.getDay() + 6) % 7
+    const monday = new Date(d.getFullYear(), d.getMonth(), d.getDate() - dow)
+    const buckets = Array.from({ length: 7 }, (_, i) => {
+      const dt = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + i)
+      const data = byDate[toDateKey(dt)]
+      return { label: PERF_DOW_MON_FIRST[i], pnl: data ? data.pnl : 0, count: data ? data.count : 0 }
+    })
+    const sunday = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 6)
+    const sameMonth = monday.getMonth() === sunday.getMonth()
+    const title = sameMonth
+      ? `${PERF_MON_SHORT[monday.getMonth()]} ${monday.getDate()}–${sunday.getDate()}, ${sunday.getFullYear()}`
+      : `${PERF_MON_SHORT[monday.getMonth()]} ${monday.getDate()} – ${PERF_MON_SHORT[sunday.getMonth()]} ${sunday.getDate()}, ${sunday.getFullYear()}`
+    return { buckets, total: buckets.reduce((s, b) => s + b.pnl, 0), title }
+  }
+
+  if (view === 'year') {
+    const y = refDate.getFullYear()
+    const buckets = Array.from({ length: 12 }, (_, m) => {
+      let pnl = 0, count = 0
+      Object.entries(byDate).forEach(([key, v]) => {
+        const [ky, km] = key.split('-').map(Number)
+        if (ky === y && km === m + 1) { pnl += v.pnl; count += v.count }
+      })
+      return { label: PERF_MON_SHORT[m], pnl, count }
+    })
+    return { buckets, total: buckets.reduce((s, b) => s + b.pnl, 0), title: String(y) }
+  }
+
+  // month (default)
+  const y = refDate.getFullYear(), m = refDate.getMonth()
+  const daysInMonth = new Date(y, m + 1, 0).getDate()
+  const buckets = Array.from({ length: daysInMonth }, (_, i) => {
+    const day = i + 1
+    const data = byDate[`${y}-${pad2(m + 1)}-${pad2(day)}`]
+    return { label: String(day), pnl: data ? data.pnl : 0, count: data ? data.count : 0 }
+  })
+  return { buckets, total: buckets.reduce((s, b) => s + b.pnl, 0), title: `${PERF_MONTHS[m]} ${y}` }
+}
