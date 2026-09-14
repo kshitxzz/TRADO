@@ -2155,3 +2155,52 @@ export function computeCalendarPnl(trades = [], view = 'month', refDate = new Da
   })
   return { buckets, total: buckets.reduce((s, b) => s + b.pnl, 0), title: `${PERF_MONTHS[m]} ${y}` }
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// Reports page — date-range filtering, daily breakdown, and overall hold
+// time. Everything else the Reports page needs (equity curve, hourly /
+// symbol / day-of-week breakdowns) already exists above and is reused as-is.
+// ─────────────────────────────────────────────────────────────────────────
+
+// Restricts a trade list to those closed within a named rolling window.
+// 'all' (default) returns every trade untouched.
+export function filterTradesByRange(trades = [], rangeKey = 'all') {
+  if (rangeKey === 'all') return trades
+  const now = new Date()
+  let cutoff = null
+  if (rangeKey === 'year')  cutoff = new Date(now.getFullYear(), 0, 1)
+  else if (rangeKey === 'month') cutoff = new Date(now.getFullYear(), now.getMonth(), 1)
+  else if (rangeKey === '30d')   cutoff = new Date(now.getTime() - 30 * 86400000)
+  else if (rangeKey === '7d')    cutoff = new Date(now.getTime() - 7 * 86400000)
+  if (!cutoff) return trades
+  return trades.filter(t => t.closed_at && new Date(t.closed_at) >= cutoff)
+}
+
+// One row per calendar day with at least one closed trade, most recent
+// first — powers the Reports page's "Days" tab.
+export function computeDailyBreakdown(trades = []) {
+  const closed = trades.filter(t => t.status === 'closed' && t.closed_at)
+  const map = {}
+  closed.forEach(t => {
+    const key = t.closed_at.slice(0, 10)
+    if (!map[key]) map[key] = { date: key, pnl: 0, count: 0, wins: 0, losses: 0 }
+    map[key].pnl += t.pnl || 0
+    map[key].count++
+    if ((t.pnl || 0) > 0) map[key].wins++
+    else map[key].losses++
+  })
+  return Object.values(map)
+    .sort((a, b) => b.date.localeCompare(a.date))
+    .map(r => ({ ...r, winRate: r.count ? (r.wins / r.count) * 100 : 0 }))
+}
+
+// Average hold time across every closed trade, in minutes — not split by
+// win/loss (see computeAvgHoldTimeByOutcome above for that split).
+export function computeAvgHoldTimeAll(trades = []) {
+  const durations = trades
+    .filter(t => t.status === 'closed')
+    .map(t => getDurationSeconds(t))
+    .filter(d => d != null)
+  if (!durations.length) return null
+  return (durations.reduce((s, d) => s + d, 0) / durations.length) / 60
+}
