@@ -116,13 +116,23 @@ export default function TodaysPlanTab({ user, trades, account, profile }) {
   const deletePastPlan = useCallback(async (planId) => {
     if (!user?.id) return
     if (!window.confirm('Delete this plan?')) return
-    const { error } = await supabase.from('ai_daily_plans').delete()
+    // .select() asks Postgres to hand back the deleted row(s). Without it,
+    // a delete that matches zero rows (e.g. an RLS policy silently blocking
+    // it) still reports no `error` -- so this is the only way to tell "really
+    // deleted" apart from "matched nothing" before trusting the local state.
+    const { data, error } = await supabase.from('ai_daily_plans').delete()
       .eq('id', planId).eq('user_id', user.id)
+      .select('id')
     if (error) { toast.error('Could not delete plan: ' + error.message); return }
+    if (!data || data.length === 0) {
+      toast.error('Delete did not go through -- refreshing the list.')
+      loadPastPlans()
+      return
+    }
     setPastPlans(prev => prev.filter(p => p.id !== planId))
     setExpandedId(prev => (prev === planId ? null : prev))
     toast.success('Plan deleted')
-  }, [user?.id])
+  }, [user?.id, loadPastPlans])
 
   useEffect(() => {
     if (!user?.id || fetchedForUser.current === user.id) return
