@@ -2204,3 +2204,46 @@ export function computeAvgHoldTimeAll(trades = []) {
   if (!durations.length) return null
   return (durations.reduce((s, d) => s + d, 0) / durations.length) / 60
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// Day View page — one calendar day's full trade-by-trade breakdown.
+// computeDailyBreakdown() above already gives the one-row-per-day summary
+// that powers the collapsed list; these two cover what a row expands into.
+// ─────────────────────────────────────────────────────────────────────────
+
+// Full stat block for a single day's closed trades (the "Total Trades /
+// Win Rate / Gross P&L / Winners·Losers / Volume / Profit Factor /
+// Commissions" grid). `commission` isn't a column on `trades` yet, so it
+// sums to a real (honest) $0 today — the moment that data starts flowing
+// in from the EA this activates automatically, no UI change needed.
+export function computeDayDetailStats(dayTrades = []) {
+  const wins   = dayTrades.filter(t => (t.pnl || 0) > 0)
+  const losses = dayTrades.filter(t => (t.pnl || 0) < 0)
+
+  const grossPnl     = dayTrades.reduce((s, t) => s + (t.pnl || 0), 0)
+  const commissions  = dayTrades.reduce((s, t) => s + (t.commission || 0), 0)
+  const netPnl        = grossPnl - commissions
+  const grossProfit   = wins.reduce((s, t) => s + t.pnl, 0)
+  const grossLoss     = Math.abs(losses.reduce((s, t) => s + t.pnl, 0))
+  const profitFactor  = grossLoss > 0 ? grossProfit / grossLoss : (grossProfit > 0 ? 999 : 0)
+  const volume        = dayTrades.reduce((s, t) => s + (t.size || 0), 0)
+  const winRate        = dayTrades.length ? (wins.length / dayTrades.length) * 100 : 0
+
+  return {
+    tradeCount: dayTrades.length, winRate, grossPnl, netPnl, commissions,
+    wins: wins.length, losses: losses.length, volume, profitFactor,
+  }
+}
+
+// Intraday cumulative P&L curve for one day's trades, ordered by close
+// time — the mini equity line drawn inside each expanded Day View row.
+export function computeDayEquityCurve(dayTrades = []) {
+  const sorted = [...dayTrades]
+    .filter(t => t.closed_at)
+    .sort((a, b) => new Date(a.closed_at) - new Date(b.closed_at))
+  let cumulative = 0
+  return sorted.map(t => {
+    cumulative += (t.pnl || 0)
+    return { time: t.closed_at, value: parseFloat(cumulative.toFixed(2)) }
+  })
+}
