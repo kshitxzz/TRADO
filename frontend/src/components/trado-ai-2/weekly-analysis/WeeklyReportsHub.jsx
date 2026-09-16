@@ -47,14 +47,23 @@ export default function WeeklyReportsHub({ trades = [], accountBalance = null, a
                 <HelpCircle size={11} />
               </button>
             </div>
-            <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>Personalized insights for this week.</p>
+            <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
+              {weekTradeCount < 3
+                ? `Log ${3 - weekTradeCount} more closed trade${3 - weekTradeCount === 1 ? '' : 's'} this week to unlock this.`
+                : 'Personalized insights for this week.'}
+            </p>
           </div>
         </div>
         <button
           onClick={handleGenerate}
           disabled={generating || weekTradeCount < 3}
+          title={weekTradeCount < 3 ? `Log ${3 - weekTradeCount} more closed trade${3 - weekTradeCount === 1 ? '' : 's'} this week to unlock the AI Weekly Analysis` : undefined}
           className="btn-primary text-xs px-4 py-2.5 flex items-center gap-2 flex-shrink-0"
-          style={{ opacity: generating || weekTradeCount < 3 ? 0.6 : 1 }}
+          style={{
+            opacity: generating || weekTradeCount < 3 ? 0.4 : 1,
+            cursor: generating || weekTradeCount < 3 ? 'not-allowed' : 'pointer',
+            filter: weekTradeCount < 3 && !generating ? 'grayscale(0.5)' : 'none',
+          }}
         >
           {generating ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
           {generating ? 'Generating…' : 'Generate'}

@@ -22,6 +22,26 @@ function formatDeltaPts(v) {
   if (v == null) return null
   return `${v >= 0 ? '+' : ''}${v.toFixed(1)}pp`
 }
+// Plain inline style for the prev/next week icon buttons — deliberately
+// NOT built on the .btn-outline class. That class hardcodes
+// `padding: 10px 20px` in globals.css, which (depending on stylesheet
+// order) can beat a Tailwind `p-0` override on a fixed w-8 h-8 box and
+// leave literally no room for the icon, making the button render as an
+// empty square. Inline styles always win the cascade, so this is
+// guaranteed to render regardless of build/bundling order.
+function navBtnStyle(disabled = false) {
+  return {
+    width: 32, height: 32, padding: 0, flexShrink: 0,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    borderRadius: 8, background: 'rgba(255,255,255,0.04)',
+    border: '1px solid var(--border-subtle)',
+    color: disabled ? 'var(--text-muted)' : 'var(--text-secondary)',
+    opacity: disabled ? 0.4 : 1,
+    cursor: disabled ? 'not-allowed' : 'pointer',
+    transition: 'all 200ms ease',
+  }
+}
+
 function formatDurationMin(mins) {
   if (mins == null) return '—'
   if (mins < 60) return `${Math.round(mins)}m`
@@ -82,7 +102,7 @@ export default function WeeklySummaryTab({ trades = [], accountBalance = null, a
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={() => setWeekOffset(o => o - 1)} className="btn-outline w-8 h-8 flex items-center justify-center p-0" title="Previous week">
+          <button onClick={() => setWeekOffset(o => o - 1)} style={navBtnStyle()} title="Previous week">
             <ChevronLeft size={14} />
           </button>
           {!isCurrentWeek && (
@@ -91,8 +111,7 @@ export default function WeeklySummaryTab({ trades = [], accountBalance = null, a
           <button
             onClick={() => setWeekOffset(o => Math.min(0, o + 1))}
             disabled={isCurrentWeek}
-            className="btn-outline w-8 h-8 flex items-center justify-center p-0"
-            style={{ opacity: isCurrentWeek ? 0.4 : 1, cursor: isCurrentWeek ? 'default' : 'pointer' }}
+            style={navBtnStyle(isCurrentWeek)}
             title="Next week"
           >
             <ChevronRight size={14} />
