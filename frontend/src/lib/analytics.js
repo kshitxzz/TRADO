@@ -11,6 +11,7 @@
 
 import { computeStats, formatPnl, buildEquityCurve } from './utils'
 import { detectSession } from '../hooks/useTimezone'
+import { computeTradeScore } from '../components/charts/TradeScoreRadar'
 
 const clamp = (v, lo = 0, hi = 100) => Math.max(lo, Math.min(hi, v))
 
@@ -234,6 +235,18 @@ export function gradeColor(grade) {
   return '#EF4444'
 }
 
+// Qualitative label for a profit-factor number — used by the Weekly
+// Summary tile so the raw ratio always reads with a plain-English verdict.
+export function profitFactorLabel(pf) {
+  if (pf == null) return '—'
+  if (pf >= 999) return 'Perfect'
+  if (pf >= 3) return 'Excellent'
+  if (pf >= 2) return 'Good'
+  if (pf >= 1.5) return 'Fair'
+  if (pf >= 1) return 'Breakeven'
+  return 'Needs Work'
+}
+
 // ── Full weekly stats bundle (for the Weekly Summary tab) ──────────────
 export function computeWeekStats(trades = [], range) {
   const inRange = tradesInRange(trades, range)
@@ -293,6 +306,194 @@ export function computeProcessScore(weekRiskBreakdown, weekTradeScoreAxes = []) 
     profitability,
   ]
   return Math.round(clamp(parts.reduce((a, b) => a + b, 0) / parts.length))
+}
+
+// ── Weekly Summary tab bundle ───────────────────────────────────────────
+// One call gives the tab everything it needs to render: this week's full
+// stat block, last week's for comparison, the delta between them, and a
+// process grade computed the same way the rest of Trado AI grades trades
+// (risk breakdown + trade-score axes → 0–100 → letter). weekOffset=0 is
+// the current week, -1 last week, etc. — never a future week.
+export function computeWeeklySummaryBundle(trades = [], weekOffset = 0) {
+  const offset = Math.min(0, weekOffset)
+  const range = getWeekRange(offset)
+  const prevRange = getWeekRange(offset - 1)
+  const week = computeWeekStats(trades, range)
+  const prevWeek = computeWeekStats(trades, prevRange)
+  const hasPrev = prevWeek.tradeCount > 0
+  const delta = hasPrev ? computeWeekDelta(week, prevWeek) : { pnlDeltaPct: null, wrDeltaPts: null }
+
+  let riskBreakdown = null, processScore = 0, grade = null, axes = []
+  if (week.tradeCount > 0) {
+    const curve = buildEquityCurve(week.trades)
+    axes = computeTradeScore(week.trades, curve).axes
+    riskBreakdown = computeRiskBreakdown(week.trades, axes)
+    processScore = computeProcessScore(riskBreakdown, axes)
+    grade = computeGrade(processScore)
+  }
+
+  return {
+    weekOffset: offset, rangeLabel: formatWeekRange(range), isCurrentWeek: offset === 0,
+    week, prevWeek, hasPrev, delta, riskBreakdown, processScore, grade, axes,
+  }
+}
+
+// Strips the raw trade rows / Date range out of a computeWeekStats() bundle
+// before it's sent to the backend as AI context — Gemini only ever needs
+// the pre-computed numbers, never the underlying trade records.
+function weekFactsOnly(week) {
+  if (!week) return week
+  const { trades, range, ...rest } = week
+  return rest
+}
+
+const MIN_WEEKLY_REPORT_SAMPLE = 3
+
+// Weekly-scoped blindspot/pattern candidates for the AI Weekly Analysis
+// report. Same philosophy as computeSmartReportFacts' candidate lists —
+// every entry is grounded in a real, computed number, and Gemini is only
+// ever allowed to narrate candidates it's handed, never invent new ones.
+function computeWeeklyCandidates(weekTrades = [], overallStats = {}) {
+  const closed = weekTrades.filter(t => t.status === 'closed')
+  const blindspotCandidates = []
+  const patternCandidates = []
+
+  const journal = computeJournalStats(weekTrades)
+  if (closed.length >= 3 && journal.journaledRate < 50) {
+    blindspotCandidates.push({
+      id: 'journal_gap_week',
+      severity: journal.journaledRate === 0 ? 'warning' : 'minor',
+      title: 'Journal Gap This Week',
+      evidence: `Only ${journal.journaledCount}/${journal.closedCount} trades journaled this week (${journal.journaledRate.toFixed(0)}%).`,
+    })
+  }
+
+  const revenge = detectRevengeTrades(weekTrades)
+  if (revenge.count > 0) {
+    blindspotCandidates.push({
+      id: 'revenge_trades_week',
+      severity: revenge.count >= 2 ? 'warning' : 'minor',
+      title: 'Revenge Trading This Week',
+      evidence: `${revenge.count} trade${revenge.count === 1 ? '' : 's'} opened within ${revenge.windowMin} min of a loss, costing ${formatPnl(revenge.cost)} net this week.`,
+    })
+  }
+
+  const sizes = closed.map(t => t.size).filter(s => s != null && s > 0)
+  if (sizes.length >= 3) {
+    const minSize = Math.min(...sizes), maxSize = Math.max(...sizes)
+    const sizeVariance = minSize > 0 ? maxSize / minSize : maxSize
+    if (sizeVariance >= 2) {
+      blindspotCandidates.push({
+        id: 'erratic_sizing_week',
+        severity: sizeVariance >= 4 ? 'warning' : 'minor',
+        title: 'Erratic Sizing This Week',
+        evidence: `Position size ranged ${minSize.toFixed(2)}–${maxSize.toFixed(2)} lots (${sizeVariance.toFixed(1)}x variation) this week.`,
+      })
+    }
+  }
+
+  const wins = closed.filter(t => t.pnl > 0)
+  const losses = closed.filter(t => t.pnl < 0)
+  const avgWin = wins.length ? wins.reduce((s, t) => s + t.pnl, 0) / wins.length : 0
+  const avgLoss = losses.length ? Math.abs(losses.reduce((s, t) => s + t.pnl, 0) / losses.length) : 0
+  const rr = avgLoss > 0 ? avgWin / avgLoss : 0
+  if (closed.length >= 5 && rr > 0 && rr < 1.2) {
+    blindspotCandidates.push({
+      id: 'weak_rr_week',
+      severity: 'warning',
+      title: 'Thin Reward-to-Risk This Week',
+      evidence: `Average reward-to-risk this week was only ${rr.toFixed(2)}:1 across ${closed.length} trades.`,
+    })
+  }
+
+  const symbols = computeSymbolBreakdown(weekTrades)
+  if (symbols.length === 1 && closed.length >= 3) {
+    blindspotCandidates.push({
+      id: 'single_symbol_dependency_week',
+      severity: 'minor',
+      title: 'Single-Symbol Week',
+      evidence: `100% of this week's trades (${closed.length}) were on ${symbols[0].symbol} alone.`,
+    })
+  }
+
+  const dayMap = {}
+  closed.forEach(t => { const d = t.closed_at?.slice(0, 10); if (d) dayMap[d] = (dayMap[d] || 0) + 1 })
+  const tradingDays = Object.keys(dayMap).length
+  const avgPerDay = tradingDays ? closed.length / tradingDays : 0
+  const weekWinRate = closed.length ? (wins.length / closed.length) * 100 : 0
+  if (tradingDays >= 1 && avgPerDay >= 4 && overallStats.winRate != null && weekWinRate < overallStats.winRate - 5) {
+    blindspotCandidates.push({
+      id: 'overtrading_week',
+      severity: 'warning',
+      title: 'Overtrading This Week',
+      evidence: `Averaged ${avgPerDay.toFixed(1)} trades/day this week — well above a sustainable pace — with win rate ${weekWinRate.toFixed(0)}% vs a lifetime average of ${overallStats.winRate.toFixed(0)}%.`,
+    })
+  }
+
+  if (symbols.length) {
+    const best = symbols[0]
+    if (best.pnl > 0 && best.count >= 2) {
+      patternCandidates.push({
+        id: 'top_symbol_week', title: `${best.symbol} Led This Week`, pnl: best.pnl,
+        evidence: `${best.count} trades, ${best.winRate.toFixed(0)}% win rate, ${formatPnl(best.pnl)} net.`,
+      })
+    }
+  }
+
+  const sessions = computeSessionBreakdown(weekTrades)
+  if (sessions.length) {
+    const topSession = sessions[0]
+    const dominancePct = closed.length ? (topSession.count / closed.length) * 100 : 0
+    if (dominancePct >= 50 && topSession.count >= 2) {
+      patternCandidates.push({
+        id: 'top_session_week', title: `${topSession.session} Session Focus`, pnl: topSession.pnl,
+        evidence: `${dominancePct.toFixed(0)}% of this week's trades, ${topSession.winRate.toFixed(0)}% win rate.`,
+      })
+    }
+  }
+
+  return { blindspotCandidates, patternCandidates }
+}
+
+// ── AI Weekly Analysis — deep facts sheet ───────────────────────────────
+// Everything the /api/ai/weekly-report endpoint is allowed to talk about.
+// Wraps computeWeeklySummaryBundle with lifetime context (so Gemini can
+// say "compared to your overall record"), a week-scoped risk/discipline
+// read, best/worst symbol & session for the week, and grounded candidate
+// lists for blindspots + recurring patterns + the next-week plan.
+export function computeWeeklyReportContext(trades = [], accountBalance = null, weekOffset = 0) {
+  const bundle = computeWeeklySummaryBundle(trades, weekOffset)
+  const { week, prevWeek, hasPrev, delta, riskBreakdown, grade, processScore, rangeLabel, isCurrentWeek } = bundle
+
+  if (week.tradeCount < MIN_WEEKLY_REPORT_SAMPLE) {
+    return {
+      ready: false, needed: MIN_WEEKLY_REPORT_SAMPLE - week.tradeCount,
+      rangeLabel, isCurrentWeek,
+    }
+  }
+
+  const overallStats = computeStats(trades)
+  const tradeScore = computeTradeScore(trades, buildEquityCurve(trades))
+  const symbols = computeSymbolBreakdown(week.trades)
+  const bestPair = symbols[0] || null
+  const losingPairs = symbols.filter(s => s.pnl < 0).sort((a, b) => a.pnl - b.pnl)
+  const worstPair = losingPairs[0] || null
+  const sessions = computeSessionBreakdown(week.trades)
+  const topSession = sessions[0] || null
+  const sessionDominancePct = topSession && week.tradeCount ? (topSession.count / week.tradeCount) * 100 : 0
+  const journal = computeJournalStats(week.trades)
+  const revenge = detectRevengeTrades(week.trades)
+  const { blindspotCandidates, patternCandidates } = computeWeeklyCandidates(week.trades, overallStats)
+
+  return {
+    ready: true, rangeLabel, isCurrentWeek, accountBalance: accountBalance ?? null,
+    overall: overallStats, tradeScore,
+    week: { ...weekFactsOnly(week), grade, processScore },
+    prevWeek: weekFactsOnly(prevWeek), hasPrev, delta,
+    risk: riskBreakdown, journal, revenge,
+    bestPair, worstPair, topSession, sessionDominancePct,
+    blindspotCandidates, patternCandidates,
+  }
 }
 
 // ── Pattern detection — only returns patterns that are actually present ─
@@ -693,6 +894,45 @@ export function computeWeekdayHourBreakdown(trades = []) {
   return Object.values(map).map(v => ({ ...v, winRate: v.count ? (v.wins / v.count) * 100 : 0 }))
 }
 
+// ── Loss-streak day recovery: after N consecutive losses within a single
+// calendar day, how often does the day still finish green, and what does
+// it cost on the days it doesn't? Feeds the "Loss-Streak Math" pattern —
+// only ever surfaced once enough days have actually reached the threshold
+// to make the recovery rate meaningful.
+export function computeLossStreakRecovery(trades = [], threshold = 3) {
+  const closed = trades.filter(t => t.status === 'closed' && t.opened_at && t.closed_at)
+  const byDay = {}
+  closed.forEach(t => {
+    const day = t.opened_at.slice(0, 10)
+    if (!byDay[day]) byDay[day] = []
+    byDay[day].push(t)
+  })
+
+  let daysReached = 0, daysEndedGreen = 0, badDaysPnl = 0
+  Object.values(byDay).forEach(dayTrades => {
+    dayTrades.sort((a, b) => new Date(a.opened_at) - new Date(b.opened_at))
+    let streak = 0, reachedThreshold = false
+    dayTrades.forEach(t => {
+      if (t.pnl < 0) streak++
+      else streak = 0
+      if (streak >= threshold) reachedThreshold = true
+    })
+    if (!reachedThreshold) return
+    daysReached++
+    const dayNet = dayTrades.reduce((s, t) => s + (t.pnl || 0), 0)
+    if (dayNet > 0) daysEndedGreen++
+    else badDaysPnl += dayNet
+  })
+
+  if (daysReached === 0) return null
+  return {
+    threshold, daysReached, daysEndedGreen,
+    greenRate: (daysEndedGreen / daysReached) * 100,
+    badDays: daysReached - daysEndedGreen,
+    badDaysPnl,
+  }
+}
+
 // ── Advanced pattern detection for the Patterns tab. Each entry only
 // exists if the underlying sample size clears a minimum bar — Gemini
 // narrates a punchy one-liner + action label per pattern afterwards, but
@@ -713,6 +953,11 @@ export function detectAdvancedPatterns(trades = []) {
     if (worst.pnl < 0 && worst.winRate <= 35 && differsFromBest) {
       patterns.push({ id: 'bleeding_zone', category: 'bleed', title: 'Bleeding Zone', facts: { ...worst } })
     }
+  }
+
+  const lossStreakRecovery = computeLossStreakRecovery(closed, 3)
+  if (lossStreakRecovery && lossStreakRecovery.daysReached >= 4) {
+    patterns.push({ id: 'loss_streak_math', category: 'loss_streak', title: 'Loss-Streak Math', facts: { ...lossStreakRecovery } })
   }
 
   const fatigue = computeFatigueCurve(closed)

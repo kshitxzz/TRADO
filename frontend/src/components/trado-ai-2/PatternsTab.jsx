@@ -1,25 +1,27 @@
 import { useState, useEffect, useRef } from 'react'
-import { Loader2, TrendingUp, Droplet, BatteryLow, Clock, Ghost, ArrowRight, Radar } from 'lucide-react'
+import { Loader2, TrendingUp, Droplet, HeartPulse, BatteryLow, Clock, Ghost, ArrowRight, Radar } from 'lucide-react'
 import { detectAdvancedPatterns } from '../../lib/analytics'
 
 const BACKEND = import.meta.env.VITE_BACKEND_URL || 'http://localhost:4000'
 
 const CATEGORY_META = {
-  edge:     { icon: TrendingUp, color: 'var(--positive-green)', bg: 'rgba(34,197,94,0.08)',  label: 'Your Edge' },
-  bleed:    { icon: Droplet,    color: 'var(--negative-red)',   bg: 'rgba(244,63,94,0.08)',   label: 'Bleeding Zone' },
-  fatigue:  { icon: BatteryLow, color: 'var(--warning-orange)', bg: 'rgba(245,158,11,0.08)',  label: 'Fatigue Curve' },
-  holdtime: { icon: Clock,      color: 'var(--accent-teal)',    bg: 'rgba(45,212,191,0.08)',  label: 'Hold-Time Edge' },
-  eerie:    { icon: Ghost,      color: 'var(--accent-purple)',  bg: 'rgba(139,92,246,0.08)',  label: 'Eerie Pattern' },
+  edge:        { icon: TrendingUp, color: 'var(--positive-green)', bg: 'rgba(34,197,94,0.08)',  label: 'Your Edge' },
+  bleed:       { icon: Droplet,    color: 'var(--negative-red)',   bg: 'rgba(244,63,94,0.08)',   label: 'Bleeding Zone' },
+  loss_streak: { icon: HeartPulse, color: 'var(--warning-orange)', bg: 'rgba(245,158,11,0.08)',  label: 'Loss-Streak Math' },
+  fatigue:     { icon: BatteryLow, color: 'var(--warning-orange)', bg: 'rgba(245,158,11,0.08)',  label: 'Fatigue Curve' },
+  holdtime:    { icon: Clock,      color: 'var(--accent-teal)',    bg: 'rgba(45,212,191,0.08)',  label: 'Hold-Time Edge' },
+  eerie:       { icon: Ghost,      color: 'var(--accent-purple)',  bg: 'rgba(139,92,246,0.08)',  label: 'Eerie Pattern' },
 }
 
 function fallbackHeadline(p) {
   const f = p.facts || {}
   switch (p.id) {
-    case 'your_edge':      return `${f.symbol} ${f.side} in ${f.session}: ${f.winRate.toFixed(0)}% WR · ${f.pnl >= 0 ? '+' : '-'}$${Math.abs(f.pnl).toFixed(0)} over your history.`
-    case 'bleeding_zone':  return `${f.symbol} ${f.side} in ${f.session}: ${f.winRate.toFixed(0)}% WR · -$${Math.abs(f.pnl).toFixed(0)} over your history.`
-    case 'fatigue_curve':  return `Your win rate drops from ${f.earlyWinRate.toFixed(0)}% to ${f.laterWinRate.toFixed(0)}% after trade #${f.afterNth}.`
-    case 'hold_time_edge': return `Trades under ${f.thresholdMin}m win ${f.underWinRate.toFixed(0)}% vs ${f.overWinRate.toFixed(0)}% held longer.`
-    case 'eerie_pattern':  return `${f.day}s around ${f.hour}:00 UTC: ${f.redCount}/${f.count} trades red, net -$${Math.abs(f.pnl).toFixed(0)}.`
+    case 'your_edge':        return `${f.symbol} ${f.side} in ${f.session}: ${f.winRate.toFixed(0)}% WR · ${f.pnl >= 0 ? '+' : '-'}$${Math.abs(f.pnl).toFixed(0)} over your history.`
+    case 'bleeding_zone':    return `${f.symbol} ${f.side} in ${f.session}: ${f.winRate.toFixed(0)}% WR · -$${Math.abs(f.pnl).toFixed(0)} over your history.`
+    case 'loss_streak_math': return `After ${f.threshold} losses your day ends green ${f.greenRate.toFixed(0)}% of the time. The ${f.badDays} time${f.badDays === 1 ? '' : 's'} it didn't, you finished ${f.badDaysPnl >= 0 ? '+' : '-'}$${Math.abs(f.badDaysPnl).toFixed(0)}.`
+    case 'fatigue_curve':    return `Your win rate drops from ${f.earlyWinRate.toFixed(0)}% to ${f.laterWinRate.toFixed(0)}% after trade #${f.afterNth}.`
+    case 'hold_time_edge':   return `Trades under ${f.thresholdMin}m win ${f.underWinRate.toFixed(0)}% vs ${f.overWinRate.toFixed(0)}% held longer.`
+    case 'eerie_pattern':    return `${f.day}s around ${f.hour}:00 UTC: ${f.redCount}/${f.count} trades red, net -$${Math.abs(f.pnl).toFixed(0)}.`
     default: return ''
   }
 }

@@ -586,11 +586,12 @@ Tone: direct, a little blunt, zero fluff — a coach with their P&L pulled up in
 // ── POST /api/ai/patterns-narrate ── Writes a one-line headline + short
 // action label for each pattern already detected by detectAdvancedPatterns().
 const PATTERN_ACTION_TONE = {
-  edge:     'a short "lean into this" call to action, e.g. "lean in"',
-  bleed:    'a short "avoid/skip this setup" call to action, e.g. "skip this combo"',
-  fatigue:  'a short call to action capping trades per day, e.g. "cap at 2"',
-  holdtime: 'a short call to action about exit timing, e.g. "exit by 6h" or "hold past 30m"',
-  eerie:    'a short call to action to sit that window out, e.g. "skip this window"',
+  edge:        'a short "lean into this" call to action, e.g. "lean in"',
+  bleed:       'a short "avoid/skip this setup" call to action, e.g. "skip this combo"',
+  loss_streak: 'a short "hard stop" call to action naming the threshold, e.g. "hard stop at 3"',
+  fatigue:     'a short call to action capping trades per day, e.g. "cap at 2"',
+  holdtime:    'a short call to action about exit timing, e.g. "exit by 6h" or "hold past 30m"',
+  eerie:       'a short call to action to sit that window out, e.g. "skip this window"',
 }
 
 router.post('/patterns-narrate', AI_LIMITER, async (req, res) => {
@@ -977,6 +978,194 @@ Respond ONLY with valid JSON (no markdown fences, no preamble), matching this ex
   }
 
   // Guard against Gemini surfacing a candidate id that wasn't offered.
+  const validBlindspotIds = new Set((context.blindspotCandidates || []).map(c => c.id))
+  const validPatternIds = new Set((context.patternCandidates || []).map(p => p.id))
+  if (Array.isArray(parsed.blindspots)) parsed.blindspots = parsed.blindspots.filter(b => validBlindspotIds.has(b.id))
+  if (Array.isArray(parsed.recurringPatterns)) parsed.recurringPatterns = parsed.recurringPatterns.filter(p => validPatternIds.has(p.id))
+
+  res.json({ aiAvailable: true, ...empty, ...parsed })
+})
+
+// ═══════════════════════════════════════════════════════════════════════
+// Weekly Summary tab — a light, fast "AI take" auto-loaded at the top of
+// the tab. Every number is computed on the frontend by
+// lib/analytics.js#computeWeeklySummaryBundle; Gemini only narrates.
+// ═══════════════════════════════════════════════════════════════════════
+function buildWeeklyNarrativeFacts(context = {}) {
+  const { week = {}, prevWeek, hasPrev, delta = {}, grade, processScore, rangeLabel } = context
+  const lines = []
+
+  lines.push(`WEEK: ${rangeLabel}. ${week.tradeCount} closed trade${week.tradeCount === 1 ? '' : 's'} across ${week.tradingDays} trading day${week.tradingDays === 1 ? '' : 's'} (${(week.avgPerDay || 0).toFixed(1)}/day).`)
+  lines.push(`RESULT: ${formatPnl(week.totalPnl)} net P&L, ${formatPct(week.winRate)} win rate, profit factor ${week.profitFactor >= 999 ? '∞' : (week.profitFactor || 0).toFixed(2)}.`)
+  lines.push(`AVG WIN/LOSS: ${formatPnl(week.avgWin)} / ${formatPnl(week.avgLoss)}, reward:risk ${(week.rr || 0).toFixed(2)}:1.`)
+  if (week.bestDay) lines.push(`BEST DAY: ${week.bestDay.date} at ${formatPnl(week.bestDay.pnl)}.`)
+  if (week.mostTraded) lines.push(`MOST TRADED SYMBOL: ${week.mostTraded}.`)
+  if (week.mostProfitable) lines.push(`MOST PROFITABLE SYMBOL: ${week.mostProfitable.symbol} at ${formatPnl(week.mostProfitable.pnl)}.`)
+  lines.push(hasPrev
+    ? `VS LAST WEEK: P&L ${delta.pnlDeltaPct >= 0 ? '+' : ''}${(delta.pnlDeltaPct || 0).toFixed(1)}%, win rate ${delta.wrDeltaPts >= 0 ? '+' : ''}${(delta.wrDeltaPts || 0).toFixed(1)} percentage points (last week: ${formatPnl(prevWeek?.totalPnl)}, ${formatPct(prevWeek?.winRate)} win rate).`
+    : 'VS LAST WEEK: no prior week to compare — this is the first tracked week.')
+  lines.push(`PROCESS GRADE: ${grade || 'n/a'} (${processScore}/100) — reflects discipline, sizing consistency, and emotional control this week, not just P&L.`)
+
+  return lines.join('\n')
+}
+
+router.post('/weekly-narrative', AI_LIMITER, async (req, res) => {
+  const { context = {} } = req.body
+  const empty = { headline: null, takeaway: null, focusTip: null }
+
+  if (!context.week || !context.week.tradeCount) {
+    return res.json({ aiAvailable: false, reason: 'no_data', message: 'No closed trades this week yet.', ...empty })
+  }
+
+  const facts = buildWeeklyNarrativeFacts(context)
+  const positive = (context.week.totalPnl || 0) >= 0
+
+  const prompt = `You are Trado AI, narrating a one-glance take on the trader's current week for the top of their Weekly Summary dashboard. Below is a FACTS SHEET computed from their real trade data for the week of ${context.rangeLabel}. Every number is already correct and final — the trader is currently ${positive ? 'net positive' : 'net negative'} for the week.
+
+RULES (critical):
+- Use ONLY the numbers given. NEVER invent, estimate, or restate a number differently than given.
+- Be specific — cite at least one real figure from the facts sheet in each field.
+- Be direct and conversational, like a coach glancing at today's dashboard — not generic hype.
+- Keep every field to the length specified below.
+
+FACTS SHEET:
+${facts}
+
+Respond ONLY with valid JSON (no markdown fences, no preamble), matching this exact shape:
+{
+  "headline": "1 short punchy sentence (under 12 words) summing up the week so far",
+  "takeaway": "2-3 sentences elaborating on the headline, citing real numbers",
+  "focusTip": "1 short, concrete, actionable sentence for the rest of the week"
+}`
+
+  const result = await callGemini(prompt, { json: true, temperature: 0.65, maxOutputTokens: 500 })
+  if (!result.ok) return res.json({ aiAvailable: false, reason: result.reason, message: result.message, ...empty })
+
+  const parsed = parseJsonLoose(result.text)
+  if (!parsed) {
+    console.error('[Gemini JSON parse failed: weekly-narrative] raw:', result.text.slice(0, 500))
+    return res.json({ aiAvailable: false, reason: 'parse_error', message: humanizeError('parse_error'), ...empty })
+  }
+  res.json({ aiAvailable: true, ...empty, ...parsed })
+})
+
+// ═══════════════════════════════════════════════════════════════════════
+// AI Weekly Analysis — the deep, on-demand, saved weekly report (the
+// "Generate" card at the bottom of the Weekly Summary tab). Same
+// candidate-grounded philosophy as the Smart Insights report above, but
+// scoped to one week and framed forward — it always ends with a concrete
+// plan for the week ahead. Every number in the facts sheet was computed
+// by lib/analytics.js#computeWeeklyReportContext.
+// ═══════════════════════════════════════════════════════════════════════
+function buildWeeklyReportFacts(context = {}) {
+  const {
+    rangeLabel, overall = {}, tradeScore = {}, week = {}, prevWeek, hasPrev, delta = {},
+    risk = {}, journal = {}, revenge = {}, bestPair, worstPair, topSession, sessionDominancePct,
+    blindspotCandidates = [], patternCandidates = [],
+  } = context
+  const lines = []
+
+  lines.push(`WEEK: ${rangeLabel}. ${week.tradeCount} closed trades across ${week.tradingDays} trading day${week.tradingDays === 1 ? '' : 's'} (${(week.avgPerDay || 0).toFixed(1)}/day).`)
+  lines.push(`THIS WEEK'S RESULT: ${formatPnl(week.totalPnl)} net P&L, ${formatPct(week.winRate)} win rate, profit factor ${week.profitFactor >= 999 ? '∞' : (week.profitFactor || 0).toFixed(2)}. Avg win ${formatPnl(week.avgWin)}, avg loss ${formatPnl(week.avgLoss)}, reward:risk ${(week.rr || 0).toFixed(2)}:1. Biggest win ${formatPnl(week.bestTrade)}, biggest loss ${formatPnl(week.worstTrade)}.`)
+  if (week.bestDay) lines.push(`BEST DAY: ${week.bestDay.date} at ${formatPnl(week.bestDay.pnl)}.`)
+  lines.push(hasPrev
+    ? `VS LAST WEEK: P&L ${delta.pnlDeltaPct >= 0 ? '+' : ''}${(delta.pnlDeltaPct || 0).toFixed(1)}%, win rate ${delta.wrDeltaPts >= 0 ? '+' : ''}${(delta.wrDeltaPts || 0).toFixed(1)} percentage points (last week: ${formatPnl(prevWeek?.totalPnl)}, ${formatPct(prevWeek?.winRate)} win rate).`
+    : 'VS LAST WEEK: no prior week to compare — treat this as the first tracked week.')
+  lines.push(`LIFETIME BASELINE: ${overall.tradeCount} trades all-time, ${formatPct(overall.winRate)} win rate, profit factor ${overall.profitFactor >= 999 ? '∞' : (overall.profitFactor || 0).toFixed(2)}, current streak ${overall.streak} ${overall.streakType}${overall.streak === 1 ? '' : 's'}. Overall Trade Score ${Math.round(tradeScore.overall || 0)}/100.`)
+  lines.push(`PROCESS GRADE THIS WEEK: ${week.grade} (${week.processScore}/100) — reflects discipline, sizing consistency, and emotional control this week, not just P&L.`)
+  lines.push(`RISK BREAKDOWN THIS WEEK (0-100 each): Emotional ${risk.emotional}, Sizing ${risk.sizing}, Consistency ${risk.consistency}, Discipline ${risk.discipline}.`)
+  if (revenge.count > 0) lines.push(`REVENGE TRADES THIS WEEK: ${revenge.count}, costing ${formatPnl(revenge.cost)} net, opened within ${revenge.windowMin} min of a prior loss.`)
+  lines.push(`JOURNALING THIS WEEK: ${journal.journaledCount}/${journal.closedCount} trades journaled (${formatPct(journal.journaledRate)}).${journal.avgRating != null ? ` Avg self-rating ${journal.avgRating.toFixed(1)}/10.` : ''}`)
+  if (bestPair) lines.push(`BEST SYMBOL THIS WEEK: ${bestPair.symbol} — ${bestPair.count} trades, ${formatPct(bestPair.winRate)} win rate, ${formatPnl(bestPair.pnl)}.`)
+  if (worstPair) lines.push(`WORST SYMBOL THIS WEEK: ${worstPair.symbol} — ${worstPair.count} trades, ${formatPct(worstPair.winRate)} win rate, ${formatPnl(worstPair.pnl)}.`)
+  else lines.push('WORST SYMBOL THIS WEEK: none — no losing symbol this week.')
+  if (topSession) lines.push(`TOP SESSION THIS WEEK: ${topSession.session} — ${formatPct(sessionDominancePct)} of volume, ${formatPct(topSession.winRate)} win rate, ${formatPnl(topSession.pnl)}.`)
+
+  if (blindspotCandidates.length) {
+    lines.push('BLINDSPOT CANDIDATES (choose the most important 1-3 by id; use ONLY these ids; do not invent others; if none feel significant, return fewer):')
+    blindspotCandidates.forEach(c => lines.push(`- id="${c.id}" severity="${c.severity}": ${c.evidence}`))
+  } else {
+    lines.push('BLINDSPOT CANDIDATES: none given — return an empty blindspots array.')
+  }
+
+  if (patternCandidates.length) {
+    lines.push('RECURRING PATTERN CANDIDATES (use ONLY these ids; do not invent others):')
+    patternCandidates.forEach(p => lines.push(`- id="${p.id}" title="${p.title}": ${p.evidence}`))
+  } else {
+    lines.push('RECURRING PATTERN CANDIDATES: none given — return an empty recurringPatterns array.')
+  }
+
+  return lines.join('\n')
+}
+
+router.post('/weekly-report', AI_LIMITER, async (req, res) => {
+  const { context = {} } = req.body
+  const empty = {
+    reportLabel: null, title: null, narrative: null, comparedToLastWeek: null,
+    riskNarrative: { strengths: [], areasToImprove: [] },
+    blindspots: [], recurringPatterns: [], planForNextWeek: [],
+  }
+
+  if (!context.ready) {
+    return res.json({
+      aiAvailable: false, reason: 'no_data',
+      message: context.needed
+        ? `Log ${context.needed} more closed trade${context.needed === 1 ? '' : 's'} this week to unlock the AI Weekly Analysis.`
+        : 'Not enough closed trades this week yet to generate a report.',
+      ...empty,
+    })
+  }
+
+  const facts = buildWeeklyReportFacts(context)
+  const positive = (context.week?.totalPnl || 0) >= 0
+
+  const prompt = `You are Trado AI — a sharp, direct trading performance coach writing this trader's weekly review. Below is a FACTS SHEET computed from their real trade history for the week of ${context.rangeLabel}. Every number is already correct and final — this trader finished the week ${positive ? 'net positive' : 'net negative'}.
+
+RULES (critical):
+- Use ONLY the numbers and ids given in the facts sheet. NEVER calculate, estimate, invent, or restate a number differently than given.
+- For "blindspots" and "recurringPatterns", the "id" field MUST exactly match one of the candidate ids listed in the facts sheet. Never invent a new id. Only include candidates genuinely worth surfacing — quality over quantity.
+- "planForNextWeek" must have exactly 3 items, ordered by priority, grounded in this week's blindspots/patterns/risk breakdown above — concrete things to DO next week, not vague advice. Each needs a specific, measurable target.
+- Be specific and direct — write like a sharp coach reviewing a real week, not a generic motivational message.
+- Keep every field SHORT and punchy as specified below.
+
+FACTS SHEET:
+${facts}
+
+Respond ONLY with valid JSON (no markdown fences, no preamble), matching this exact shape:
+{
+  "reportLabel": "3-4 word all-caps-style label like STRONG WEEK, CHOPPY WEEK, DISCIPLINED GRIND, or ROUGH WEEK — must match whether the trader finished the week net positive (given above)",
+  "title": "a punchy 4-8 word headline capturing what defined this specific week, e.g. 'A Disciplined Comeback After Monday's Drawdown'",
+  "narrative": "2-3 sentences in a coaching voice, citing real numbers from THIS WEEK'S RESULT, explaining WHY the week went the way it did",
+  "comparedToLastWeek": "1-2 sentences directly comparing this week to last week using the VS LAST WEEK numbers — or, if there's no prior week, 1 sentence noting this is the first tracked week",
+  "riskNarrative": {
+    "strengths": ["1 short sentence per risk dimension (Emotional/Sizing/Consistency/Discipline) that scored well this week, citing the number — omit if none scored well"],
+    "areasToImprove": ["1 short sentence per risk dimension that scored weakly this week, citing the number and a concrete fix — omit if none scored weakly"]
+  },
+  "blindspots": [
+    { "id": "<candidate id from the facts sheet>", "description": "2-3 sentences on why this mattered this week, referencing the evidence given", "recommendation": "1 short, concrete, specific action sentence" }
+  ],
+  "recurringPatterns": [
+    { "id": "<candidate id from the facts sheet>", "description": "1-2 sentences on the likely technical or psychological reason behind this pattern" }
+  ],
+  "planForNextWeek": [
+    { "title": "short imperative headline, e.g. 'Cap Trades to 2 Per Day'", "priority": "Do this first" or "Important" or "Nice to have", "description": "1-2 sentences on what to do next week and why, grounded in this week's data", "targetMetric": "1 short sentence stating a specific, measurable target for next week, e.g. 'Zero trades within 15 minutes of a loss.'" }
+  ]
+}`
+
+  const result = await callGemini(prompt, { json: true, temperature: 0.65, maxOutputTokens: 2200 })
+  if (!result.ok) return res.json({ aiAvailable: false, reason: result.reason, message: result.message, ...empty })
+
+  const parsed = parseJsonLoose(result.text)
+  if (!parsed) {
+    const cutOff = result.finishReason === 'MAX_TOKENS'
+    console.error(`[Gemini JSON parse failed: weekly-report, finishReason=${result.finishReason}] raw:`, result.text.slice(0, 800))
+    return res.json({
+      aiAvailable: false, reason: 'parse_error',
+      message: cutOff ? "Gemini's response was cut off before finishing — try again." : humanizeError('parse_error'),
+      ...empty,
+    })
+  }
+
   const validBlindspotIds = new Set((context.blindspotCandidates || []).map(c => c.id))
   const validPatternIds = new Set((context.patternCandidates || []).map(p => p.id))
   if (Array.isArray(parsed.blindspots)) parsed.blindspots = parsed.blindspots.filter(b => validBlindspotIds.has(b.id))

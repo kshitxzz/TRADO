@@ -1,27 +1,35 @@
 import { useState } from 'react'
-import { Sparkles, MessageCircle, Radar, ShieldAlert, Camera } from 'lucide-react'
+import { Sparkles, MessageCircle, Radar, ShieldAlert, Camera, CalendarDays } from 'lucide-react'
 import PageWrapper from '../components/layout/PageWrapper'
 import { useAuth } from '../hooks/useAuth'
 import { useTrades } from '../hooks/useTrades'
-import { greeting } from '../lib/utils'
+import { greeting, computeStats } from '../lib/utils'
 import TodaysPlanTab from '../components/trado-ai-2/TodaysPlanTab'
+import ChartVisionTab from '../components/trado-ai-2/ChartVisionTab'
 import AICoachTab from '../components/trado-ai-2/AICoachTab'
+import WeeklySummaryTab from '../components/trado-ai-2/WeeklySummaryTab'
 import PatternsTab from '../components/trado-ai-2/PatternsTab'
 import AIAlertsTab from '../components/trado-ai-2/AIAlertsTab'
-import ChartVisionTab from '../components/trado-ai-2/ChartVisionTab'
 
 const TABS = [
-  { key: 'plan',     label: "Today's Plan", icon: Sparkles },
-  { key: 'coach',    label: 'AI Coach',     icon: MessageCircle },
-  { key: 'patterns', label: 'Patterns',     icon: Radar },
-  { key: 'alerts',   label: 'AI Alerts',    icon: ShieldAlert },
-  { key: 'vision',   label: 'Chart Vision', icon: Camera },
+  { key: 'plan',     label: "Today's Plan",  icon: Sparkles },
+  { key: 'vision',   label: 'Chart Vision',  icon: Camera },
+  { key: 'coach',    label: 'AI Coach',      icon: MessageCircle },
+  { key: 'weekly',   label: 'Weekly Summary',icon: CalendarDays },
+  { key: 'patterns', label: 'Patterns',      icon: Radar },
+  { key: 'alerts',   label: 'AI Alerts',     icon: ShieldAlert },
 ]
 
 export default function TradoAI2() {
   const { user, profile } = useAuth()
   const { trades, account, loading, syncing, syncTrades, isManualAccount } = useTrades(user?.id)
   const [tab, setTab] = useState('plan')
+
+  const accountBalance = account?.balance != null
+    ? parseFloat(account.balance)
+    : account
+      ? 10000 + computeStats(trades).totalPnl
+      : 0
 
   return (
     <PageWrapper onSync={account && !isManualAccount ? syncTrades : undefined} syncing={syncing}>
@@ -61,7 +69,7 @@ export default function TradoAI2() {
             <t.icon size={13} /> {t.label}
           </button>
         ))}
-        {['Coming Soon', 'Coming Soon'].map((label, i) => (
+        {['Coming Soon'].map((label, i) => (
           <button key={i} disabled
                   className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold opacity-40 cursor-not-allowed"
                   style={{ color: 'var(--text-muted)' }}>
@@ -77,10 +85,11 @@ export default function TradoAI2() {
       ) : (
         <>
           {tab === 'plan'     && <TodaysPlanTab user={user} trades={trades} account={account} profile={profile} />}
+          {tab === 'vision'   && <ChartVisionTab user={user} trades={trades} />}
           {tab === 'coach'    && <AICoachTab user={user} trades={trades} />}
+          {tab === 'weekly'   && <WeeklySummaryTab trades={trades} accountBalance={accountBalance} accountId={account?.id} />}
           {tab === 'patterns' && <PatternsTab trades={trades} />}
           {tab === 'alerts'   && <AIAlertsTab trades={trades} account={account} />}
-          {tab === 'vision'   && <ChartVisionTab user={user} trades={trades} />}
         </>
       )}
     </PageWrapper>
