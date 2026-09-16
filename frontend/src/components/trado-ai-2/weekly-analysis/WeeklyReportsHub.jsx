@@ -48,21 +48,21 @@ export default function WeeklyReportsHub({ trades = [], accountBalance = null, a
               </button>
             </div>
             <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
-              {weekTradeCount < 3
-                ? `Log ${3 - weekTradeCount} more closed trade${3 - weekTradeCount === 1 ? '' : 's'} this week to unlock this.`
+              {weekTradeCount < 1
+                ? 'Log a closed trade this week to unlock this.'
                 : 'Personalized insights for this week.'}
             </p>
           </div>
         </div>
         <button
           onClick={handleGenerate}
-          disabled={generating || weekTradeCount < 3}
-          title={weekTradeCount < 3 ? `Log ${3 - weekTradeCount} more closed trade${3 - weekTradeCount === 1 ? '' : 's'} this week to unlock the AI Weekly Analysis` : undefined}
+          disabled={generating || weekTradeCount < 1}
+          title={weekTradeCount < 1 ? 'Log a closed trade this week to unlock the AI Weekly Analysis' : undefined}
           className="btn-primary text-xs px-4 py-2.5 flex items-center gap-2 flex-shrink-0"
           style={{
-            opacity: generating || weekTradeCount < 3 ? 0.4 : 1,
-            cursor: generating || weekTradeCount < 3 ? 'not-allowed' : 'pointer',
-            filter: weekTradeCount < 3 && !generating ? 'grayscale(0.5)' : 'none',
+            opacity: generating || weekTradeCount < 1 ? 0.4 : 1,
+            cursor: generating || weekTradeCount < 1 ? 'not-allowed' : 'pointer',
+            filter: weekTradeCount < 1 && !generating ? 'grayscale(0.5)' : 'none',
           }}
         >
           {generating ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
@@ -76,11 +76,11 @@ export default function WeeklyReportsHub({ trades = [], accountBalance = null, a
         </div>
       )}
 
-      {weekTradeCount < 3 && (
+      {weekTradeCount < 1 && (
         <div className="glass-card p-6 text-center">
           <Search size={22} className="mx-auto mb-2" style={{ color: 'var(--text-muted)' }} />
-          <p className="text-sm font-medium mb-1" style={{ color: 'var(--text-primary)' }}>Not Enough Data Yet</p>
-          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Log {3 - weekTradeCount} more closed trade{3 - weekTradeCount === 1 ? '' : 's'} this week to unlock the AI Weekly Analysis.</p>
+          <p className="text-sm font-medium mb-1" style={{ color: 'var(--text-primary)' }}>No Trades This Week</p>
+          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Log a closed trade this week to unlock the AI Weekly Analysis.</p>
         </div>
       )}
 

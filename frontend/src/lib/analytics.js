@@ -347,7 +347,13 @@ function weekFactsOnly(week) {
   return rest
 }
 
-const MIN_WEEKLY_REPORT_SAMPLE = 3
+// The report is available for any week with at least one closed trade —
+// there's no arbitrary sample-size floor. A thin week just produces a
+// thin report: most of the candidate checks inside computeWeeklyCandidates
+// already have their own internal minimums (e.g. "5+ trades for a
+// reward:risk read"), so a 1-trade week naturally surfaces fewer
+// blindspots/patterns rather than being blocked outright.
+const MIN_WEEKLY_REPORT_SAMPLE = 1
 
 // Weekly-scoped blindspot/pattern candidates for the AI Weekly Analysis
 // report. Same philosophy as computeSmartReportFacts' candidate lists —
@@ -940,9 +946,9 @@ export function computeLossStreakRecovery(trades = [], threshold = 3) {
 export function detectAdvancedPatterns(trades = []) {
   const closed = trades.filter(t => t.status === 'closed')
   const patterns = []
-  if (closed.length < 8) return patterns
+  if (closed.length < 6) return patterns
 
-  const combos = computeComboBreakdown(closed).filter(c => c.count >= 5)
+  const combos = computeComboBreakdown(closed).filter(c => c.count >= 3)
   if (combos.length) {
     const best = combos.slice().sort((a, b) => b.pnl - a.pnl)[0]
     if (best.pnl > 0 && best.winRate >= 55) {
@@ -956,13 +962,13 @@ export function detectAdvancedPatterns(trades = []) {
   }
 
   const lossStreakRecovery = computeLossStreakRecovery(closed, 3)
-  if (lossStreakRecovery && lossStreakRecovery.daysReached >= 4) {
+  if (lossStreakRecovery && lossStreakRecovery.daysReached >= 2) {
     patterns.push({ id: 'loss_streak_math', category: 'loss_streak', title: 'Loss-Streak Math', facts: { ...lossStreakRecovery } })
   }
 
   const fatigue = computeFatigueCurve(closed)
-  const early = fatigue.filter(f => f.nth <= 2 && f.count >= 5)
-  const later = fatigue.filter(f => f.nth >= 3 && f.count >= 5)
+  const early = fatigue.filter(f => f.nth <= 2 && f.count >= 3)
+  const later = fatigue.filter(f => f.nth >= 3 && f.count >= 3)
   if (early.length && later.length) {
     const earlyWR = early.reduce((s, f) => s + f.winRate * f.count, 0) / early.reduce((s, f) => s + f.count, 0)
     const laterWR = later.reduce((s, f) => s + f.winRate * f.count, 0) / later.reduce((s, f) => s + f.count, 0)
@@ -972,12 +978,12 @@ export function detectAdvancedPatterns(trades = []) {
   }
 
   const hold = computeHoldTimeEdge(closed)
-  if (hold.underCount >= 5 && hold.overCount >= 5 && hold.underWinRate != null && hold.overWinRate != null
+  if (hold.underCount >= 3 && hold.overCount >= 3 && hold.underWinRate != null && hold.overWinRate != null
       && Math.abs(hold.overWinRate - hold.underWinRate) >= 12) {
     patterns.push({ id: 'hold_time_edge', category: 'holdtime', title: 'Hold-Time Edge', facts: hold })
   }
 
-  const wh = computeWeekdayHourBreakdown(closed).filter(w => w.count >= 5)
+  const wh = computeWeekdayHourBreakdown(closed).filter(w => w.count >= 3)
   if (wh.length) {
     const worst = wh.slice().sort((a, b) => a.pnl - b.pnl)[0]
     if (worst.pnl < 0 && worst.winRate <= 35) {
