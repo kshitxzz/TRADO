@@ -2,13 +2,21 @@
 // Historical candles for the Trade Replay page.
 //
 // Providers (resolved per symbol):
-//   • Binance public market data — crypto pairs. Free, no API key.
-//   • Twelve Data                — forex / metals (XAUUSD, EURUSD, …).
-//                                  OPT-IN: only active when TWELVEDATA_API_KEY
-//                                  is set. NOTE: Twelve Data's free "Basic" plan
-//                                  is meant for evaluation / non-commercial use —
-//                                  a paid SaaS needs one of their Business plans
-//                                  (or swap this provider for another feed).
+//   • Binance spot (data-api.binance.vision) — crypto pairs. Free, no key.
+//   • Binance USDⓈ-M futures (fapi)           — gold, silver, WTI/Brent crude,
+//                                               natural gas "TradFi perpetuals"
+//                                               (XAUUSDT, XAGUSDT, CLUSDT, …).
+//                                               Free, no key. These are Binance's
+//                                               own 24/7 contracts, so prices track
+//                                               spot closely but are NOT identical
+//                                               to an MT5 broker feed.
+//                                               Binance blocks some US server IPs
+//                                               (HTTP 451) — host the API in Asia/EU.
+//   • Twelve Data                             — forex pairs (EURUSD, GBPJPY, …).
+//                                               OPT-IN via TWELVEDATA_API_KEY. The
+//                                               free Basic plan is for evaluation /
+//                                               non-commercial use; metals & energy
+//                                               time-series are NOT on the free plan.
 //
 // Everything is normalised to  { time (unix seconds, candle OPEN), open, high,
 // low, close, volume? }  sorted ascending with unique timestamps.
@@ -31,7 +39,18 @@ const CRYPTO_BASES = new Set([
   'APT', 'ARB', 'OP', 'FIL', 'INJ', 'SUI', 'PEPE', 'TON',
 ])
 
-const METALS = new Set(['XAU', 'XAG', 'XPT', 'XPD'])
+// Broker symbol (after normalisation) → Binance USDⓈ-M futures contract.
+// Gold/silver contracts exist since Jan 2026, crude/gas since Apr 2026 — trades
+// older than that simply return no data.
+const FUTURES_MAP = {
+  XAUUSD: 'XAUUSDT', GOLD: 'XAUUSDT',
+  XAGUSDT: 'XAGUSDT', XAGUSD: 'XAGUSDT', SILVER: 'XAGUSDT',
+  XAUUSDT: 'XAUUSDT',
+  WTIUSD: 'CLUSDT', USOIL: 'CLUSDT', XTIUSD: 'CLUSDT', CLUSDT: 'CLUSDT', USOUSD: 'CLUSDT', WTI: 'CLUSDT',
+  BRENTUSD: 'BZUSDT', UKOIL: 'BZUSDT', XBRUSD: 'BZUSDT', BZUSDT: 'BZUSDT', BRENT: 'BZUSDT', UKOUSD: 'BZUSDT',
+  NATGAS: 'NATGASUSDT', NGAS: 'NATGASUSDT', XNGUSD: 'NATGASUSDT', NATGASUSDT: 'NATGASUSDT',
+}
+const BINANCE_FUTURES_HOST = 'https://fapi.binance.com'
 
 const MAX_CANDLES = 1500          // hard ceiling per request
 const MAX_SPAN_SECS = 400 * 86400 // sanity ceiling on the requested window
@@ -48,20 +67,20 @@ export function normaliseSymbol(raw = '') {
 export function resolveProvider(rawSymbol) {
   const sym = normaliseSymbol(rawSymbol)
 
-  // Crypto: BTCUSD / BTCUSDT → Binance BTCUSDT
+  // Metals / energy → Binance TradFi perpetuals (free, no key)
+  if (FUTURES_MAP[sym]) return { provider: 'binance-futures', symbol: FUTURES_MAP[sym] }
+
+  // Crypto: BTCUSD / BTCUSDT → Binance spot BTCUSDT
   const m = /^([A-Z0-9]{2,6}?)(USDT|USD)$/.exec(sym)
   if (m && CRYPTO_BASES.has(m[1])) {
     return { provider: 'binance', symbol: `${m[1]}USDT` }
   }
 
-  // Metals + 6-letter forex pairs → Twelve Data (needs a key)
-  if (/^[A-Z]{6}$/.test(sym)) {
-    const base = sym.slice(0, 3), quote = sym.slice(3)
-    if (METALS.has(base) || !METALS.has(quote)) {
-      return { provider: 'twelvedata', symbol: `${base}/${quote}` }
-    }
+  // Forex majors/crosses → Twelve Data (needs a key). Anything metal-ish that
+  // wasn't matched above is deliberately left unsupported rather than guessed.
+  if (/^[A-Z]{6}$/.test(sym) && !/^X(AU|AG|PT|PD)/.test(sym)) {
+    return { provider: 'twelvedata', symbol: `${sym.slice(0, 3)}/${sym.slice(3)}` }
   }
-  if (sym === 'WTIUSD' || sym === 'USOIL') return { provider: 'twelvedata', symbol: 'WTI/USD' }
 
   return null
 }
@@ -115,13 +134,50 @@ async function fromBinance(symbol, interval, from, to) {
   return out
 }
 
+// ── Binance USDⓈ-M futures (gold / silver / oil / gas) ───────────────────
+async function fromBinanceFutures(symbol, interval, from, to) {
+  const stepMs = INTERVAL_SECS[interval] * 1000
+  const endMs = to * 1000
+  const out = []
+  let start = from * 1000
+
+  for (let page = 0; page < 3 && start <= endMs; page++) {
+    const url = `${BINANCE_FUTURES_HOST}/fapi/v1/klines?symbol=${symbol}&interval=${BINANCE_INTERVAL[interval]}` +
+                `&startTime=${start}&endTime=${endMs}&limit=1500`
+    const r = await getJson(url)
+
+    if (r.status === 451 || r.status === 403) {
+      const err = new Error('Binance is blocking requests from this server’s region. Host the API in Asia or Europe.')
+      err.status = 502
+      throw err
+    }
+    if (!r.ok || !Array.isArray(r.json)) {
+      const err = new Error(r.json?.msg || `Binance futures HTTP ${r.status}`)
+      err.status = 502
+      throw err
+    }
+    const rows = r.json
+    if (!rows.length) break
+
+    for (const k of rows) {
+      out.push({
+        time: Math.floor(k[0] / 1000),
+        open: +k[1], high: +k[2], low: +k[3], close: +k[4], volume: +k[5],
+      })
+    }
+    if (rows.length < 1500) break
+    start = rows[rows.length - 1][0] + stepMs
+  }
+  return out
+}
+
 // ── Twelve Data ──────────────────────────────────────────────────────────
 const iso = (secs) => new Date(secs * 1000).toISOString().slice(0, 19) // YYYY-MM-DDTHH:mm:ss (UTC)
 
 async function fromTwelveData(symbol, interval, from, to) {
   const key = process.env.TWELVEDATA_API_KEY
   if (!key) {
-    const err = new Error('No market-data provider is configured for this symbol yet.')
+    const err = new Error('Forex pairs need a market-data key. Set TWELVEDATA_API_KEY on the server.')
     err.status = 501
     throw err
   }
@@ -195,9 +251,12 @@ export async function getCandles({ symbol, interval, from, to }) {
   if (INFLIGHT.has(key)) return INFLIGHT.get(key)
 
   const job = (async () => {
-    const raw = resolved.provider === 'binance'
-      ? await fromBinance(resolved.symbol, interval, f, t)
-      : await fromTwelveData(resolved.symbol, interval, f, t)
+    const fetchers = {
+      'binance':         fromBinance,
+      'binance-futures': fromBinanceFutures,
+      'twelvedata':      fromTwelveData,
+    }
+    const raw = await fetchers[resolved.provider](resolved.symbol, interval, f, t)
 
     // Clean: finite OHLC, ascending, unique timestamps, capped.
     const seen = new Set()
