@@ -179,16 +179,61 @@ export function fmtReplayClock(candle, tfSecs) {
   return `${MONTH[d.getMonth()]} ${d.getDate()} at ${time12(d)}`
 }
 
-/** Chart axis labels — LWC works in UTC, so format in the viewer's zone. */
+/** Chart axis labels — LWC works in UTC, so format in the viewer's zone (12-hour). */
 export function fmtAxisTick(unixSecs, tfSecs, isDayBoundary) {
   const d = new Date(unixSecs * 1000)
-  if (tfSecs >= 86400) return `${MONTH[d.getMonth()]} ${d.getDate()}`
-  if (isDayBoundary) return `${MONTH[d.getMonth()]} ${d.getDate()}`
-  return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: false })
+  if (tfSecs >= 86400 || isDayBoundary) return `${MONTH[d.getMonth()]} ${d.getDate()}`
+  return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })
 }
 
 export function fmtCrosshairTime(unixSecs, tfSecs) {
   const d = new Date(unixSecs * 1000)
   if (tfSecs >= 86400) return `${MONTH[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`
-  return `${MONTH[d.getMonth()]} ${d.getDate()}  ${d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })}`
+  return `${MONTH[d.getMonth()]} ${d.getDate()}  ${d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })}`
+}
+
+// ── Feed calibration ─────────────────────────────────────────────────────
+// The free candle feeds (e.g. Binance's gold contract) are not the same price
+// stream as the user's MT5 broker, so a fill can land a few dollars outside the
+// candle that was live at that moment. If BOTH fills are off by a similar
+// amount, it's a constant feed difference — shift the candles by it so the
+// replay matches what the trader actually saw. If the two gaps disagree it's
+// not a constant offset (wrong time? wrong instrument?), so we don't touch the
+// data and just flag it.
+export function calibrateFeed(candles, plan, trade) {
+  const none = { offset: 0, applied: false, mismatch: false }
+  const e = candles[plan?.entryIdx], x = candles[plan?.exitIdx]
+  if (!e || !x || !Number.isFinite(trade.entryPrice) || !Number.isFinite(trade.exitPrice)) return none
+
+  const lo = Math.max(0, plan.entryIdx - 10)
+  const hi = Math.min(candles.length - 1, plan.exitIdx + 10)
+  let sum = 0, n = 0
+  for (let i = lo; i <= hi; i++) { sum += candles[i].high - candles[i].low; n++ }
+  const avgRange = n ? sum / n : 0
+  const tol = avgRange * 0.5
+
+  // Distance from a price to a candle's range, beyond tolerance (0 = inside).
+  const gap = (price, c) =>
+    price > c.high + tol ? price - c.high : price < c.low - tol ? price - c.low : 0
+
+  if (gap(trade.entryPrice, e) === 0 && gap(trade.exitPrice, x) === 0) return none
+
+  const mid = (c) => (c.high + c.low) / 2
+  const oe = trade.entryPrice - mid(e)
+  const ox = trade.exitPrice - mid(x)
+  const offset = (oe + ox) / 2
+
+  const consistent = Math.abs(oe - ox) <= Math.max(2 * avgRange, Math.abs(offset) * 0.35)
+  const sane = Math.abs(offset) <= trade.entryPrice * 0.03
+  const fits = gap(trade.entryPrice - offset, e) === 0 && gap(trade.exitPrice - offset, x) === 0
+
+  if (consistent && sane && fits) return { offset, applied: true, mismatch: false }
+  return { offset: 0, applied: false, mismatch: true }
+}
+
+/** Shift OHLC by a constant, rounded to the price precision (no float noise). */
+export function shiftCandles(candles, offset, decimals = 2) {
+  const k = 10 ** decimals
+  const r = (n) => Math.round((n + offset) * k) / k
+  return candles.map(c => ({ ...c, open: r(c.open), high: r(c.high), low: r(c.low), close: r(c.close) }))
 }

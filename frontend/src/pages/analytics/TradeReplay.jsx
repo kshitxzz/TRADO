@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { BarChart3, Play } from 'lucide-react'
+import { BarChart3, Info, Play } from 'lucide-react'
 import PageWrapper from '../../components/layout/PageWrapper'
 import TradeList from '../../components/replay/TradeList'
 import TradeSummaryBar from '../../components/replay/TradeSummaryBar'
@@ -11,8 +11,8 @@ import { useAuth } from '../../hooks/useAuth'
 import { useTrades } from '../../hooks/useTrades'
 import { useReplayCandles } from '../../hooks/useReplayCandles'
 import {
-  BASE_TICK_MS, DEFAULT_TIMEFRAME, buildReplayPlan, fmtPnl, fmtReplayClock,
-  livePnl, pricePrecision, replayableTrades, tfByKey,
+  BASE_TICK_MS, DEFAULT_TIMEFRAME, buildReplayPlan, calibrateFeed, fmtPnl, fmtReplayClock,
+  livePnl, pricePrecision, replayableTrades, shiftCandles, tfByKey,
 } from '../../lib/replayUtils'
 
 function EmptyState() {
@@ -72,12 +72,22 @@ export default function TradeReplay() {
   // ── Data ─────────────────────────────────────────────────────────────────
   const [timeframe, setTimeframe] = useState(DEFAULT_TIMEFRAME)
   const tf = tfByKey(timeframe)
-  const { candles, loading, error, ready } = useReplayCandles(trade, timeframe)
-  const plan = useMemo(() => (ready && trade ? buildReplayPlan(candles, trade, tf.secs) : null), [ready, candles, trade, tf.secs])
+  const { candles: rawCandles, loading, error, ready } = useReplayCandles(trade, timeframe)
+  const plan = useMemo(() => (ready && trade ? buildReplayPlan(rawCandles, trade, tf.secs) : null), [ready, rawCandles, trade, tf.secs])
+
   const precision = useMemo(
-    () => (trade ? pricePrecision(trade.symbol, trade.entryPrice, trade.exitPrice, candles[0]?.close) : 2),
-    [trade, candles],
+    () => (trade ? pricePrecision(trade.symbol, trade.entryPrice, trade.exitPrice, rawCandles[0]?.close) : 2),
+    [trade, rawCandles],
   )
+
+  // Free feeds aren't the trader's broker feed — line the candles up with the
+  // fills when the difference is a clean constant (see calibrateFeed).
+  const calibration = useMemo(() => (plan && trade ? calibrateFeed(rawCandles, plan, trade) : null), [plan, rawCandles, trade])
+  const candles = useMemo(
+    () => (calibration?.applied ? shiftCandles(rawCandles, calibration.offset, precision) : rawCandles),
+    [rawCandles, calibration, precision],
+  )
+
 
   // ── Replay engine ────────────────────────────────────────────────────────
   // `replay` is tied to the exact dataset it was started on, so changing trade
@@ -127,6 +137,7 @@ export default function TradeReplay() {
     return null
   }, [inReplay, plan, trade, lastIdx, candles])
 
+  // Markers are pinned to the exact fill price (not to the candle's edge).
   const markers = useMemo(() => {
     if (!plan || !trade) return []
     const long = trade.side === 'long'
@@ -134,14 +145,16 @@ export default function TradeReplay() {
     return [
       {
         time: candles[plan.entryIdx].time,
-        position: long ? 'belowBar' : 'aboveBar',
+        position: 'atPriceMiddle',
+        price: trade.entryPrice,
         shape: long ? 'arrowUp' : 'arrowDown',
         color: CANDLE_UP,
         text: `Entry @ ${px(trade.entryPrice)}`,
       },
       {
         time: candles[plan.exitIdx].time,
-        position: long ? 'aboveBar' : 'belowBar',
+        position: 'atPriceMiddle',
+        price: trade.exitPrice,
         shape: long ? 'arrowDown' : 'arrowUp',
         color: trade.pnl >= 0 ? CANDLE_UP : CANDLE_DOWN,
         text: `Exit @ ${px(trade.exitPrice)}`,
@@ -190,6 +203,26 @@ export default function TradeReplay() {
                   markers={markers} precision={precision} tfSecs={tf.secs}
                   ready={ready} loading={loading} error={error}
                 >
+                  {(calibration?.applied || calibration?.mismatch) && ready && (
+                    <div
+                      className="absolute left-3 top-3 z-10 flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px]"
+                      title={calibration.applied
+                        ? 'Free market data is a different price feed than your broker’s. Candles were shifted by a constant amount so your entry and exit line up with the candles.'
+                        : 'Your entry/exit prices don’t line up with this market-data feed, so candle prices may differ from your broker’s.'}
+                      style={{
+                        background: 'rgba(20,20,26,0.82)',
+                        border: `1px solid ${calibration.mismatch ? 'rgba(245,158,11,0.35)' : 'rgba(255,255,255,0.08)'}`,
+                        color: calibration.mismatch ? 'var(--warning-orange)' : 'var(--text-muted)',
+                        backdropFilter: 'blur(6px)',
+                      }}
+                    >
+                      <Info size={12} />
+                      {calibration.applied
+                        ? `Aligned to your fills (${calibration.offset > 0 ? '+' : '−'}$${Math.abs(calibration.offset).toFixed(2)} vs feed)`
+                        : 'Feed prices differ from your fills'}
+                    </div>
+                  )}
+
                   {finished && (
                     <motion.div
                       initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.25 }}
