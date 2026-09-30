@@ -22,6 +22,7 @@ import paymentsRoutes from './routes/payments.js'
 import brokerRoutes   from './routes/broker.js'
 import statsRoutes    from './routes/stats.js'
 import notificationsRoutes from './routes/notifications.js'
+import candlesRoutes from './routes/candles.js'
 
 const app  = express()
 const PORT = process.env.PORT || 4000
@@ -63,6 +64,7 @@ app.use('/api/payments', paymentsRoutes)
 app.use('/api/broker',   brokerRoutes)
 app.use('/api/stats',    statsRoutes)
 app.use('/api/notifications', notificationsRoutes)
+app.use('/api/candles', candlesRoutes)
 
 // ── Health ──
 app.get('/health', (_, res) => res.json({ status: 'ok', ts: new Date().toISOString() }))

@@ -27,4 +27,3 @@ function wrap(title, desc) {
 export const AdvancedReports = wrap('Advanced Reports', 'Deep statistical analysis with custom date ranges and export options.')
 export const DayView         = wrap('Day View',         'Trade-by-trade breakdown for any single trading day.')
 export const Strategies      = wrap('Strategies',       'Compare strategy performance head-to-head with full metrics.')
-export const TradeReplay     = wrap('Trade Replay',     'Visually replay any trade on a chart with entry/exit markers.')

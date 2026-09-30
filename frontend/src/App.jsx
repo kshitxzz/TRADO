@@ -1,3 +1,4 @@
+import { lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { Toaster } from 'react-hot-toast'
 import { useAuth } from './hooks/useAuth'
@@ -32,7 +33,8 @@ import Reports       from './pages/analytics/Reports'
 import AdvancedReports from './pages/analytics/AdvancedReports'
 import DayView       from './pages/analytics/DayView'
 import Sessions      from './pages/analytics/Sessions'
-import TradeReplay   from './pages/analytics/TradeReplay'
+// Lazy: pulls in the charting library only when Trade Replay is opened.
+const TradeReplay = lazy(() => import('./pages/analytics/TradeReplay'))
 import NotFound      from './pages/NotFound'
 import TermsOfService from './pages/legal/TermsOfService'
 import PrivacyPolicy  from './pages/legal/PrivacyPolicy'
@@ -115,7 +117,7 @@ export default function App() {
         <Route path="/analytics/advanced-reports" element={<PrivateRoute><AdvancedReports /></PrivateRoute>} />
         <Route path="/analytics/day-view"         element={<PrivateRoute><DayView /></PrivateRoute>} />
         <Route path="/analytics/sessions"       element={<PrivateRoute><Sessions /></PrivateRoute>} />
-        <Route path="/analytics/trade-replay"     element={<PrivateRoute><TradeReplay /></PrivateRoute>} />
+        <Route path="/analytics/trade-replay"     element={<PrivateRoute><Suspense fallback={null}><TradeReplay /></Suspense></PrivateRoute>} />
 
         <Route path="*" element={<NotFound />} />
       </Routes>

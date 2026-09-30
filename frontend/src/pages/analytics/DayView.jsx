@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, ResponsiveContainer,
@@ -32,23 +33,24 @@ function pnlColorBright(n) {
   return n >= 0 ? 'var(--positive-green-bright)' : 'var(--negative-red)'
 }
 
-// ─── Replay button — visual affordance only; Trade Replay isn't built yet,
-// so this is intentionally wired to nothing (no navigation, no handler). ────
-function ReplayButton({ size = 'md' }) {
+// ─── Replay button — opens Trade Replay for one trade (?trade=<id>) or, on a
+// day header, that day's first trade (?date=YYYY-MM-DD). ────────────────────
+function ReplayButton({ size = 'md', tradeId, date }) {
+  const navigate = useNavigate()
   const isSm = size === 'sm'
+  const qs = tradeId ? `trade=${encodeURIComponent(tradeId)}` : `date=${date}`
   return (
     <button
-      disabled
-      title="Trade Replay is coming soon"
-      onClick={(e) => e.stopPropagation()}
+      title="Replay on chart"
+      onClick={(e) => { e.stopPropagation(); navigate(`/analytics/trade-replay?${qs}`) }}
       className={isSm
-        ? 'w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 cursor-not-allowed opacity-40'
-        : 'flex items-center gap-2 px-3.5 py-2 rounded-xl text-sm font-semibold flex-shrink-0 cursor-not-allowed opacity-50'}
+        ? 'w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 transition-colors hover:bg-white/[0.10]'
+        : 'flex items-center gap-2 px-3.5 py-2 rounded-xl text-sm font-semibold flex-shrink-0 transition-colors hover:bg-white/[0.10]'}
       style={isSm
         ? { background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.07)' }
         : { background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.07)', color: 'var(--text-primary)' }}
     >
-      <Play size={isSm ? 13 : 14} style={{ color: isSm ? 'var(--text-muted)' : 'var(--text-secondary)' }} fill="currentColor" />
+      <Play size={isSm ? 13 : 14} style={{ color: isSm ? 'var(--accent-purple-light)' : 'var(--text-secondary)' }} fill="currentColor" />
       {!isSm && 'Replay'}
     </button>
   )
@@ -150,7 +152,7 @@ function DayTradeTable({ dayTrades }) {
                   </td>
                   <td className="px-4 py-3 text-sm" style={{ color: 'var(--text-secondary)' }}>{t.size != null ? Number(t.size).toFixed(2) : '—'}</td>
                   <td className="px-4 py-3 font-bold text-sm" style={{ color: pnlColorBright(t.pnl) }}>{fmtMoney(t.pnl)}</td>
-                  <td className="px-4 py-3"><ReplayButton size="sm" /></td>
+                  <td className="px-4 py-3"><ReplayButton size="sm" tradeId={t.id} /></td>
                 </tr>
               )
             })}
@@ -197,7 +199,7 @@ function DayRow({ row, dayTrades, isExpanded, isSelected, onToggle, registerRef 
             </p>
           </div>
         </div>
-        <ReplayButton />
+        <ReplayButton date={row.date} />
       </div>
 
       <AnimatePresence initial={false}>
