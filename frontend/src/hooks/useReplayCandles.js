@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { api } from '../lib/api'
-import { fetchBinanceCandles, resolveBinanceSymbol } from '../lib/binanceDirect'
+import { loadCandles } from '../lib/loadCandles'
 import { replayWindow, tfByKey } from '../lib/replayUtils'
 
 // Module-level cache: flipping between trades / timeframes you've already
@@ -45,21 +44,8 @@ export function useReplayCandles(trade, timeframe) {
     let cancelled = false
 
     const { tf, from, to } = wanted
-    const direct = resolveBinanceSymbol(symbol)
 
-    // 1) Binance straight from the browser (no cold start, no server region
-    //    issues). 2) Backend route — the fallback, and the only path for forex.
-    const viaBackend = () =>
-      api.get(`/candles?symbol=${encodeURIComponent(symbol)}&interval=${tf.key}&from=${from}&to=${to}`)
-        .then(res => res?.candles || [])
-
-    const load = direct
-      ? fetchBinanceCandles({ ...direct, interval: tf.key, from, to })
-          .then(c => (c.length ? c : Promise.reject(new Error('empty'))))
-          .catch(() => viaBackend())
-      : viaBackend()
-
-    load
+    loadCandles({ symbol, interval: tf.key, from, to })
       .then(candles => {
         if (cancelled) return
         if (candles.length) remember(wanted.key, candles)

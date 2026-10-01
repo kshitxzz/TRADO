@@ -45,6 +45,17 @@ export function resolveBinanceSymbol(raw) {
   return null
 }
 
+// Forex majors that Binance may list against USDT. Best-effort only: USDT is not
+// USD (small constant premium — the page's feed alignment absorbs it), liquidity is
+// thinner than real forex, and Binance can delist these. Used ONLY after the
+// backend (Twelve Data) can't serve the symbol; an unlisted symbol just errors out.
+const FOREX_SPOT_MAP = { EURUSD: 'EURUSDT', GBPUSD: 'GBPUSDT', AUDUSD: 'AUDUSDT' }
+
+export function resolveBinanceForex(raw) {
+  const symbol = FOREX_SPOT_MAP[normaliseSymbol(raw)]
+  return symbol ? { market: 'spot', symbol } : null
+}
+
 async function getRows(url, timeoutMs = 8000) {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), timeoutMs)
