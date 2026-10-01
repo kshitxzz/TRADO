@@ -72,7 +72,8 @@ export default function TradeReplay() {
   // ── Data ─────────────────────────────────────────────────────────────────
   const [timeframe, setTimeframe] = useState(DEFAULT_TIMEFRAME)
   const tf = tfByKey(timeframe)
-  const { candles: rawCandles, loading, error, ready } = useReplayCandles(trade, timeframe)
+  const { candles: rawCandles, source, loading, error, ready } = useReplayCandles(trade, timeframe)
+  const fromBroker = source === 'broker'
   const plan = useMemo(() => (ready && trade ? buildReplayPlan(rawCandles, trade, tf.secs) : null), [ready, rawCandles, trade, tf.secs])
 
   const precision = useMemo(
@@ -82,7 +83,10 @@ export default function TradeReplay() {
 
   // Free feeds aren't the trader's broker feed — line the candles up with the
   // fills when the difference is a clean constant (see calibrateFeed).
-  const calibration = useMemo(() => (plan && trade ? calibrateFeed(rawCandles, plan, trade) : null), [plan, rawCandles, trade])
+  const calibration = useMemo(
+    () => (plan && trade && !fromBroker ? calibrateFeed(rawCandles, plan, trade) : null),
+    [plan, rawCandles, trade, fromBroker],
+  )
   const candles = useMemo(
     () => (calibration?.applied ? shiftCandles(rawCandles, calibration.offset, precision) : rawCandles),
     [rawCandles, calibration, precision],
@@ -203,11 +207,27 @@ export default function TradeReplay() {
                   markers={markers} precision={precision} tfSecs={tf.secs}
                   ready={ready} loading={loading} error={error}
                 >
+                  {fromBroker && ready && (
+                    <div
+                      className="absolute left-3 top-3 z-10 flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px]"
+                      title="These candles were captured from your own MT5 terminal, so they match the prices you traded."
+                      style={{
+                        background: 'rgba(20,20,26,0.82)',
+                        border: '1px solid rgba(52,211,153,0.28)',
+                        color: 'var(--positive-green-bright)',
+                        backdropFilter: 'blur(6px)',
+                      }}
+                    >
+                      <Info size={12} />
+                      Your broker’s candles
+                    </div>
+                  )}
+
                   {(calibration?.applied || calibration?.mismatch) && ready && (
                     <div
                       className="absolute left-3 top-3 z-10 flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px]"
                       title={calibration.applied
-                        ? 'Free market data is a different price feed than your broker’s. Candles were shifted by a constant amount so your entry and exit line up with the candles.'
+                        ? 'Approximate: this uses a free market-data feed, not your broker’s prices. Candles were shifted by a constant amount to line up with your fills. Exact broker candles appear once the TradoSync EA uploads them.'
                         : 'Your entry/exit prices don’t line up with this market-data feed, so candle prices may differ from your broker’s.'}
                       style={{
                         background: 'rgba(20,20,26,0.82)',
@@ -218,7 +238,7 @@ export default function TradeReplay() {
                     >
                       <Info size={12} />
                       {calibration.applied
-                        ? `Aligned to your fills (${calibration.offset > 0 ? '+' : '−'}$${Math.abs(calibration.offset).toFixed(2)} vs feed)`
+                        ? `Aligned to your fills (${calibration.offset > 0 ? '+' : '−'}${Math.abs(calibration.offset).toFixed(precision)} vs feed)`
                         : 'Feed prices differ from your fills'}
                     </div>
                   )}

@@ -23,6 +23,7 @@ import brokerRoutes   from './routes/broker.js'
 import statsRoutes    from './routes/stats.js'
 import notificationsRoutes from './routes/notifications.js'
 import candlesRoutes from './routes/candles.js'
+import eaCandlesRoutes from './routes/eaCandles.js'
 
 const app  = express()
 const PORT = process.env.PORT || 4000
@@ -44,7 +45,7 @@ app.use(express.json({
 // app usage (dashboard loads, AI calls, etc.) from the same machine.
 app.use(rateLimit({
   windowMs: 60_000, max: 120, message: { error: 'Too many requests' },
-  skip: (req) => req.path === '/api/broker/ea/sync',
+  skip: (req) => req.path === '/api/broker/ea/sync' || req.path.startsWith('/api/broker/ea/candles'),
 }))
 
 // EA sync gets its own generous budget: tick-driven, throttled to ~1/sec
@@ -54,6 +55,11 @@ app.use('/api/broker/ea/sync', rateLimit({
   windowMs: 60_000, max: 300, message: { error: 'Too many requests' },
 }))
 
+// EA candle capture: ≤ 1 poll / 15s from the EA plus one upload per trade.
+app.use('/api/broker/ea/candles', rateLimit({
+  windowMs: 60_000, max: 60, message: { error: 'Too many requests' },
+}))
+
 // ── Static: downloadable MT5 Expert Advisor ──
 app.use('/ea', express.static(path.join(__dirname, 'public/ea')))
 
@@ -61,6 +67,7 @@ app.use('/ea', express.static(path.join(__dirname, 'public/ea')))
 app.use('/api/ai',       aiRoutes)
 app.use('/api/trades',   tradesRoutes)
 app.use('/api/payments', paymentsRoutes)
+app.use('/api/broker/ea/candles', eaCandlesRoutes)
 app.use('/api/broker',   brokerRoutes)
 app.use('/api/stats',    statsRoutes)
 app.use('/api/notifications', notificationsRoutes)

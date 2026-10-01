@@ -139,6 +139,7 @@ export default function ReplayChart({
     // Nothing usable (error / no trade): clear the pane.
     if (!ready) {
       if (!loading && !candles.length) {
+        chart.priceScale('right').applyOptions({ autoScale: true })
         series.setData([])
         markerApi.current?.setMarkers([])
         last.current = { candles: null, count: 0, mode: null }
@@ -156,6 +157,10 @@ export default function ReplayChart({
     if (sequential) {
       series.update(toBar(candles[count - 1]))
     } else {
+      // A new dataset (trade / timeframe / restart) must re-fit the price axis.
+      // Dragging the axis switches autoscale OFF and it stays off across data
+      // changes — that left EURUSD candles invisible on gold's old price range.
+      chart.priceScale('right').applyOptions({ autoScale: true })
       series.setData(candles.slice(0, count).map(toBar))
 
       const ts = chart.timeScale()

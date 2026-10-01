@@ -2,6 +2,7 @@ import { Router } from 'express'
 import rateLimit from 'express-rate-limit'
 import { requireAuth } from '../middleware/auth.js'
 import { getCandles } from '../services/candles.js'
+import { supabase } from '../config/supabase.js'
 
 const router = Router()
 
@@ -30,6 +31,28 @@ router.get('/', requireAuth, LIMITER, async (req, res) => {
     const status = err.status || (err.name === 'AbortError' ? 504 : 502)
     if (status >= 500) console.error('[candles]', err.message)
     res.status(status).json({ error: err.message || 'Failed to load market data' })
+  }
+})
+
+// GET /api/candles/trade/:tradeId → the broker's own candles for one trade,
+// captured by the TradoSync EA: { series: { '1m': [[t,o,h,l,c],…], … } | null }
+// `null` = nothing captured yet (the EA fills these in over time).
+router.get('/trade/:tradeId', requireAuth, async (req, res) => {
+  try {
+    const { tradeId } = req.params
+    if (!/^[0-9a-f-]{36}$/i.test(tradeId)) return res.status(400).json({ error: 'Invalid trade id' })
+
+    const { data, error } = await supabase
+      .from('trade_candles').select('series')
+      .eq('trade_id', tradeId).eq('user_id', req.user.id).maybeSingle()
+    if (error) throw error
+
+    const series = data?.series && Object.keys(data.series).length ? data.series : null
+    res.set('Cache-Control', 'private, max-age=60')
+    res.json({ series })
+  } catch (err) {
+    console.error('[candles/trade]', err.message)
+    res.status(500).json({ error: 'Failed to load broker candles' })
   }
 })
 

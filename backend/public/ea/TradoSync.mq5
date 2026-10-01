@@ -21,7 +21,7 @@
 //| 4. Make sure "Allow Algo Trading" is enabled (top toolbar).         |
 //+------------------------------------------------------------------+
 #property copyright "Trado"
-#property version   "1.00"
+#property version   "1.10"
 #property strict
 
 //──── Inputs ─────────────────────────────────────────────────────────
@@ -30,6 +30,7 @@ input string InpServerUrl           = "https://your-backend.example.com/api/brok
 input int    InpMinTickSyncMs       = 1000;                                    // Fastest allowed sync on price ticks (ms) — floor, not a fixed interval
 input int    InpSyncIntervalSeconds = 5;                                       // Fallback timer — catches symbols/quiet periods with no ticks
 input int    InpHistoryLookbackDays = 7;                                      // Rolling window after the first full sync
+input bool   InpSendCandles         = true;                                   // Upload this broker's own candles around each closed trade (Trade Replay)
 
 //──── State ──────────────────────────────────────────────────────────
 int      g_offsetSeconds = 0;     // broker-server-time -> UTC offset, auto-detected
@@ -274,6 +275,211 @@ string BuildAccountInfoJson()
 }
 
 //+------------------------------------------------------------------+
+//| BROKER-CANDLE CAPTURE (for Trade Replay)                           |
+//| A free market-data feed never matches a broker's prices exactly, so |
+//| the EA copies the candles this terminal actually saw around each    |
+//| closed trade and uploads them. After every sync it asks the backend |
+//| which closed trades still lack candles (a couple at a time, at most |
+//| once every 15 s), reads them with CopyRates() and posts them. Old   |
+//| trades backfill gradually; nothing here blocks trade syncing.       |
+//+------------------------------------------------------------------+
+#define CANDLE_BARS_BEFORE 40   // keep in step with WINDOW_BEFORE in the web app (replayUtils.js)
+#define CANDLE_BARS_AFTER  20   // keep in step with WINDOW_AFTER
+#define CANDLE_MAX_BARS    1500
+
+int    g_tfList[6] = {PERIOD_M1, PERIOD_M5, PERIOD_M15, PERIOD_H1, PERIOD_H4, PERIOD_D1};
+int    g_tfSecs[6] = {60, 300, 900, 3600, 14400, 86400};
+string g_tfKeys[6] = {"1m", "5m", "15m", "1h", "4h", "1d"};
+
+ulong  g_lastCandleMs = 0;
+long   g_attPos[];      // positions we have already tried (in-memory only)
+int    g_attCnt[];
+
+int NextAttempt(const long posId)
+{
+   for(int i = 0; i < ArraySize(g_attPos); i++)
+      if(g_attPos[i] == posId) { g_attCnt[i]++; return g_attCnt[i]; }
+   int n = ArraySize(g_attPos);
+   ArrayResize(g_attPos, n + 1);
+   ArrayResize(g_attCnt, n + 1);
+   g_attPos[n] = posId;
+   g_attCnt[n] = 1;
+   return 1;
+}
+
+// POST a JSON body, return the HTTP status (or -1) and the response text.
+int PostJson(const string url, const string body, string &response)
+{
+   char post[];
+   int len = StringToCharArray(body, post, 0, -1, CP_UTF8);
+   if(len > 0 && post[len - 1] == 0) len--;
+   ArrayResize(post, len);
+
+   char   result[];
+   string resultHeaders;
+   string headers = "Content-Type: application/json\r\n";
+
+   ResetLastError();
+   int status = WebRequest("POST", url, headers, 15000, post, result, resultHeaders);
+   if(status == -1)
+   {
+      Print("TradoSync: candle upload failed, WebRequest error ", GetLastError());
+      response = "";
+      return -1;
+   }
+   response = CharArrayToString(result, 0, -1, CP_UTF8);
+   return status;
+}
+
+// Backend stores symbols upper-cased ("XAUUSDM"); the terminal may call it
+// "XAUUSDm" or "XAUUSD.pro" — find the real name, ignoring case.
+string ResolveSymbol(const string name)
+{
+   if(SymbolSelect(name, true)) return name;
+   string wanted = name;
+   StringToUpper(wanted);
+   int total = SymbolsTotal(false);
+   for(int i = 0; i < total; i++)
+   {
+      string s = SymbolName(i, false);
+      string up = s;
+      StringToUpper(up);
+      if(up == wanted)
+      {
+         SymbolSelect(s, true);
+         return s;
+      }
+   }
+   return "";
+}
+
+// Server-time -> UTC offset valid AT THE TRADE (not just right now), derived
+// from the position's own entry deal. This keeps candles aligned with the
+// trade timestamps already stored in Trado even if the broker's clock changed
+// (daylight saving) since the trade happened.
+long OffsetForPosition(const long posId, const long openUtc)
+{
+   long offs = g_offsetSeconds;
+   if(HistorySelectByPosition(posId))
+   {
+      int total = HistoryDealsTotal();
+      for(int i = 0; i < total; i++)
+      {
+         ulong ticket = HistoryDealGetTicket(i);
+         if(ticket == 0) continue;
+         if((ENUM_DEAL_ENTRY)HistoryDealGetInteger(ticket, DEAL_ENTRY) != DEAL_ENTRY_IN) continue;
+         offs = (long)HistoryDealGetInteger(ticket, DEAL_TIME) - openUtc;
+         break;
+      }
+   }
+   if(MathAbs((double)(offs - g_offsetSeconds)) > 7200.0) offs = g_offsetSeconds; // sanity
+   return offs;
+}
+
+// Copy this trade's candles for every replay timeframe and upload them.
+// Returns true once the backend has stored them.
+bool CaptureAndSendCandles(const string url, const long posId, const string rawSymbol,
+                           const long openUtc, const long closeUtc, const bool lastChance)
+{
+   string sym    = ResolveSymbol(rawSymbol);
+   long   offs   = OffsetForPosition(posId, openUtc);
+   string series = "{";
+   bool   any = false, covered = false, firstSeries = true;
+
+   if(sym != "")
+   {
+      int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+      for(int k = 0; k < 6; k++)
+      {
+         long step = g_tfSecs[k];
+         long from = (openUtc / step) * step - (long)CANDLE_BARS_BEFORE * step;
+         long to   = (closeUtc / step) * step + (long)CANDLE_BARS_AFTER * step + step - 1;
+
+         MqlRates rates[];
+         int n = CopyRates(sym, (ENUM_TIMEFRAMES)g_tfList[k], (datetime)(from + offs), (datetime)(to + offs), rates);
+         if(n <= 0) continue;
+
+         long firstUtc = (long)rates[0].time - offs;
+         long lastUtc  = (long)rates[n - 1].time - offs;
+         if(firstUtc <= openUtc && lastUtc >= (closeUtc / step) * step) covered = true;
+
+         int startIdx = (n > CANDLE_MAX_BARS) ? (n - CANDLE_MAX_BARS) : 0;
+         string arr = "[";
+         for(int i = startIdx; i < n; i++)
+         {
+            if(i > startIdx) arr += ",";
+            arr += "[" + IntegerToString((long)rates[i].time - offs) + "," +
+                   DoubleToString(rates[i].open,  digits) + "," + DoubleToString(rates[i].high, digits) + "," +
+                   DoubleToString(rates[i].low,   digits) + "," + DoubleToString(rates[i].close, digits) + "]";
+         }
+         arr += "]";
+
+         if(!firstSeries) series += ",";
+         firstSeries = false;
+         series += "\"" + g_tfKeys[k] + "\":" + arr;
+         any = true;
+      }
+   }
+   series += "}";
+
+   // History may still be downloading from the broker — try again on the next
+   // poll. After a few attempts send whatever we have (possibly nothing) so the
+   // backend stops asking for this trade.
+   if(!covered && !lastChance) return false;
+
+   string body = "{\"token\":\"" + JsonEscape(InpApiKey) + "\"" +
+                 ",\"login\":" + IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN)) +
+                 ",\"positionId\":" + IntegerToString(posId) +
+                 ",\"series\":" + series + "}";
+   string response = "";
+   int status = PostJson(url, body, response);
+   if(status != 200)
+   {
+      Print("TradoSync: candle upload for position ", posId, " got HTTP ", status);
+      return false;
+   }
+   return true;
+}
+
+void SyncCandles()
+{
+   if(!InpSendCandles) return;
+
+   ulong now = GetTickCount64();
+   if(g_lastCandleMs != 0 && (now - g_lastCandleMs) < 15000) return;
+   g_lastCandleMs = now;
+
+   // Derive the candle endpoints from the sync URL (.../ea/sync -> .../ea/candles).
+   string baseUrl = InpServerUrl;
+   if(StringReplace(baseUrl, "/ea/sync", "/ea/candles") <= 0) return;
+
+   string request = "{\"token\":\"" + JsonEscape(InpApiKey) + "\"" +
+                    ",\"login\":" + IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN)) +
+                    ",\"limit\":2}";
+   string response = "";
+   if(PostJson(baseUrl + "/pending", request, response) != 200) return;
+   if(StringLen(response) == 0) return;      // nothing pending
+
+   string lines[];
+   int count = StringSplit(response, '\n', lines);
+   for(int i = 0; i < count; i++)
+   {
+      string parts[];
+      if(StringSplit(lines[i], '|', parts) < 4) continue;
+
+      long posId    = StringToInteger(parts[0]);
+      long openUtc  = StringToInteger(parts[2]);
+      long closeUtc = StringToInteger(parts[3]);
+      if(posId <= 0 || openUtc <= 0 || closeUtc < openUtc) continue;
+
+      int  attempt    = NextAttempt(posId);
+      bool lastChance = (attempt >= 3);
+      if(CaptureAndSendCandles(baseUrl, posId, parts[1], openUtc, closeUtc, lastChance))
+         Print("TradoSync: broker candles stored for position ", posId);
+   }
+}
+
+//+------------------------------------------------------------------+
 void DoSync()
 {
    bool firstRun = (GlobalVariableCheck(g_gvFirstRun) == false);
@@ -338,5 +544,8 @@ void DoSync()
 
    g_lastSyncAt = TimeCurrent();
    Comment("Trado Sync: connected ✓  last sync ", TimeToString(g_lastSyncAt, TIME_MINUTES | TIME_SECONDS));
+
+   // Throttled + bounded; never delays the trade sync above.
+   SyncCandles();
 }
 //+------------------------------------------------------------------+
