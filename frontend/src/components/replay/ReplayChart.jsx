@@ -205,7 +205,7 @@ export default function ReplayChart({
 
       {/* Failed / no data */}
       {!loading && error && (
-        <div className="absolute inset-0 z-20 flex items-center justify-center p-6">
+        <div className="absolute inset-0 z-20 flex items-center justify-center p-6" style={{ background: pal.surface }}>
           <div className="max-w-sm text-center">
             <div className="w-11 h-11 rounded-xl mx-auto mb-3 flex items-center justify-center"
                  style={{ background: 'rgba(245,158,11,0.10)', border: '1px solid rgba(245,158,11,0.18)' }}>
@@ -213,7 +213,7 @@ export default function ReplayChart({
             </div>
             <p className="text-sm font-semibold mb-1" style={{ color: 'var(--text-primary)' }}>Market data unavailable</p>
             <p className="text-xs leading-relaxed" style={{ color: 'var(--text-muted)' }}>
-              {error} Try another timeframe or trade.
+              {error}
             </p>
           </div>
         </div>

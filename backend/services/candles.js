@@ -177,7 +177,8 @@ const iso = (secs) => new Date(secs * 1000).toISOString().slice(0, 19) // YYYY-M
 async function fromTwelveData(symbol, interval, from, to) {
   const key = process.env.TWELVEDATA_API_KEY
   if (!key) {
-    const err = new Error('Forex pairs need a market-data key. Set TWELVEDATA_API_KEY on the server.')
+    const err = new Error('Replay isn’t available for forex pairs yet.')
+    console.warn('[candles] TWELVEDATA_API_KEY is not set — forex replay disabled')
     err.status = 501
     throw err
   }
@@ -193,8 +194,11 @@ async function fromTwelveData(symbol, interval, from, to) {
   if (j.status === 'error') {
     // "No data is available on the specified dates" is an empty result, not a failure.
     if (/no data/i.test(j.message || '')) return []
-    const err = new Error(j.message || 'Twelve Data error')
-    err.status = j.code === 429 ? 429 : 502
+    const limited = j.code === 429
+    const err = new Error(limited
+      ? 'Market-data limit reached — please try again in a minute.'
+      : (j.message || 'Market data is temporarily unavailable.'))
+    err.status = limited ? 429 : 502
     throw err
   }
 
