@@ -9,6 +9,7 @@ import AnimatedNumber from '../../components/ui/AnimatedNumber'
 import InfoTip from '../../components/ui/InfoTip'
 import { useAuth } from '../../hooks/useAuth'
 import { useTrades } from '../../hooks/useTrades'
+import { useTimeFormat } from '../../hooks/useTimeFormat'
 import { computeStats, buildEquityCurve, pnlColor } from '../../lib/utils'
 import {
   computeAssetClassBreakdown, rankHourlyPerformance, computeDrawdownSeries,
@@ -732,6 +733,7 @@ function heatmapCellStyle(cell, maxCount) {
 }
 
 function TradingHeatmapCard({ grid }) {
+  const { fmtHour, fmtHourShort } = useTimeFormat()
   const cells = Object.values(grid)
   const hasAny = cells.length > 0
   const maxCount = hasAny ? Math.max(...cells.map(c => c.count)) : 0
@@ -746,7 +748,7 @@ function TradingHeatmapCard({ grid }) {
               <div style={{ width: 40, flexShrink: 0 }} />
               {HEATMAP_HOURS.map(h => (
                 <div key={h} className="flex-1 text-center text-[10px] font-medium" style={{ color:'var(--text-muted)', minWidth: 34 }}>
-                  {pad(h)}
+                  {fmtHourShort(h)}
                 </div>
               ))}
             </div>
@@ -759,7 +761,7 @@ function TradingHeatmapCard({ grid }) {
                     const style = heatmapCellStyle(cell, maxCount)
                     return (
                       <div key={h}
-                           title={cell ? `${day} ${pad(h)}:00 — ${fmtFull(cell.pnl)} (${cell.count} trade${cell.count !== 1 ? 's' : ''})` : `${day} ${pad(h)}:00 — no trades`}
+                           title={cell ? `${day} ${fmtHour(h)} — ${fmtFull(cell.pnl)} (${cell.count} trade${cell.count !== 1 ? 's' : ''})` : `${day} ${fmtHour(h)} — no trades`}
                            className="flex-1 rounded-lg flex items-center justify-center text-[11px] font-bold transition-transform duration-150 hover:scale-[1.12] hover:z-10"
                            style={{ ...style, minWidth: 34, height: 30 }}>
                         {cell ? cell.count : ''}
@@ -1219,7 +1221,8 @@ export default function Performance() {
   }, [closed])
 
   const assetClassData   = useMemo(() => computeAssetClassBreakdown(closed), [closed])
-  const hourlyRanked      = useMemo(() => rankHourlyPerformance(closed), [closed])
+  const { timeFormat }    = useTimeFormat()
+  const hourlyRanked      = useMemo(() => rankHourlyPerformance(closed, timeFormat), [closed, timeFormat])
   const drawdownSeries    = useMemo(() => computeDrawdownSeries(closed), [closed])
   const streakTracking    = useMemo(() => computeStreakTracking(closed), [closed])
   const symbolBreakdown   = useMemo(() => computeSymbolBreakdown(closed), [closed])

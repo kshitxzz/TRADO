@@ -18,6 +18,7 @@ import SymbolPerformanceCard from '../components/dashboard/SymbolPerformanceCard
 import TradingHeatmap, { pickHeatmapYear } from '../components/charts/TradingHeatmap'
 import { useAuth } from '../hooks/useAuth'
 import { useTrades } from '../hooks/useTrades'
+import { useTimeFormat } from '../hooks/useTimeFormat'
 import { computeStats, buildEquityCurve, getTodayPnl, getMonthStats, formatPnl, pnlColor, greeting } from '../lib/utils'
 import {
   computeTradoAiScore, computeSymbolBreakdown, computeEquityCurveStats,
@@ -162,7 +163,8 @@ export default function Dashboard() {
   const symbolBreakdown = useMemo(() => computeSymbolBreakdown(closedTrades), [closedTrades])
   const equityStats = useMemo(() => computeEquityCurveStats(trades, currentBalance), [trades, currentBalance])
   const profitDistribution = useMemo(() => computeProfitDistribution(trades), [trades])
-  const hourlyPerformance = useMemo(() => computeHourlyPerformance(trades), [trades])
+  const { timeFormat } = useTimeFormat()
+  const hourlyPerformance = useMemo(() => computeHourlyPerformance(trades, timeFormat), [trades, timeFormat])
   const heatmapYear = useMemo(() => pickHeatmapYear(trades), [trades])
   const yearTradeCount = useMemo(() =>
     closedTrades.filter(t => new Date(t.closed_at).getFullYear() === heatmapYear).length,

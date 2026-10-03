@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react'
+import { useTimeFormat, formatTime, getTimeFormat } from './useTimeFormat'
 
 // ── Default timezone: IST ─────────────────────────────────────────────────────
 const DEFAULT_TZ  = 'Asia/Kolkata'
@@ -71,20 +72,14 @@ function zonedWallTimeToUtc(year, month, day, hour, minute, timeZone) {
 }
 
 // ── Format a UTC instant as HH:MM in a given display timezone ─────────────────
-function fmtInZone(date, displayTimezone) {
-  try {
-    return date.toLocaleTimeString('en-US', {
-      hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: displayTimezone,
-    })
-  } catch (_) {
-    return '--:--'
-  }
+function fmtInZone(date, displayTimezone, format = getTimeFormat()) {
+  return formatTime(date, format, { timeZone: displayTimezone })
 }
 
 // ── Build today's session boundary strings, converted to the display TZ ───────
 // Recomputed from "today" so the window automatically reflects whichever side
 // of the DST transition the calendar currently sits on.
-export function sessionTimesForTZ(displayTimezone) {
+export function sessionTimesForTZ(displayTimezone, format = getTimeFormat()) {
   const now = new Date()
   const y = now.getFullYear(), m = now.getMonth(), d = now.getDate()
 
@@ -94,10 +89,10 @@ export function sessionTimesForTZ(displayTimezone) {
   const nyClose       = zonedWallTimeToUtc(y, m, d, SESSION_CLOSE_HOUR, 0, NY_TZ)
 
   return {
-    London:     `${fmtInZone(londonOpen, displayTimezone)} – ${fmtInZone(londonClose, displayTimezone)}`,
-    'New York': `${fmtInZone(nyOpen, displayTimezone)} – ${fmtInZone(nyClose, displayTimezone)}`,
+    London:     `${fmtInZone(londonOpen, displayTimezone, format)} – ${fmtInZone(londonClose, displayTimezone, format)}`,
+    'New York': `${fmtInZone(nyOpen, displayTimezone, format)} – ${fmtInZone(nyClose, displayTimezone, format)}`,
     // Asian = the remaining hours once London and New York close for the day
-    Asian:      `${fmtInZone(nyClose, displayTimezone)} – ${fmtInZone(londonOpen, displayTimezone)}`,
+    Asian:      `${fmtInZone(nyClose, displayTimezone, format)} – ${fmtInZone(londonOpen, displayTimezone, format)}`,
   }
 }
 
@@ -147,7 +142,9 @@ export function useTimezone() {
     localStorage.setItem(STORAGE_KEY, tz)
   }, [])
 
-  const sessionTimes = sessionTimesForTZ(timezone)
+  // Subscribing here re-renders every consumer when the 12h/24h preference flips.
+  const { timeFormat } = useTimeFormat()
+  const sessionTimes = sessionTimesForTZ(timezone, timeFormat)
 
   return { timezone, setTimezone, sessionTimes }
 }

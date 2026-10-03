@@ -1,3 +1,4 @@
+import { formatTime, getTimeFormat } from '../hooks/useTimeFormat'
 // ─────────────────────────────────────────────────────────────────────────
 // Trade Replay — pure helpers (no React, no chart library).
 // ─────────────────────────────────────────────────────────────────────────
@@ -169,30 +170,29 @@ export function livePnl(trade, price) {
 
 // ── Time labels (browser-local, matching Day View) ───────────────────────
 const MONTH = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
-const time12 = (d) => d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
 
 /** "Sep 3 at 09:20 PM" — the market time once this candle has closed. */
-export function fmtReplayClock(candle, tfSecs) {
+export function fmtReplayClock(candle, tfSecs, format = getTimeFormat()) {
   if (!candle) return ''
   if (tfSecs >= 86400) {
     const d = new Date(candle.time * 1000)
     return `${MONTH[d.getMonth()]} ${d.getDate()}`
   }
   const d = new Date((candle.time + tfSecs) * 1000)
-  return `${MONTH[d.getMonth()]} ${d.getDate()} at ${time12(d)}`
+  return `${MONTH[d.getMonth()]} ${d.getDate()} at ${formatTime(d, format)}`
 }
 
-/** Chart axis labels — LWC works in UTC, so format in the viewer's zone (12-hour). */
-export function fmtAxisTick(unixSecs, tfSecs, isDayBoundary) {
+/** Chart axis labels — LWC works in UTC, so format in the viewer's zone (12h or 24h per the user's preference). */
+export function fmtAxisTick(unixSecs, tfSecs, isDayBoundary, format = getTimeFormat()) {
   const d = new Date(unixSecs * 1000)
   if (tfSecs >= 86400 || isDayBoundary) return `${MONTH[d.getMonth()]} ${d.getDate()}`
-  return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })
+  return formatTime(d, format, { hour: format === '24h' ? '2-digit' : 'numeric' })
 }
 
-export function fmtCrosshairTime(unixSecs, tfSecs) {
+export function fmtCrosshairTime(unixSecs, tfSecs, format = getTimeFormat()) {
   const d = new Date(unixSecs * 1000)
   if (tfSecs >= 86400) return `${MONTH[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`
-  return `${MONTH[d.getMonth()]} ${d.getDate()}  ${d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })}`
+  return `${MONTH[d.getMonth()]} ${d.getDate()}  ${formatTime(d, format, { hour: format === '24h' ? '2-digit' : 'numeric' })}`
 }
 
 // ── Feed calibration ─────────────────────────────────────────────────────

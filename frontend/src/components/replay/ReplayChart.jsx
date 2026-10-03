@@ -5,6 +5,7 @@ import {
 } from 'lightweight-charts'
 import { Loader2, CircleAlert } from 'lucide-react'
 import { useTheme } from '../../hooks/useTheme'
+import { useTimeFormat } from '../../hooks/useTimeFormat'
 import { REPLAY_BAR_SPACING, fmtAxisTick, fmtCrosshairTime } from '../../lib/replayUtils'
 
 export const CANDLE_UP   = '#26B570'
@@ -46,6 +47,7 @@ export default function ReplayChart({
   ready, loading, error, children,
 }) {
   const { isDark } = useTheme()
+  const { timeFormat } = useTimeFormat()
   const wrapRef   = useRef(null)
   const chartRef  = useRef(null)
   const seriesRef = useRef(null)
@@ -122,6 +124,17 @@ export default function ReplayChart({
       },
     })
   }, [isDark])
+
+  // -- Clock format (12h / 24h) -------------------------------------------
+  // The chart is created once, so push fresh formatters in whenever the preference flips.
+  useEffect(() => {
+    const chart = chartRef.current
+    if (!chart) return
+    chart.applyOptions({
+      timeScale: { tickMarkFormatter: (time, type) => fmtAxisTick(time, tfRef.current, type <= 2, timeFormat) },
+      localization: { timeFormatter: (time) => fmtCrosshairTime(time, tfRef.current, timeFormat) },
+    })
+  }, [timeFormat])
 
   // ── Price precision ────────────────────────────────────────────────────
   useEffect(() => {

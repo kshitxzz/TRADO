@@ -6,6 +6,7 @@ import {
 import PageWrapper from '../components/layout/PageWrapper'
 import { useAuth } from '../hooks/useAuth'
 import { useTrades } from '../hooks/useTrades'
+import { useTimeFormat } from '../hooks/useTimeFormat'
 import { computeStats } from '../lib/utils'
 import {
   PERIOD_OPTIONS, filterTradesByPeriod, periodLabel,
@@ -86,6 +87,8 @@ function useAIAnalysis(trades, account) {
       ? 10000 + computeStats(trades).totalPnl
       : 0
 
+  const { timeFormat } = useTimeFormat()
+
   const computed = useMemo(() => {
     const overallStats = computeStats(filteredTrades)
     const behavioralFlags = computeBehavioralFlags(filteredTrades)
@@ -99,12 +102,12 @@ function useAIAnalysis(trades, account) {
       performanceBenchmarks: computePerformanceBenchmarks(filteredTrades),
       tradeQuality: computeTradeQualityAggregate(filteredTrades),
       riskSizing: computeRiskSizing(filteredTrades, accountBalance),
-      timeInsights: computeTimeInsights(filteredTrades),
+      timeInsights: computeTimeInsights(filteredTrades, timeFormat),
       correlations: computeCorrelations(filteredTrades),
       smartInsights: computeSmartInsights(filteredTrades),
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filteredTrades, accountBalance])
+  }, [filteredTrades, accountBalance, timeFormat])
 
   const [ai, setAi] = useState(null)
   const [aiLoading, setAiLoading] = useState(false)

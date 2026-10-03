@@ -3,6 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom'
 import { Search, Bell, Sun, Moon, Clock, ChevronDown, User, Settings, LogOut, RefreshCw, Plus, Wallet, Check, Menu, X } from 'lucide-react'
 import { useAuth } from '../../hooks/useAuth'
 import { useTheme } from '../../hooks/useTheme'
+import { useTimeFormat } from '../../hooks/useTimeFormat'
 import { useAccounts } from '../../hooks/useAccounts'
 import { useNotifications } from '../../hooks/useNotifications'
 import { RULE_META, SEVERITY_COLOR, timeAgo } from '../../lib/alertMeta'
@@ -41,6 +42,7 @@ function pageTitle(pathname) {
 }
 
 export default function Topbar({ onSync, syncing, onMobileMenuClick }) {
+  const { fmtTime } = useTimeFormat()
   const [userOpen,  setUserOpen]  = useState(false)
   const [notifOpen, setNotifOpen] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
@@ -93,7 +95,7 @@ export default function Topbar({ onSync, syncing, onMobileMenuClick }) {
   }
 
   const dateLabel = now.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
-  const timeLabel = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  const timeLabel = fmtTime(now, { seconds: true })
 
   return (
     <>

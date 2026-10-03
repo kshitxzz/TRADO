@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { Loader2, TrendingUp, Droplet, HeartPulse, BatteryLow, Clock, Ghost, ArrowRight, Radar } from 'lucide-react'
 import { detectAdvancedPatterns } from '../../lib/analytics'
+import { useTimeFormat } from '../../hooks/useTimeFormat'
 
 const BACKEND = import.meta.env.VITE_BACKEND_URL || 'http://localhost:4000'
 
@@ -13,7 +14,7 @@ const CATEGORY_META = {
   eerie:       { icon: Ghost,      color: 'var(--accent-purple)',  bg: 'rgba(139,92,246,0.08)',  label: 'Eerie Pattern' },
 }
 
-function fallbackHeadline(p) {
+function fallbackHeadline(p, fmtHour) {
   const f = p.facts || {}
   switch (p.id) {
     case 'your_edge':        return `${f.symbol} ${f.side} in ${f.session}: ${f.winRate.toFixed(0)}% WR · ${f.pnl >= 0 ? '+' : '-'}$${Math.abs(f.pnl).toFixed(0)} over your history.`
@@ -21,12 +22,13 @@ function fallbackHeadline(p) {
     case 'loss_streak_math': return `After ${f.threshold} losses your day ends green ${f.greenRate.toFixed(0)}% of the time. The ${f.badDays} time${f.badDays === 1 ? '' : 's'} it didn't, you finished ${f.badDaysPnl >= 0 ? '+' : '-'}$${Math.abs(f.badDaysPnl).toFixed(0)}.`
     case 'fatigue_curve':    return `Your win rate drops from ${f.earlyWinRate.toFixed(0)}% to ${f.laterWinRate.toFixed(0)}% after trade #${f.afterNth}.`
     case 'hold_time_edge':   return `Trades under ${f.thresholdMin}m win ${f.underWinRate.toFixed(0)}% vs ${f.overWinRate.toFixed(0)}% held longer.`
-    case 'eerie_pattern':    return `${f.day}s around ${f.hour}:00 UTC: ${f.redCount}/${f.count} trades red, net -$${Math.abs(f.pnl).toFixed(0)}.`
+    case 'eerie_pattern':    return `${f.day}s around ${fmtHour(f.hour)} UTC: ${f.redCount}/${f.count} trades red, net -$${Math.abs(f.pnl).toFixed(0)}.`
     default: return ''
   }
 }
 
 export default function PatternsTab({ trades }) {
+  const { fmtHour } = useTimeFormat()
   const [patterns, setPatterns] = useState(null)
   const [loading, setLoading]   = useState(true)
   const fetchedRef = useRef(false)
@@ -47,11 +49,11 @@ export default function PatternsTab({ trades }) {
         const narrated = data.aiAvailable ? data.patterns : []
         const merged = detected.map(p => {
           const n = narrated.find(x => x.id === p.id)
-          return { ...p, headline: n?.headline || fallbackHeadline(p), action: n?.action || null }
+          return { ...p, headline: n?.headline || null, action: n?.action || null }
         })
         setPatterns(merged)
       })
-      .catch(() => setPatterns(detected.map(p => ({ ...p, headline: fallbackHeadline(p), action: null }))))
+      .catch(() => setPatterns(detected.map(p => ({ ...p, headline: null, action: null }))))
       .finally(() => setLoading(false))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -93,7 +95,7 @@ export default function PatternsTab({ trades }) {
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="text-[10px] font-bold uppercase tracking-wider mb-0.5" style={{ color: meta.color }}>{meta.label}</p>
-                  <p className="text-sm leading-relaxed" style={{ color: 'var(--text-primary)' }}>{p.headline}</p>
+                  <p className="text-sm leading-relaxed" style={{ color: 'var(--text-primary)' }}>{p.headline || fallbackHeadline(p, fmtHour)}</p>
                 </div>
                 {p.action && (
                   <div className="flex-shrink-0 flex items-center gap-1 text-xs font-semibold whitespace-nowrap" style={{ color: meta.color }}>

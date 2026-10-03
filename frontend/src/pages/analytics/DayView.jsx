@@ -10,6 +10,7 @@ import {
 import PageWrapper from '../../components/layout/PageWrapper'
 import { useAuth } from '../../hooks/useAuth'
 import { useTrades } from '../../hooks/useTrades'
+import { useTimeFormat } from '../../hooks/useTimeFormat'
 import { computeDailyBreakdown, computeDayDetailStats, computeDayEquityCurve } from '../../lib/analytics'
 import { buildMonthCalendar, MONTHS_FULL, toDateKey } from '../../lib/advancedReportsHelpers'
 
@@ -25,9 +26,9 @@ function fmtAbsMoney(n) {
 function fmtFullDate(dateStr) {
   return new Date(dateStr + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })
 }
-function fmtTime(iso) {
-  if (!iso) return '—'
-  return new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+// `fmt` is the formatter from useTimeFormat() so labels follow the 12h/24h preference.
+function fmtTime(fmt, iso) {
+  return iso ? fmt(iso) : '--'
 }
 function pnlColorBright(n) {
   return n >= 0 ? 'var(--positive-green-bright)' : 'var(--negative-red)'
@@ -70,8 +71,9 @@ function DayChartTooltip({ active, payload }) {
 }
 
 function DayChart({ curve, gradId, netPnl }) {
+  const { fmtTime: fmtT } = useTimeFormat()
   if (curve.length === 0) return null
-  const data = curve.map(p => ({ ...p, label: fmtTime(p.time) }))
+  const data = curve.map(p => ({ ...p, label: fmtTime(fmtT, p.time) }))
   const color = pnlColorBright(netPnl)
 
   return (
@@ -125,6 +127,7 @@ function DayStatGrid({ stats }) {
 
 // ─── Per-trade table inside an expanded row ──────────────────────────────────
 function DayTradeTable({ dayTrades }) {
+  const { fmtTime: fmtT } = useTimeFormat()
   const sorted = useMemo(
     () => [...dayTrades].sort((a, b) => new Date(a.opened_at || a.closed_at) - new Date(b.opened_at || b.closed_at)),
     [dayTrades]
@@ -145,7 +148,7 @@ function DayTradeTable({ dayTrades }) {
               const isLong = t.side === 'long' || t.side === 'BUY'
               return (
                 <tr key={t.id} className="table-row-hover" style={{ borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
-                  <td className="px-4 py-3 text-sm" style={{ color: 'var(--text-secondary)' }}>{fmtTime(t.opened_at || t.closed_at)}</td>
+                  <td className="px-4 py-3 text-sm" style={{ color: 'var(--text-secondary)' }}>{fmtTime(fmtT, t.opened_at || t.closed_at)}</td>
                   <td className="px-4 py-3 font-semibold text-sm" style={{ color: 'var(--text-primary)' }}>{t.symbol}</td>
                   <td className="px-4 py-3 text-sm">
                     <span className={isLong ? 'pill-buy' : 'pill-sell'}>{isLong ? 'long' : 'short'}</span>

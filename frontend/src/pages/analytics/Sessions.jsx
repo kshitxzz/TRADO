@@ -2,6 +2,7 @@ import PageWrapper from '../../components/layout/PageWrapper'
 import { useAuth } from '../../hooks/useAuth'
 import { useTrades } from '../../hooks/useTrades'
 import { useTimezone, detectSession, SESSION_UTC } from '../../hooks/useTimezone'
+import { useTimeFormat } from '../../hooks/useTimeFormat'
 import { Globe, TrendingUp, BarChart2, Award } from 'lucide-react'
 
 const SESSION_ICONS = {
@@ -27,6 +28,7 @@ export default function Sessions() {
   const { user } = useAuth()
   const { trades, account, loading, syncing, syncTrades, isManualAccount } = useTrades(user?.id)
   const { timezone, sessionTimes } = useTimezone()
+  const { fmtHour } = useTimeFormat()
 
   // Compute per-session stats from real trades
   const sessionStats = (() => {
@@ -101,8 +103,8 @@ export default function Sessions() {
               ))}
             </div>
             <div className="flex justify-between mt-1">
-              {['00:00','08:00','13:00','22:00'].map(t => (
-                <span key={t} className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{t}</span>
+              {[0, 8, 13, 22].map(h => (
+                <span key={h} className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{fmtHour(h)}</span>
               ))}
             </div>
           </div>

@@ -1,3 +1,4 @@
+import { formatHour, getTimeFormat } from '../hooks/useTimeFormat'
 // ─────────────────────────────────────────────────────────────────────────
 // Trado AI — deterministic analytics engine
 //
@@ -1557,7 +1558,7 @@ export function computeRiskSizing(trades = [], accountBalance = null) {
 }
 
 // ── Patterns & Timing: Time Insights (sessions + heatmap) ────────────────
-export function computeTimeInsights(trades = []) {
+export function computeTimeInsights(trades = [], timeFormat = getTimeFormat()) {
   const sessions = computeSessionBreakdown(trades)
   const heatmap = computeWeekdayHourBreakdown(trades)
   const closed = trades.filter(t => t.status === 'closed')
@@ -1569,7 +1570,7 @@ export function computeTimeInsights(trades = []) {
     if (best.pnl > 0) {
       trueEdge = {
         day: best.day, hour: best.hour, winRate: best.winRate, count: best.count, pnl: best.pnl,
-        text: `Your best window is ${best.day} around ${String(best.hour).padStart(2, '0')}:00 UTC — ${best.winRate.toFixed(0)}% win rate across ${best.count} trades, netting ${formatPnl(best.pnl)}.`,
+        text: `Your best window is ${best.day} around ${formatHour(best.hour, timeFormat)} UTC — ${best.winRate.toFixed(0)}% win rate across ${best.count} trades, netting ${formatPnl(best.pnl)}.`,
       }
     }
   }
@@ -1797,7 +1798,7 @@ export function computeGrowthOverview(trades = []) {
 }
 
 // ── Growth Path: real, data-grounded scale-up opportunities ─────────────
-export function computeScaleUpOpportunities(trades = [], overview) {
+export function computeScaleUpOpportunities(trades = [], overview, timeFormat = getTimeFormat()) {
   const closed = trades.filter(t => t.status === 'closed')
   const opportunities = []
   if (closed.length < 10 || !overview) return opportunities
@@ -1846,7 +1847,7 @@ export function computeScaleUpOpportunities(trades = [], overview) {
     const potential = Math.max(10, Math.round((bestAvg - avgProfitPerTrade) * avgTradesPerDay))
     opportunities.push({
       id: 'best_hours', icon: 'Clock', risk: 'low', title: 'Optimize Trading Hours',
-      description: `Your best hour is ${String(best.hour).padStart(2, '0')}:00 UTC on ${best.day}s. Focus trading during your peak performance windows.`,
+      description: `Your best hour is ${formatHour(best.hour, timeFormat)} UTC on ${best.day}s. Focus trading during your peak performance windows.`,
       potentialPerDay: Math.max(10, potential),
     })
   }
@@ -2081,10 +2082,10 @@ export function computeProfitDistribution(trades = []) {
 // of which weekday it fell on (see computeWeekdayHourBreakdown for the
 // day+hour version used elsewhere). Best/Worst Hour require at least 2
 // trades in that hour so a single lucky/unlucky trade can't crown an hour.
-export function computeHourlyPerformance(trades = []) {
+export function computeHourlyPerformance(trades = [], timeFormat = getTimeFormat()) {
   const closed = trades.filter(t => t.status === 'closed' && t.pnl != null && t.closed_at)
   const buckets = Array.from({ length: 24 }, (_, h) => ({
-    hour: h, hourLabel: `${String(h).padStart(2, '0')}:00`, pnl: 0, count: 0,
+    hour: h, hourLabel: formatHour(h, timeFormat), pnl: 0, count: 0,
   }))
 
   closed.forEach(t => {
@@ -2158,8 +2159,8 @@ export function computeAssetClassBreakdown(trades = []) {
 // ── Hourly performance ranked best → worst by total $ P&L (not average) —
 // this is what draws the descending "ranked" curve and feeds the
 // #1/#2/#3 Best-hour cards on the Time of Day Performance chart. ─────────
-export function rankHourlyPerformance(trades = []) {
-  const { buckets } = computeHourlyPerformance(trades)
+export function rankHourlyPerformance(trades = [], timeFormat = getTimeFormat()) {
+  const { buckets } = computeHourlyPerformance(trades, timeFormat)
   return buckets.filter(b => b.count > 0).sort((a, b) => b.pnl - a.pnl)
 }
 

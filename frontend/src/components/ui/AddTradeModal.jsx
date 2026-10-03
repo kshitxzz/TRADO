@@ -6,6 +6,7 @@ import DateTimePicker from './DateTimePicker'
 import PairIcon from './PairIcon'
 import ImportTradesPanel from './ImportTradesPanel'
 import { detectSession, SESSION_UTC } from '../../hooks/useTimezone'
+import { useTimeFormat } from '../../hooks/useTimeFormat'
 import { calcPnl } from '../../lib/pnlCalculator'
 import { useTrades } from '../../hooks/useTrades'
 
@@ -40,6 +41,7 @@ const CHECKLIST = [
 ]
 
 export default function AddTradeModal({ open, onClose, onSave, userId, brokerAccountId, onImported }) {
+  const { fmtShortDateTime } = useTimeFormat()
   const now = new Date()
   const pad = n => String(n).padStart(2, '0')
   const localNow = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`
@@ -425,7 +427,7 @@ export default function AddTradeModal({ open, onClose, onSave, userId, brokerAcc
                   </div>
                   {eaStatus?.lastSynced && (
                     <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                      Last synced {new Date(eaStatus.lastSynced).toLocaleString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}
+                      Last synced {fmtShortDateTime(eaStatus.lastSynced)}
                     </p>
                   )}
                   <p className="text-xs leading-relaxed" style={{ color: 'var(--text-muted)' }}>

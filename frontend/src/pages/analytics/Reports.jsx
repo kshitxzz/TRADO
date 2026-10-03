@@ -11,6 +11,7 @@ import PageWrapper from '../../components/layout/PageWrapper'
 import DropdownPortal from '../../components/layout/DropdownPortal'
 import { useAuth } from '../../hooks/useAuth'
 import { useTrades } from '../../hooks/useTrades'
+import { useTimeFormat, formatDateTime } from '../../hooks/useTimeFormat'
 import { computeStats, buildEquityCurve, pnlColor } from '../../lib/utils'
 import {
   filterTradesByRange, computeDailyBreakdown, computeAvgHoldTimeAll,
@@ -228,9 +229,10 @@ function LeftChartPanel({ metric, onMetricChange, closed }) {
 
 // ─── Right panel: P&L by Hour of Day / P&L by Symbol / Win Rate by Day ───────
 function RightChartPanel({ metric, onMetricChange, closed }) {
+  const { timeFormat } = useTimeFormat()
   const data = useMemo(() => {
     if (metric === 'hour') {
-      return computeHourlyPerformance(closed).buckets.filter(b => b.count > 0)
+      return computeHourlyPerformance(closed, timeFormat).buckets.filter(b => b.count > 0)
         .map(b => ({ value: b.pnl, label: b.hourLabel, count: b.count }))
     }
     if (metric === 'symbol') {
@@ -240,7 +242,7 @@ function RightChartPanel({ metric, onMetricChange, closed }) {
     const rows = computeDayOfWeekBreakdown(closed)
     const byDay = Object.fromEntries(rows.map(r => [r.day, r]))
     return DOW_ORDER.map(day => ({ value: byDay[day]?.winRate || 0, label: DOW_SHORT[day], count: byDay[day]?.count || 0, isRate: true }))
-  }, [metric, closed])
+  }, [metric, closed, timeFormat])
 
   const hasData = data.some(d => d.count > 0)
   const isRate = metric === 'dowwin'
@@ -407,7 +409,7 @@ async function exportReportPdf({ stats, dailyRows, rangeLabel, avgHoldMin }) {
   doc.setFont(undefined, 'normal')
   doc.setFontSize(10)
   doc.setTextColor(120, 120, 130)
-  const generated = new Date().toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })
+  const generated = formatDateTime(new Date()) // follows the 12h/24h preference at export time
   doc.text(`Range: ${rangeLabel}   ·   Generated ${generated}`, 14, 27)
 
   const wlRatio = stats.avgLoss !== 0 ? Math.abs(stats.avgWin / stats.avgLoss) : null

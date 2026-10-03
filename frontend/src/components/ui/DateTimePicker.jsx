@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Calendar } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
+import { useTimeFormat, formatTime } from '../../hooks/useTimeFormat'
 
 const MONTHS = ['January','February','March','April','May','June',
                 'July','August','September','October','November','December']
@@ -32,12 +33,10 @@ function to24(h12, isPm) {
   return h12 === 12 ? 0 : h12
 }
 
+// Date only — the time is shown in the badge beside it, in the user's 12h/24h format.
 function formatDisplay(d) {
   if (!d) return null
-  return d.toLocaleString('en-US', {
-    month: 'short', day: 'numeric', year: 'numeric',
-    hour: 'numeric', minute: '2-digit', hour12: true,
-  })
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
 // ── Custom scroll-wheel column ────────────────────────────────────────────────
@@ -117,6 +116,7 @@ function AmPmToggle({ isPm, onToggle }) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 export default function DateTimePicker({ value, onChange, label, placeholder, optional }) {
+  const { timeFormat, is24h } = useTimeFormat()
   const [open, setOpen]     = useState(false)
   const [viewMo, setViewMo] = useState(() => {
     const d = value ? new Date(value) : new Date()
@@ -155,6 +155,11 @@ export default function DateTimePicker({ value, onChange, label, placeholder, op
     const d = base(); d.setHours(to24(newH12, isPm), d.getMinutes()); onChange(toLocalISO(d))
   }
 
+  // 24-hour wheel sets the hour directly (no AM/PM maths).
+  function setH24(newH24) {
+    const d = base(); d.setHours(newH24, d.getMinutes()); onChange(toLocalISO(d))
+  }
+
   function setM(newMin) {
     const d = base(); d.setMinutes(newMin); onChange(toLocalISO(d))
   }
@@ -188,7 +193,7 @@ export default function DateTimePicker({ value, onChange, label, placeholder, op
         {selected && (
           <span style={{ fontSize:10, fontFamily:"'Poppins', sans-serif", padding:'2px 8px',
                          borderRadius:6, background:'rgba(139,92,246,0.18)', color: PUR2 }}>
-            {pad(h24)}:{pad(min)}
+            {formatTime(selected, timeFormat)}
           </span>
         )}
       </button>
@@ -263,10 +268,12 @@ export default function DateTimePicker({ value, onChange, label, placeholder, op
               <p style={{ fontSize:10, fontWeight:700, letterSpacing:'0.08em', textTransform:'uppercase',
                            color: MUTE, marginBottom:12 }}>Time</p>
               <div style={{ display:'flex', alignItems:'center', justifyContent:'center', gap:10 }}>
-                <Wheel value={h12} min={1} max={12} format={pad} onChange={setH} label="HR" />
+                {is24h
+                  ? <Wheel value={h24} min={0} max={23} format={pad} onChange={setH24} label="HR" />
+                  : <Wheel value={h12} min={1} max={12} format={pad} onChange={setH} label="HR" />}
                 <span style={{ fontSize:26, fontWeight:700, color: MUTE, marginBottom:20 }}>:</span>
                 <Wheel value={min} min={0} max={59} format={pad} onChange={setM} label="MIN" />
-                <AmPmToggle isPm={isPm} onToggle={toggleAmPm} />
+                {!is24h && <AmPmToggle isPm={isPm} onToggle={toggleAmPm} />}
               </div>
             </div>
 

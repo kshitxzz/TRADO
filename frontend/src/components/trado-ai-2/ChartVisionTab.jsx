@@ -5,6 +5,7 @@ import {
 } from 'lucide-react'
 import { supabase } from '../../lib/supabaseClient'
 import { computeSymbolBreakdown } from '../../lib/analytics'
+import { useTimeFormat } from '../../hooks/useTimeFormat'
 
 const BACKEND = import.meta.env.VITE_BACKEND_URL || 'http://localhost:4000'
 const MAX_BYTES = 8 * 1024 * 1024
@@ -104,6 +105,7 @@ function ResultPanel({ result, symbol }) {
 }
 
 export default function ChartVisionTab({ user, trades }) {
+  const { fmtNumericDateTime } = useTimeFormat()
   const [image, setImage] = useState(null) // data URL
   const [dragOver, setDragOver] = useState(false)
   const [symbol, setSymbol] = useState('')
@@ -285,7 +287,7 @@ export default function ChartVisionTab({ user, trades }) {
                     {p.image_data && <img src={p.image_data} alt="" className="w-10 h-10 rounded-md object-cover flex-shrink-0" style={{ border: '1px solid var(--border-subtle)' }} />}
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>{p.symbol || 'Unlabeled'} · {p.timeframe}</p>
-                      <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{new Date(p.created_at).toLocaleString()}</p>
+                      <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{fmtNumericDateTime(p.created_at)}</p>
                     </div>
                     {isOpen ? <ChevronUp size={14} style={{ color: 'var(--text-muted)' }} /> : <ChevronDown size={14} style={{ color: 'var(--text-muted)' }} />}
                   </button>

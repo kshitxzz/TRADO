@@ -9,6 +9,7 @@ import ReplayControls from '../../components/replay/ReplayControls'
 import ReplayChart, { CANDLE_DOWN, CANDLE_UP } from '../../components/replay/ReplayChart'
 import { useAuth } from '../../hooks/useAuth'
 import { useTrades } from '../../hooks/useTrades'
+import { useTimeFormat } from '../../hooks/useTimeFormat'
 import { useReplayCandles } from '../../hooks/useReplayCandles'
 import { fetchCaptureStatus } from '../../lib/loadCandles'
 import {
@@ -29,6 +30,7 @@ function EmptyState() {
 }
 
 export default function TradeReplay() {
+  const { timeFormat } = useTimeFormat()
   const { user } = useAuth()
   const { trades, account, syncing, syncTrades, isManualAccount } = useTrades(user?.id)
   const [params, setParams] = useSearchParams()
@@ -181,7 +183,7 @@ export default function TradeReplay() {
     ]
   }, [plan, trade, candles, precision])
 
-  const progressLabel = inReplay && candles[lastIdx] ? fmtReplayClock(candles[lastIdx], tf.secs) : ''
+  const progressLabel = inReplay && candles[lastIdx] ? fmtReplayClock(candles[lastIdx], tf.secs, timeFormat) : ''
   const counter = `${count}/${total}`
 
   return (

@@ -3,6 +3,7 @@ import { Rocket, LayoutGrid, TrendingUp, Lightbulb, Target, Calculator } from 'l
 import PageWrapper from '../components/layout/PageWrapper'
 import { useAuth } from '../hooks/useAuth'
 import { useTrades } from '../hooks/useTrades'
+import { useTimeFormat } from '../hooks/useTimeFormat'
 import {
   computeGrowthOverview, computeScaleUpOpportunities, computeStrengthsWeaknesses, computeActionItems,
 } from '../lib/analytics'
@@ -27,8 +28,9 @@ export default function Progress() {
   const { trades, syncing, syncTrades, isManualAccount } = useTrades(user?.id)
   const [activeTab, setActiveTab] = useState('Overview')
 
+  const { timeFormat } = useTimeFormat()
   const overview = useMemo(() => computeGrowthOverview(trades), [trades])
-  const opportunities = useMemo(() => computeScaleUpOpportunities(trades, overview), [trades, overview])
+  const opportunities = useMemo(() => computeScaleUpOpportunities(trades, overview, timeFormat), [trades, overview, timeFormat])
   const strengthsWeaknesses = useMemo(() => computeStrengthsWeaknesses(overview), [overview])
   const actionItems = useMemo(() => computeActionItems(trades, overview, strengthsWeaknesses), [trades, overview, strengthsWeaknesses])
 

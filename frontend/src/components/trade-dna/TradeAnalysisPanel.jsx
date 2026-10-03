@@ -9,6 +9,7 @@ import {
 } from 'lucide-react'
 import { useAuth } from '../../hooks/useAuth'
 import { useTrades } from '../../hooks/useTrades'
+import { useTimeFormat } from '../../hooks/useTimeFormat'
 import { formatPnl } from '../../lib/utils'
 import PairIcon from '../ui/PairIcon'
 import {
@@ -25,11 +26,6 @@ const SORT_OPTIONS  = [
 ]
 
 // ── Small helpers (mirrors Journal.jsx conventions) ─────────────────────────
-function fmtDateTime(iso) {
-  if (!iso) return ''
-  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) +
-    ', ' + new Date(iso).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
-}
 function isInDateRange(trade, filter) {
   if (filter === 'All Time') return true
   const closedAt = trade.closed_at ? new Date(trade.closed_at) : null
@@ -174,6 +170,7 @@ function AIUnavailableBanner({ message }) {
 // inside Trado AI's "Trade DNA" tab. Fully self-contained (fetches its own
 // trades), so it can be dropped into either context as-is.
 export default function TradeAnalysisPanel({ initialTradeId = null, heightOffset = '112px', onBack }) {
+  const { fmtDateTime } = useTimeFormat()
   const { user } = useAuth()
   const navigate = useNavigate()
   const { trades, updateTrade, loading } = useTrades(user?.id)

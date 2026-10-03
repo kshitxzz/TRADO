@@ -8,6 +8,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import PageWrapper from '../components/layout/PageWrapper'
 import { useAuth } from '../hooks/useAuth'
 import { useTrades } from '../hooks/useTrades'
+import { useTimeFormat } from '../hooks/useTimeFormat'
 import ImportTradesPanel from '../components/ui/ImportTradesPanel'
 import toast from 'react-hot-toast'
 
@@ -733,6 +734,7 @@ function LiveAccountCard({ account, onDisconnect, userId }) {
 // Self-contained (own EA-status polling) so each connected MT5 account gets
 // its own live "Awaiting EA / EA Connected" badge when there's more than one.
 function MT5AccountCard({ account, syncing, onSync, onDisconnect }) {
+  const { fmtShortDateTime } = useTimeFormat()
   const [eaCardStatus, setEaCardStatus] = useState(null)
   const [showEaInstructions, setShowEaInstructions] = useState(false)
   const [showImportMore, setShowImportMore] = useState(false)
@@ -786,7 +788,7 @@ function MT5AccountCard({ account, syncing, onSync, onDisconnect }) {
         <InfoTile label="Broker" value={account.broker_name || 'MT5'} />
         <InfoTile label="Server" value={account.server || '—'} />
         <InfoTile label="Balance" value={account.balance != null ? `${account.currency||'USD'} ${parseFloat(account.balance).toLocaleString()}` : '—'} />
-        <InfoTile label="Last Synced" value={account.last_synced_at ? new Date(account.last_synced_at).toLocaleString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : 'Never'} />
+        <InfoTile label="Last Synced" value={account.last_synced_at ? fmtShortDateTime(account.last_synced_at) : 'Never'} />
       </div>
 
       {account.sync_method === 'ea' ? (
