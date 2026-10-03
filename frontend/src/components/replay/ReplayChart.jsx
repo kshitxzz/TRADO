@@ -220,6 +220,9 @@ export default function ReplayChart({
             <p className="text-xs leading-relaxed" style={{ color: 'var(--text-muted)' }}>
               {error}
             </p>
+            <p className="text-xs leading-relaxed mt-2" style={{ color: 'var(--text-muted)' }}>
+              If this trade came from MT5, keep the terminal open with the TradoSync EA running — its candles are captured automatically.
+            </p>
           </div>
         </div>
       )}

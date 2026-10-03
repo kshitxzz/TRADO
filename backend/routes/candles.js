@@ -34,6 +34,21 @@ router.get('/', requireAuth, LIMITER, async (req, res) => {
   }
 })
 
+// GET /api/candles/status → { total, ready }: closed MT5 trades vs. trades whose
+// broker candles the EA has already uploaded. Tiny query; polled while ready < total.
+router.get('/status', requireAuth, async (req, res) => {
+  try {
+    const { data, error } = await supabase.rpc('trade_candle_status', { p_user: req.user.id })
+    if (error) throw error
+    const row = Array.isArray(data) ? data[0] : data
+    res.set('Cache-Control', 'private, max-age=15')
+    res.json({ total: row?.total ?? 0, ready: row?.ready ?? 0 })
+  } catch (err) {
+    console.error('[candles/status]', err.message)
+    res.status(500).json({ error: 'Status unavailable' })
+  }
+})
+
 // GET /api/candles/trade/:tradeId → the broker's own candles for one trade,
 // captured by the TradoSync EA: { series: { '1m': [[t,o,h,l,c],…], … } | null }
 // `null` = nothing captured yet (the EA fills these in over time).

@@ -10,6 +10,7 @@ import ReplayChart, { CANDLE_DOWN, CANDLE_UP } from '../../components/replay/Rep
 import { useAuth } from '../../hooks/useAuth'
 import { useTrades } from '../../hooks/useTrades'
 import { useReplayCandles } from '../../hooks/useReplayCandles'
+import { fetchCaptureStatus } from '../../lib/loadCandles'
 import {
   BASE_TICK_MS, DEFAULT_TIMEFRAME, buildReplayPlan, calibrateFeed, fmtPnl, fmtReplayClock,
   livePnl, pricePrecision, replayableTrades, shiftCandles, tfByKey,
@@ -68,6 +69,20 @@ export default function TradeReplay() {
     setSelectedId(id)
     setParams({ trade: id }, { replace: true })
   }
+
+  // ── Broker-candle capture progress (polled lightly while incomplete) ─────
+  const [capture, setCapture] = useState(null)
+  useEffect(() => {
+    let cancelled = false, timer = null
+    const tick = async () => {
+      const st = await fetchCaptureStatus()
+      if (cancelled) return
+      setCapture(st)
+      if (st && st.ready < st.total && !document.hidden) timer = setTimeout(tick, 30_000)
+    }
+    tick()
+    return () => { cancelled = true; clearTimeout(timer) }
+  }, [])
 
   // ── Data ─────────────────────────────────────────────────────────────────
   const [timeframe, setTimeframe] = useState(DEFAULT_TIMEFRAME)
@@ -184,7 +199,7 @@ export default function TradeReplay() {
       </div>
 
       <div className="grid gap-5 lg:grid-cols-[260px_minmax(0,1fr)] items-start">
-        <TradeList trades={list} selectedId={trade?.id} onSelect={selectTrade} />
+        <TradeList trades={list} selectedId={trade?.id} onSelect={selectTrade} capture={capture} />
 
         {!trade ? (
           <EmptyState />

@@ -177,7 +177,7 @@ const iso = (secs) => new Date(secs * 1000).toISOString().slice(0, 19) // YYYY-M
 async function fromTwelveData(symbol, interval, from, to) {
   const key = process.env.TWELVEDATA_API_KEY
   if (!key) {
-    const err = new Error('Replay isn’t available for forex pairs yet.')
+    const err = new Error('No price data for this trade yet.')
     console.warn('[candles] TWELVEDATA_API_KEY is not set — forex replay disabled')
     err.status = 501
     throw err
@@ -239,7 +239,7 @@ export async function getCandles({ symbol, interval, from, to }) {
 
   const resolved = resolveProvider(symbol)
   if (!resolved) {
-    const e = new Error(`No market data is available for ${symbol}.`)
+    const e = new Error(`No price data for ${symbol} yet.`)
     e.status = 404
     throw e
   }

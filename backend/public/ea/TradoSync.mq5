@@ -425,6 +425,9 @@ bool CaptureAndSendCandles(const string url, const long posId, const string rawS
    // History may still be downloading from the broker — try again on the next
    // poll. After a few attempts send whatever we have (possibly nothing) so the
    // backend stops asking for this trade.
+   if(!covered)
+      Print("TradoSync: no complete candle history yet for position ", posId, " (", rawSymbol, ")",
+            lastChance ? " - giving up on this trade" : " - will retry");
    if(!covered && !lastChance) return false;
 
    string body = "{\"token\":\"" + JsonEscape(InpApiKey) + "\"" +
@@ -462,6 +465,7 @@ void SyncCandles()
 
    string lines[];
    int count = StringSplit(response, '\n', lines);
+   Print("TradoSync: ", count, " closed trade(s) awaiting broker candles");
    for(int i = 0; i < count; i++)
    {
       string parts[];
@@ -473,7 +477,7 @@ void SyncCandles()
       if(posId <= 0 || openUtc <= 0 || closeUtc < openUtc) continue;
 
       int  attempt    = NextAttempt(posId);
-      bool lastChance = (attempt >= 3);
+      bool lastChance = (attempt >= 6);   // ~90 s: MT5 downloads missing history in the background
       if(CaptureAndSendCandles(baseUrl, posId, parts[1], openUtc, closeUtc, lastChance))
          Print("TradoSync: broker candles stored for position ", posId);
    }

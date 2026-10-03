@@ -19,7 +19,7 @@ function SidePill({ side }) {
   )
 }
 
-export default function TradeList({ trades, selectedId, onSelect }) {
+export default function TradeList({ trades, selectedId, onSelect, capture }) {
   const selectedRef = useRef(null)
 
   // Arriving from Day View can select a trade far down the list — bring it into view.
@@ -33,6 +33,12 @@ export default function TradeList({ trades, selectedId, onSelect }) {
          style={{ color: 'var(--text-muted)' }}>
         Recent Trades ({trades.length})
       </p>
+      {capture && capture.total > 0 && capture.ready < capture.total && (
+        <p className="px-[14px] -mt-1 pb-2 text-[11px] leading-snug flex-shrink-0" style={{ color: 'var(--text-muted)' }}
+           title="Your MT5 terminal uploads its own candles for each closed trade while the TradoSync EA is running. Keep MT5 open and this fills in automatically.">
+          Broker candles ready: <span style={{ color: 'var(--accent-purple-light)' }}>{capture.ready}/{capture.total}</span>
+        </p>
+      )}
 
       {trades.length === 0 ? (
         <div className="flex-1 flex items-center justify-center pb-6">

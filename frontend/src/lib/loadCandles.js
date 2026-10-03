@@ -80,3 +80,11 @@ export async function loadCandles(
   if (backendErr) throw backendErr
   return feed([])
 }
+
+/** { total, ready } of closed MT5 trades vs. trades with broker candles, or null if unavailable. */
+export async function fetchCaptureStatus() {
+  try {
+    const res = await api.get('/candles/status')
+    return Number.isFinite(res?.total) ? { total: res.total, ready: res.ready || 0 } : null
+  } catch { return null }
+}
