@@ -10,17 +10,15 @@ import PageWrapper from '../components/layout/PageWrapper'
 import PairIcon from '../components/ui/PairIcon'
 import { useAuth } from '../hooks/useAuth'
 import { useTrades } from '../hooks/useTrades'
+import { useTimeFormat } from '../hooks/useTimeFormat'
 import { formatPnl } from '../lib/utils'
 import { DEFAULT_EXECUTION_CHECKLIST } from '../data/executionChecklist'
 
 // ── Defaults ─────────────────────────────────────────────────────────────────
 const DEFAULT_CHECKLIST = DEFAULT_EXECUTION_CHECKLIST
 
-function fmtDateTime(iso) {
-  if (!iso) return ''
-  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) +
-    ', ' + new Date(iso).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
-}
+// Date + time formatting now comes from useTimeFormat() so it follows the
+// 12h/24h preference in Settings → Preferences.
 function fmtShort(iso) {
   if (!iso) return ''
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
@@ -57,6 +55,7 @@ function SectionLabel({ icon: Icon, children, right, iconColor }) {
 
 export default function Journal() {
   const { user } = useAuth()
+  const { fmtDateTime, fmtNumericDateTime } = useTimeFormat()
   const navigate = useNavigate()
   const location = useLocation()
   const { trades, account, syncing, syncTrades, isManualAccount, updateTrade, loading } = useTrades(user?.id)
@@ -582,7 +581,7 @@ export default function Journal() {
 
             <hr style={{ border: 'none', borderTop: '1px solid #e5e5e5', margin: '28px 0 10px' }} />
             <p style={{ fontSize: 9, color: '#999', textAlign: 'center' }}>
-              Generated {new Date().toLocaleString('en-US')} from {closedTrades.length} trades
+              Generated {fmtNumericDateTime(new Date())} from {closedTrades.length} trades
             </p>
             <p style={{ fontSize: 9, color: '#999', textAlign: 'center' }}>
               {user?.user_metadata?.full_name || user?.email || 'Trader'} · {selectedTrade.symbol} Journal Report · {fmtShort(selectedTrade.closed_at)}

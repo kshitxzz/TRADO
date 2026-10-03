@@ -1,11 +1,12 @@
 import { useState } from 'react'
-import { Sun, Moon, Clock, DollarSign, Mail, Bell, Check } from 'lucide-react'
+import { Sun, Moon, Clock, Clock3, DollarSign, Mail, Bell, Check } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { SectionHeader, Toggle, SavedBadge, SettingsSelect, BLUE } from './shared'
 import { supabase } from '../../lib/supabaseClient'
 import { useAuth } from '../../hooks/useAuth'
 import { useTheme } from '../../hooks/useTheme'
 import { useTimezone, TIMEZONES } from '../../hooks/useTimezone'
+import { useTimeFormat } from '../../hooks/useTimeFormat'
 
 const CURRENCIES = [
   { code: 'INR', symbol: '₹',  label: 'Indian Rupee' },
@@ -30,6 +31,7 @@ export default function PreferencesSection() {
   const { user, profile, fetchProfile } = useAuth()
   const { theme, setTheme } = useTheme()
   const { timezone, setTimezone } = useTimezone()
+  const { is24h, setTimeFormat, fmtTime } = useTimeFormat()
   const [currency, setCurrencyState] = useState(profile?.currency || 'INR')
   const [notif, setNotif] = useState(() => ({ email: false, push: false, ...(profile?.notification_settings || {}) }))
   const [saved, setSaved] = useState(false)
@@ -47,6 +49,13 @@ export default function PreferencesSection() {
     flashSaved(setSaved)
     const { error } = await supabase.from('users').update({ timezone: tz }).eq('id', user.id)
     if (!error) fetchProfile(user.id)
+  }
+
+  // Toggle ON = 24-hour clock, OFF = 12-hour clock. Applies instantly to every
+  // journal time (shared store) and persists in localStorage like the timezone.
+  function toggleTimeFormat() {
+    setTimeFormat(is24h ? '12h' : '24h')
+    flashSaved(setSaved)
   }
 
   async function chooseCurrency(code) {
@@ -131,6 +140,24 @@ export default function PreferencesSection() {
         </div>
         <SettingsSelect value={timezone} onChange={chooseTimezone}
                         options={TIMEZONES.map(tz => ({ value: tz.value, label: tz.label }))} />
+
+        <div className="my-5" style={{ borderTop: '1px solid rgba(255,255,255,0.05)' }} />
+
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(255,255,255,0.05)' }}>
+              <Clock3 size={16} style={{ color: 'var(--text-muted)' }} />
+            </div>
+            <div>
+              <h3 className="text-sm font-bold" style={{ color: 'var(--text-primary)' }}>24-Hour Time</h3>
+              <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                {is24h ? 'On — journal times show like' : 'Off — journal times show like'}{' '}
+                <span style={{ color: 'var(--text-secondary)' }}>{fmtTime(new Date(2026, 0, 1, 21, 30))}</span>
+              </p>
+            </div>
+          </div>
+          <Toggle on={is24h} onToggle={toggleTimeFormat} />
+        </div>
 
         <div className="my-5" style={{ borderTop: '1px solid rgba(255,255,255,0.05)' }} />
 
