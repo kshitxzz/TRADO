@@ -27,6 +27,7 @@ import Accounts      from './pages/Accounts'
 import Settings      from './pages/Settings'
 import Pricing       from './pages/Pricing'
 import Tools         from './pages/Tools'
+import News          from './pages/News'
 import PositionSizeCalculator from './pages/tools/PositionSizeCalculator'
 import Performance   from './pages/analytics/Performance'
 import Reports       from './pages/analytics/Reports'
@@ -109,6 +110,7 @@ export default function App() {
         <Route path="/broker-hub" element={<Navigate to="/accounts" replace />} />
         <Route path="/settings"   element={<PrivateRoute><Settings /></PrivateRoute>} />
         <Route path="/tools"      element={<PrivateRoute><Tools /></PrivateRoute>} />
+        <Route path="/news"       element={<PrivateRoute><News /></PrivateRoute>} />
         <Route path="/tools/position-size-calculator" element={<PrivateRoute><PositionSizeCalculator /></PrivateRoute>} />
 
         {/* Analytics */}

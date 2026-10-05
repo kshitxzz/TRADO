@@ -5,7 +5,7 @@ import {
   LayoutDashboard, TrendingUp, BookOpen, Sparkles, Target,
   Trophy, Share2, Wallet, Settings, LogOut, ChevronLeft,
   ChevronRight, BarChart2, ChevronDown, ChevronUp, X,
-  BarChart3, Download, FileText, CalendarDays, Clock, Play, Brain, Wrench,
+  BarChart3, Download, FileText, CalendarDays, Clock, Play, Brain, Wrench, Newspaper,
 } from 'lucide-react'
 import { useAuth } from '../../hooks/useAuth'
 import Logo from '../ui/Logo'
@@ -28,6 +28,7 @@ const NAV_MAIN = [
   { label: 'AI Analysis',      icon: Sparkles,    path: '/trado-ai' },
   { label: 'Trado AI 2.0',     icon: Brain,       path: '/trado-ai-2', badge: 'NEW' },
   { label: 'Growth Roadmap',   icon: Target,      path: '/progress' },
+  { label: 'News',             icon: Newspaper,   path: '/news' },
   { label: 'Tools',            icon: Wrench,      path: '/tools' },
   { label: 'Share Cards',      icon: Share2,      path: '/share-cards' },
 ]

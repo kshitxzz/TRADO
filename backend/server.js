@@ -23,6 +23,7 @@ import brokerRoutes   from './routes/broker.js'
 import statsRoutes    from './routes/stats.js'
 import notificationsRoutes from './routes/notifications.js'
 import candlesRoutes from './routes/candles.js'
+import newsRoutes from './routes/news.js'
 import eaCandlesRoutes from './routes/eaCandles.js'
 
 const app  = express()
@@ -72,6 +73,7 @@ app.use('/api/broker',   brokerRoutes)
 app.use('/api/stats',    statsRoutes)
 app.use('/api/notifications', notificationsRoutes)
 app.use('/api/candles', candlesRoutes)
+app.use('/api/news', newsRoutes)
 
 // ── Health ──
 app.get('/health', (_, res) => res.json({ status: 'ok', ts: new Date().toISOString() }))
