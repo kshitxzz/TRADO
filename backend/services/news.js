@@ -556,24 +556,28 @@ export async function getNews({ force = false } = {}) {
 //   • yahoo  — Yahoo Finance's public chart endpoint, no key. Unofficial and
 //     personal-use only: fine while testing, replace before charging users.
 //   • twelve — Twelve Data, only used if TWELVEDATA_API_KEY is set.
-// Prices are indicative and can be delayed.
-const TICKER_DEFS = [
-  { label: 'XAUUSD', tag: 'XAU',    src: [['yahoo', 'XAUUSD=X'], ['yahoo', 'GC=F'], ['binance-futures', 'XAUUSDT']] },
+// Prices are indicative and can be delayed. `live` marks instruments that also
+// have a free real-time stream (see liveTicker.js): Binance for crypto, Deriv's
+// public tick feed for forex/gold/silver. `baseline` lists the snapshot symbols
+// whose previous close is the SAME instrument as the stream, so the daily
+// change % is never computed against a different contract (e.g. gold futures).
+export const TICKER_DEFS = [
+  { label: 'XAUUSD', tag: 'XAU',    src: [['yahoo', 'XAUUSD=X'], ['yahoo', 'GC=F'], ['binance-futures', 'XAUUSDT']], live: { deriv: 'frxXAUUSD', baseline: ['XAUUSD=X'] } },
   { label: 'USOIL',  tag: 'OIL',    src: [['yahoo', 'CL=F'], ['binance-futures', 'CLUSDT']] },
-  { label: 'EURUSD', tag: 'EUR',    src: [['yahoo', 'EURUSD=X'], ['twelve', 'EUR/USD']] },
-  { label: 'GBPUSD', tag: 'GBP',    src: [['yahoo', 'GBPUSD=X'], ['twelve', 'GBP/USD']] },
-  { label: 'USDJPY', tag: 'JPY',    src: [['yahoo', 'JPY=X'],    ['twelve', 'USD/JPY']] },
-  { label: 'BTCUSD', tag: 'BTC',    src: [['binance', 'BTCUSDT'], ['yahoo', 'BTC-USD']] },
-  { label: 'ETHUSD', tag: 'ETH',    src: [['binance', 'ETHUSDT'], ['yahoo', 'ETH-USD']] },
-  { label: 'XAGUSD', tag: 'XAG',    src: [['yahoo', 'XAGUSD=X'], ['yahoo', 'SI=F'], ['binance-futures', 'XAGUSDT']] },
+  { label: 'EURUSD', tag: 'EUR',    src: [['yahoo', 'EURUSD=X'], ['twelve', 'EUR/USD']], live: { deriv: 'frxEURUSD', baseline: ['EURUSD=X', 'EUR/USD'] } },
+  { label: 'GBPUSD', tag: 'GBP',    src: [['yahoo', 'GBPUSD=X'], ['twelve', 'GBP/USD']], live: { deriv: 'frxGBPUSD', baseline: ['GBPUSD=X', 'GBP/USD'] } },
+  { label: 'USDJPY', tag: 'JPY',    src: [['yahoo', 'JPY=X'],    ['twelve', 'USD/JPY']], live: { deriv: 'frxUSDJPY', baseline: ['JPY=X', 'USD/JPY'] } },
+  { label: 'BTCUSD', tag: 'BTC',    src: [['binance', 'BTCUSDT'], ['yahoo', 'BTC-USD']], live: { binance: 'btcusdt' } },
+  { label: 'ETHUSD', tag: 'ETH',    src: [['binance', 'ETHUSDT'], ['yahoo', 'ETH-USD']], live: { binance: 'ethusdt' } },
+  { label: 'XAGUSD', tag: 'XAG',    src: [['yahoo', 'XAGUSD=X'], ['yahoo', 'SI=F'], ['binance-futures', 'XAGUSDT']], live: { deriv: 'frxXAGUSD', baseline: ['XAGUSD=X'] } },
   { label: 'UKOIL',  tag: 'OIL',    src: [['yahoo', 'BZ=F'], ['binance-futures', 'BZUSDT']] },
-  { label: 'AUDUSD', tag: 'AUD',    src: [['yahoo', 'AUDUSD=X'], ['twelve', 'AUD/USD']] },
-  { label: 'USDCAD', tag: 'CAD',    src: [['yahoo', 'CAD=X'],    ['twelve', 'USD/CAD']] },
-  { label: 'SOLUSD', tag: 'SOL',    src: [['binance', 'SOLUSDT'], ['yahoo', 'SOL-USD']] },
+  { label: 'AUDUSD', tag: 'AUD',    src: [['yahoo', 'AUDUSD=X'], ['twelve', 'AUD/USD']], live: { deriv: 'frxAUDUSD', baseline: ['AUDUSD=X', 'AUD/USD'] } },
+  { label: 'USDCAD', tag: 'CAD',    src: [['yahoo', 'CAD=X'],    ['twelve', 'USD/CAD']], live: { deriv: 'frxUSDCAD', baseline: ['CAD=X', 'USD/CAD'] } },
+  { label: 'SOLUSD', tag: 'SOL',    src: [['binance', 'SOLUSDT'], ['yahoo', 'SOL-USD']], live: { binance: 'solusdt' } },
   { label: 'US500',  tag: 'US500',  src: [['yahoo', '^GSPC']] },
   { label: 'NAS100', tag: 'NAS100', src: [['yahoo', '^NDX']] },
-  { label: 'USDCHF', tag: 'CHF',    src: [['yahoo', 'CHF=X'],    ['twelve', 'USD/CHF']] },
-  { label: 'NZDUSD', tag: 'NZD',    src: [['yahoo', 'NZDUSD=X'], ['twelve', 'NZD/USD']] },
+  { label: 'USDCHF', tag: 'CHF',    src: [['yahoo', 'CHF=X'],    ['twelve', 'USD/CHF']], live: { deriv: 'frxUSDCHF', baseline: ['CHF=X', 'USD/CHF'] } },
+  { label: 'NZDUSD', tag: 'NZD',    src: [['yahoo', 'NZDUSD=X'], ['twelve', 'NZD/USD']], live: { deriv: 'frxNZDUSD', baseline: ['NZDUSD=X', 'NZD/USD'] } },
   { label: 'US30',   tag: 'US30',   src: [['yahoo', '^DJI']] },
 ]
 const SPOT_HOSTS   = ['https://data-api.binance.vision', 'https://api.binance.com']
@@ -595,7 +599,7 @@ async function fromBinance(kind, symbol) {
       const first = +rows[0][1]
       const price = closes[closes.length - 1]
       if (!Number.isFinite(price) || !Number.isFinite(first) || first <= 0) continue
-      return { price, changePct: ((price / first) - 1) * 100, spark: closes }
+      return { price, prev: first, sym: symbol, changePct: ((price / first) - 1) * 100, spark: closes }
     } catch { /* try next host */ }
   }
   return null
@@ -612,7 +616,7 @@ async function fromYahoo(symbol) {
       const price = Number.isFinite(r.meta?.regularMarketPrice) ? r.meta.regularMarketPrice : closes[closes.length - 1]
       const prev = [r.meta?.chartPreviousClose, r.meta?.previousClose, closes[0]].find(v => Number.isFinite(v) && v > 0)
       if (!Number.isFinite(price) || !prev) continue
-      return { price, changePct: ((price / prev) - 1) * 100, spark: closes.length >= 2 ? closes : [] }
+      return { price, prev, sym: symbol, changePct: ((price / prev) - 1) * 100, spark: closes.length >= 2 ? closes : [] }
     } catch { /* try next host */ }
   }
   return null
@@ -627,11 +631,11 @@ async function fromTwelve(symbol) {
     const closes = (json?.values || []).map(v => +v.close).filter(Number.isFinite).reverse() // API is newest-first
     if (closes.length < 2) return null
     const price = closes[closes.length - 1]
-    return { price, changePct: ((price / closes[0]) - 1) * 100, spark: closes }
+    return { price, prev: closes[0], sym: symbol, changePct: ((price / closes[0]) - 1) * 100, spark: closes }
   } catch { return null }
 }
 
-async function loadTickerItem(def) {
+export async function loadTickerItem(def) {
   for (const [provider, symbol] of def.src) {
     let q = null
     try {
@@ -644,7 +648,7 @@ async function loadTickerItem(def) {
   return null
 }
 
-async function mapLimit(arr, limit, fn) {
+export async function mapLimit(arr, limit, fn) {
   const out = new Array(arr.length)
   let next = 0
   await Promise.all(Array.from({ length: Math.min(limit, arr.length) }, async () => {
@@ -678,6 +682,11 @@ function refreshTicker() {
     })().finally(() => { tickerInflight = null })
   }
   return tickerInflight
+}
+
+// Latest snapshot (spark lines + previous closes) without triggering any fetch.
+export function peekTicker() {
+  return { items: tickerCache.value.items, at: tickerCache.at, total: tickerCache.value.total, failed: tickerCache.value.failed }
 }
 
 // Serves the cached ticker instantly and refreshes behind the scenes. Only the

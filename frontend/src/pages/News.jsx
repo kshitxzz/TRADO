@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
+import { useState, useEffect, useLayoutEffect, useMemo, useCallback, useRef } from 'react'
 import {
   Newspaper, RefreshCw, ExternalLink, Eye, Crosshair, AlertCircle,
   TrendingUp, TrendingDown, Minus, Flame, Plus, X, Check,
@@ -113,6 +113,44 @@ function fmtPrice(p) {
 
 const safeUrl = (u) => (typeof u === 'string' && /^https?:\/\//i.test(u) ? u : undefined)
 
+// Same base URL convention as lib/api.js (VITE_BACKEND_URL → Render backend).
+const API_BASE = `${import.meta.env.VITE_BACKEND_URL || 'http://localhost:4000'}/api`
+
+// Live prices arrive over one long-lived Server-Sent-Events connection. It is
+// opened with fetch() (not EventSource) so the login token can be sent as a
+// header — the server checks it once, not on every price update.
+async function readPriceStream({ signal, onSnapshot, onTick }) {
+  const { data: { session } } = await supabase.auth.getSession()
+  const res = await fetch(`${API_BASE}/news/stream`, {
+    headers: { Accept: 'text/event-stream', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+    cache: 'no-store',
+    signal,
+  })
+  if (!res.ok || !res.body) throw new Error(`Price stream unavailable (${res.status})`)
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buf = ''
+  for (;;) {
+    const { value, done } = await reader.read()
+    if (done) return
+    buf += decoder.decode(value, { stream: true })
+    let end
+    while ((end = buf.indexOf('\n\n')) !== -1) {
+      const block = buf.slice(0, end)
+      buf = buf.slice(end + 2)
+      const event = /^event: (.+)$/m.exec(block)?.[1]
+      const raw = /^data: (.+)$/m.exec(block)?.[1]
+      if (!event || !raw) continue // heartbeat comments have neither
+      let data
+      try { data = JSON.parse(raw) } catch { continue }
+      if (event === 'snapshot') onSnapshot(data)
+      else if (event === 'tick') onTick(data)
+      else if (event === 'bye') return // server rotates connections every few minutes
+    }
+  }
+}
+
 // ── Atoms ─────────────────────────────────────────────────────────────────
 function Chip({ color, icon: Icon, children }) {
   return (
@@ -145,12 +183,37 @@ function Skeleton({ className = '', style }) {
 }
 
 // ── Moving ticker (forex, metals, oil, crypto, indices) ───────────────────
+const TICKER_PX_PER_SECOND = 48 // scroll speed — lower = slower
+
+// Briefly tints the price green/red when it ticks up/down.
+function usePriceFlash(price) {
+  const prev = useRef(price)
+  const [dir, setDir] = useState(null)
+  useEffect(() => {
+    if (price === prev.current) return
+    setDir(price > prev.current ? 'up' : 'down')
+    prev.current = price
+    const id = setTimeout(() => setDir(null), 700)
+    return () => clearTimeout(id)
+  }, [price])
+  return dir
+}
+
 function TickerItem({ t }) {
   const up = t.changePct >= 0
+  const flash = usePriceFlash(t.price)
   return (
     <div className="flex items-center gap-2.5 whitespace-nowrap flex-shrink-0">
-      <span className="text-[11px] font-semibold" style={{ color: 'var(--text-secondary)' }}>{t.label}</span>
-      <span className="text-xs font-semibold tabular-nums" style={{ color: 'var(--text-primary)' }}>{fmtPrice(t.price)}</span>
+      <span className="flex items-center gap-1.5 text-[11px] font-semibold" style={{ color: 'var(--text-secondary)' }}
+            title={t.live ? 'Live — updating every second' : 'Refreshed about every 15 seconds — may be delayed'}>
+        <span className={`w-1.5 h-1.5 rounded-full ${t.live ? 'animate-pulse' : ''}`}
+              style={t.live ? { background: GREEN } : { border: '1px solid var(--text-muted)' }} />
+        {t.label}
+      </span>
+      <span className="text-xs font-semibold tabular-nums transition-colors duration-500"
+            style={{ color: flash === 'up' ? GREEN : flash === 'down' ? RED : 'var(--text-primary)' }}>
+        {fmtPrice(t.price)}
+      </span>
       <span className="text-[11px] font-semibold tabular-nums" style={{ color: up ? GREEN : RED }}>
         {up ? '▲' : '▼'} {Math.abs(t.changePct).toFixed(2)}%
       </span>
@@ -160,11 +223,21 @@ function TickerItem({ t }) {
 }
 
 function TickerStrip({ items }) {
+  const copyRef = useRef(null)
+  const [seconds, setSeconds] = useState(150)
+  const labelsKey = items?.map(t => t.label).join('|') || ''
+
+  // Constant speed regardless of how many instruments there are: loop time = width ÷ speed.
+  // (Only re-measured when the set of instruments changes, never on a price tick.)
+  useLayoutEffect(() => {
+    const w = copyRef.current?.scrollWidth || 0
+    if (w > 0) setSeconds(Math.max(30, w / TICKER_PX_PER_SECOND))
+  }, [labelsKey])
+
   if (!items?.length) return null
   // Repeat short lists so one copy always fills a wide screen, then render two
   // identical copies and slide by exactly half → a seamless loop.
   const base = items.length >= 10 ? items : Array.from({ length: Math.ceil(10 / items.length) }, () => items).flat()
-  const seconds = Math.max(45, base.length * 4)
   const renderCopy = (copy) => base.map((t, i) => <TickerItem key={`${copy}${i}${t.label}`} t={t} />)
 
   return (
@@ -182,7 +255,7 @@ function TickerStrip({ items }) {
       `}</style>
       <div className="news-ticker-viewport">
         <div className="news-ticker-track" style={{ animationDuration: `${seconds}s` }}>
-          <div className="news-ticker-copy">{renderCopy('a')}</div>
+          <div className="news-ticker-copy" ref={copyRef}>{renderCopy('a')}</div>
           <div className="news-ticker-copy" aria-hidden="true">{renderCopy('b')}</div>
         </div>
       </div>
@@ -556,6 +629,7 @@ export default function News() {
   const [data, setData] = useState(null)
   const [ticker, setTicker] = useState([])
   const [tickerMeta, setTickerMeta] = useState(null)
+  const [streaming, setStreaming] = useState(false)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
@@ -602,9 +676,60 @@ export default function News() {
     return () => { clearInterval(tick); clearInterval(poll) }
   }, [load])
 
-  // Prices refresh every minute (every 8s until the first prices arrive, a few tries only).
+  // Live prices: one streaming connection pushes every price change (about once a second).
+  const applySnapshot = useCallback((d) => {
+    if (d.items?.length) setTicker(d.items)
+    if (d.meta) setTickerMeta(d.meta)
+    setStreaming(true)
+  }, [])
+  const applyTick = useCallback((changed) => {
+    setTicker(prev => prev.map(t => {
+      const v = changed[t.label] // [price, changePct, live(0|1)]
+      if (!v) return t
+      const spark = t.spark?.length > 1 ? [...t.spark.slice(0, -1), v[0]] : t.spark
+      return { ...t, price: v[0], changePct: v[1], live: v[2] === 1, spark }
+    }))
+  }, [])
+
+  useEffect(() => {
+    let stopped = false
+    let ctrl = null
+    let retry = null
+    let failures = 0
+
+    const run = async () => {
+      if (stopped || document.visibilityState === 'hidden') return
+      ctrl = new AbortController()
+      try {
+        await readPriceStream({ signal: ctrl.signal, onSnapshot: (d) => { failures = 0; applySnapshot(d) }, onTick: applyTick })
+        failures = 0 // ended cleanly — the server rotates connections periodically
+      } catch (e) {
+        if (stopped || e?.name === 'AbortError') return
+        failures += 1
+        setStreaming(false)
+      }
+      if (!stopped) retry = setTimeout(run, failures ? Math.min(30_000, 1000 * 2 ** failures) : 300)
+    }
+
+    // Don't hold a connection open for a tab nobody is looking at.
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') { ctrl?.abort() }
+      else { clearTimeout(retry); failures = 0; run() }
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    run()
+    return () => {
+      stopped = true
+      clearTimeout(retry)
+      ctrl?.abort()
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [applySnapshot, applyTick])
+
+  // Fallback: if the live stream can't connect, poll for prices instead.
   const hasTicker = ticker.length > 0
   useEffect(() => {
+    if (streaming) return
     let tries = 0
     const id = setInterval(async () => {
       if (document.visibilityState !== 'visible') return
@@ -614,9 +739,9 @@ export default function News() {
         if (d.ticker?.length) setTicker(d.ticker)
         if (d.tickerMeta) setTickerMeta(d.tickerMeta)
       } catch { /* keep showing the last prices */ }
-    }, hasTicker ? 60_000 : 8_000)
+    }, hasTicker ? 10_000 : 8_000)
     return () => clearInterval(id)
-  }, [hasTicker])
+  }, [streaming, hasTicker])
 
   // AI summaries land a few seconds after the headlines — re-check a few times.
   const aiState = data?.meta?.ai
@@ -668,6 +793,7 @@ export default function News() {
   const visible = filter === 'all' && !showAll ? rest.slice(0, INITIAL_VISIBLE) : rest
   const hiddenCount = rest.length - visible.length
 
+  const liveCount = useMemo(() => ticker.filter(t => t.live).length, [ticker])
   const srcOk = data?.meta?.sources?.filter(s => s.ok).length ?? 0
   const srcAll = data?.meta?.sources?.length ?? 0
 
@@ -752,11 +878,11 @@ export default function News() {
 
           <p className="text-[11px] px-1 pb-2" style={{ color: 'var(--text-muted)' }}>
             {srcAll > 0 && `${srcOk}/${srcAll} news sources live · `}
-            {tickerMeta?.total > 0 && `${tickerMeta.ok}/${tickerMeta.total} prices live · `}
+            {tickerMeta?.total > 0 && `${tickerMeta.ok}/${tickerMeta.total} prices · ${liveCount} streaming live${streaming ? '' : ' (stream offline, refreshing every 10s)'} · `}
             {aiState === 'ready' && 'Summaries are AI-generated from public headlines. '}
             {aiState === 'pending' && 'AI summaries are loading… '}
             {aiState === 'unavailable' && 'AI summaries are unavailable right now, showing headlines only. '}
-            Times are shown in {tzLabel} and reflect when each outlet first published. Prices are indicative and may be delayed.
+            Times are shown in {tzLabel} and reflect when each outlet first published. Prices with a green dot stream live; hollow dots refresh about every 15 seconds and may be delayed. Prices are indicative and can differ from your broker's quotes.
             Sentiment and heat are rough indicators, not trading signals or financial advice. Open the source before acting on anything.
           </p>
         </div>
