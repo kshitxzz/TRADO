@@ -43,21 +43,22 @@ const FORCE_MIN_AGE_MS  = 2 * 60_000      // manual refresh can't hammer the fee
 const MAX_AGE_MS        = 48 * 3600_000   // ignore anything older than 2 days
 const PER_FEED_LIMIT    = 25
 const WIRE_LIMIT        = 30
-const STORY_LIMIT       = 12
+const STORY_LIMIT       = 24
+const CLUSTER_WINDOW_MS = 6 * 3600_000
 const AI_BACKOFF_MS     = 30 * 60_000
 
 // ── Small helpers ────────────────────────────────────────────────────────
 const sleep = (ms) => new Promise(r => setTimeout(r, ms))
 const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n))
 
-async function fetchText(url, timeoutMs = 8000) {
+async function fetchText(url, timeoutMs = 8000, extraHeaders = {}) {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), timeoutMs)
   try {
     const res = await fetch(url, {
       signal: ctrl.signal,
       redirect: 'follow',
-      headers: { 'User-Agent': UA, Accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml, application/json, */*' },
+      headers: { 'User-Agent': UA, Accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml, application/json, */*', ...extraHeaders },
     })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const text = await res.text()
@@ -90,24 +91,47 @@ function jaccard(a, b) {
   return inter / (a.size + b.size - inter)
 }
 
+// ── Dates ────────────────────────────────────────────────────────────────
+// Feeds are inconsistent about time zones. A date with NO explicit zone is
+// read as UTC — never as the server's local time, which would silently shift
+// every story by the server's offset.
+function parseFeedDate(str) {
+  if (!str) return NaN
+  let s = String(str).trim()
+  if (!s) return NaN
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) s += 'T00:00:00Z'
+  const hasZone = /(Z|[+-]\d{2}:?\d{2}|\b(GMT|UTC|UT|EST|EDT|CST|CDT|MST|MDT|PST|PDT))\s*$/i.test(s)
+  if (!hasZone) s = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(s) ? `${s.replace(' ', 'T')}Z` : `${s} UTC`
+  return Date.parse(s)
+}
+
+// When an item carries several "published"-style dates, the earliest is the
+// original publication; later ones are usually re-publish / bump times.
+function earliestDate(...vals) {
+  const ts = vals.map(parseFeedDate).filter(Number.isFinite)
+  return ts.length ? Math.min(...ts) : NaN
+}
+
 // ── Feed parsing (RSS 2.0, RSS 1.0 and Atom) ─────────────────────────────
 function parseFeed(xml, sourceName) {
   const $ = cheerio.load(xml, { xmlMode: true })
   const out = []
   const now = Date.now()
 
-  const push = (title, link, dateStr, desc) => {
+  const push = (title, link, ts, desc) => {
     title = stripHtml(title || '')
     link = (link || '').trim()
-    const ts = Date.parse(dateStr || '')
     if (!title || title.length < 15 || title.length > 260) return
     if (!isHttpUrl(link) || !Number.isFinite(ts)) return
     if (now - ts > MAX_AGE_MS) return
+    // A date well in the future means the feed mislabelled its time zone.
+    // Showing it would be wrong, so the item is skipped (small clock skew is clamped).
+    if (ts - now > 10 * 60_000) return
     out.push({
       title,
       url: link,
       source: sourceName,
-      publishedAt: Math.min(ts, now), // never "from the future"
+      publishedAt: Math.min(ts, now),
       snippet: stripHtml(desc || '').slice(0, 400),
     })
   }
@@ -117,7 +141,7 @@ function parseFeed(xml, sourceName) {
     push(
       $el.children('title').first().text(),
       $el.children('link').first().text() || $el.children('guid').first().text(),
-      $el.children('pubDate, dc\\:date').first().text(),
+      earliestDate($el.children('pubDate').first().text(), $el.children('dc\\:date').first().text(), $el.children('published').first().text()),
       $el.children('description').first().text() || $el.children('content\\:encoded').first().text(),
     )
   })
@@ -125,10 +149,11 @@ function parseFeed(xml, sourceName) {
   $('entry').each((_, el) => {
     const $el = $(el)
     const href = $el.children('link[rel="alternate"]').first().attr('href') || $el.children('link').first().attr('href')
+    const published = $el.children('published').first().text()
     push(
       $el.children('title').first().text(),
       href,
-      $el.children('published').first().text() || $el.children('updated').first().text(),
+      published ? earliestDate(published) : earliestDate($el.children('updated').first().text()),
       $el.children('summary').first().text() || $el.children('content').first().text(),
     )
   })
@@ -169,6 +194,33 @@ async function loadFinnhub() {
   } catch (err) {
     return { feed, ok: false, items: [], error: err.message }
   }
+}
+
+// ── Same article listed in several feeds ─────────────────────────────────
+const TRACKING_PARAM = /^(utm_|mod$|siteid$|ncid$|cmp$|src$|ref$|fbclid$|gclid$|taid$|mc_|cid$)/i
+function canonicalUrl(u) {
+  try {
+    const x = new URL(u)
+    for (const k of [...x.searchParams.keys()]) if (TRACKING_PARAM.test(k)) x.searchParams.delete(k)
+    x.searchParams.sort()
+    return `${x.hostname.replace(/^www\./, '')}${x.pathname.replace(/\/+$/, '')}${x.search}`.toLowerCase()
+  } catch {
+    return String(u).toLowerCase()
+  }
+}
+
+// One item per URL. Keeps the EARLIEST time (original publication), so a feed
+// that bumps an old article's date can't make it look fresh.
+function dedupeByUrl(items) {
+  const byUrl = new Map()
+  for (const it of items) {
+    const key = canonicalUrl(it.url)
+    const prev = byUrl.get(key)
+    if (!prev) { byUrl.set(key, { ...it }); continue }
+    if (it.publishedAt < prev.publishedAt) prev.publishedAt = it.publishedAt
+    if ((it.snippet || '').length > (prev.snippet || '').length) prev.snippet = it.snippet
+  }
+  return [...byUrl.values()]
 }
 
 // ── Deterministic tagging (what a story is about) ────────────────────────
@@ -223,12 +275,16 @@ function cluster(items) {
     const tk = tokens(it.title)
     let hit = null
     for (const c of clusters) {
+      // Same outlet = a different article (recurring series like "what happened
+      // in crypto today"); far-apart times = a different day's story. Neither merges.
+      if (c.sources.includes(it.source)) continue
+      if (it.publishedAt - c.publishedAt > CLUSTER_WINDOW_MS) continue
       if (jaccard(tk, c.tokens) >= 0.55) { hit = c; break }
     }
     if (hit) {
-      if (!hit.sources.includes(it.source)) hit.sources.push(it.source)
-      // Prefer the freshest timestamp and the richest snippet for display.
-      if (it.publishedAt > hit.publishedAt) hit.publishedAt = it.publishedAt
+      // Items arrive oldest-first, so the cluster keeps the first report's
+      // time, title and link — what the source site itself shows.
+      hit.sources.push(it.source)
       if ((it.snippet || '').length > (hit.snippet || '').length) hit.snippet = it.snippet
     } else {
       clusters.push({
@@ -265,7 +321,7 @@ const PRIMARY_MODEL  = 'gemini-2.5-flash'
 const FALLBACK_MODEL = 'gemini-3.1-flash-lite'
 
 function geminiConfig(model) {
-  const config = { responseMimeType: 'application/json', maxOutputTokens: 3500 }
+  const config = { responseMimeType: 'application/json', maxOutputTokens: 5000 }
   if (model.startsWith('gemini-3')) config.thinkingConfig = { thinkingLevel: 'low' }
   else { config.temperature = 0.3; config.thinkingConfig = { thinkingBudget: 0 } }
   return config
@@ -449,7 +505,7 @@ async function refresh() {
   const loaded = results.filter(Boolean)
 
   const sourceStatus = loaded.map(r => ({ name: r.feed.name, ok: r.ok, count: r.items.length }))
-  const items = loaded.flatMap(r => r.items)
+  const items = dedupeByUrl(loaded.flatMap(r => r.items))
 
   if (items.length === 0) {
     if (state.data) return // keep serving the last good copy
@@ -492,47 +548,147 @@ export async function getNews({ force = false } = {}) {
   return state.data
 }
 
-// ── Ticker (Binance public klines, cached 60s) ───────────────────────────
+// ── Ticker (free public prices) ──────────────────────────────────────────
+// Each item lists its price sources in order; the first one that answers wins,
+// so a blocked or rate-limited provider just falls through to the next.
+//   • binance / binance-futures — public klines, no key. The futures host is
+//     geo-blocked from some regions (e.g. US servers).
+//   • yahoo  — Yahoo Finance's public chart endpoint, no key. Unofficial and
+//     personal-use only: fine while testing, replace before charging users.
+//   • twelve — Twelve Data, only used if TWELVEDATA_API_KEY is set.
+// Prices are indicative and can be delayed.
 const TICKER_DEFS = [
-  { label: 'BTCUSD', tag: 'BTC', kind: 'spot',    symbol: 'BTCUSDT' },
-  { label: 'ETHUSD', tag: 'ETH', kind: 'spot',    symbol: 'ETHUSDT' },
-  { label: 'SOLUSD', tag: 'SOL', kind: 'spot',    symbol: 'SOLUSDT' },
-  { label: 'XAUUSD', tag: 'XAU', kind: 'futures', symbol: 'XAUUSDT' },
-  { label: 'WTIUSD', tag: 'OIL', kind: 'futures', symbol: 'CLUSDT'  },
+  { label: 'XAUUSD', tag: 'XAU',    src: [['yahoo', 'XAUUSD=X'], ['yahoo', 'GC=F'], ['binance-futures', 'XAUUSDT']] },
+  { label: 'USOIL',  tag: 'OIL',    src: [['yahoo', 'CL=F'], ['binance-futures', 'CLUSDT']] },
+  { label: 'EURUSD', tag: 'EUR',    src: [['yahoo', 'EURUSD=X'], ['twelve', 'EUR/USD']] },
+  { label: 'GBPUSD', tag: 'GBP',    src: [['yahoo', 'GBPUSD=X'], ['twelve', 'GBP/USD']] },
+  { label: 'USDJPY', tag: 'JPY',    src: [['yahoo', 'JPY=X'],    ['twelve', 'USD/JPY']] },
+  { label: 'BTCUSD', tag: 'BTC',    src: [['binance', 'BTCUSDT'], ['yahoo', 'BTC-USD']] },
+  { label: 'ETHUSD', tag: 'ETH',    src: [['binance', 'ETHUSDT'], ['yahoo', 'ETH-USD']] },
+  { label: 'XAGUSD', tag: 'XAG',    src: [['yahoo', 'XAGUSD=X'], ['yahoo', 'SI=F'], ['binance-futures', 'XAGUSDT']] },
+  { label: 'UKOIL',  tag: 'OIL',    src: [['yahoo', 'BZ=F'], ['binance-futures', 'BZUSDT']] },
+  { label: 'AUDUSD', tag: 'AUD',    src: [['yahoo', 'AUDUSD=X'], ['twelve', 'AUD/USD']] },
+  { label: 'USDCAD', tag: 'CAD',    src: [['yahoo', 'CAD=X'],    ['twelve', 'USD/CAD']] },
+  { label: 'SOLUSD', tag: 'SOL',    src: [['binance', 'SOLUSDT'], ['yahoo', 'SOL-USD']] },
+  { label: 'US500',  tag: 'US500',  src: [['yahoo', '^GSPC']] },
+  { label: 'NAS100', tag: 'NAS100', src: [['yahoo', '^NDX']] },
+  { label: 'USDCHF', tag: 'CHF',    src: [['yahoo', 'CHF=X'],    ['twelve', 'USD/CHF']] },
+  { label: 'NZDUSD', tag: 'NZD',    src: [['yahoo', 'NZDUSD=X'], ['twelve', 'NZD/USD']] },
+  { label: 'US30',   tag: 'US30',   src: [['yahoo', '^DJI']] },
 ]
-const SPOT_HOSTS = ['https://data-api.binance.vision', 'https://api.binance.com']
+const SPOT_HOSTS   = ['https://data-api.binance.vision', 'https://api.binance.com']
 const FUTURES_HOST = 'https://fapi.binance.com'
-let tickerCache = { at: 0, data: [] }
-let tickerInflight = null
+const YAHOO_HOSTS  = ['https://query1.finance.yahoo.com', 'https://query2.finance.yahoo.com']
+const YAHOO_UA     = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36'
+const TICKER_TTL_MS = 90_000
+const TICKER_STALE_KEEP_MS = 30 * 60_000
 
-async function loadTickerItem(def) {
-  const hosts = def.kind === 'spot' ? SPOT_HOSTS.map(h => `${h}/api/v3/klines`) : [`${FUTURES_HOST}/fapi/v1/klines`]
-  for (const base of hosts) {
+async function fromBinance(kind, symbol) {
+  const bases = kind === 'binance'
+    ? SPOT_HOSTS.map(h => `${h}/api/v3/klines`)
+    : [`${FUTURES_HOST}/fapi/v1/klines`]
+  for (const base of bases) {
     try {
-      const rows = JSON.parse(await fetchText(`${base}?symbol=${def.symbol}&interval=1h&limit=24`, 6000))
+      const rows = JSON.parse(await fetchText(`${base}?symbol=${symbol}&interval=1h&limit=24`, 5000))
       if (!Array.isArray(rows) || rows.length < 2) continue
       const closes = rows.map(r => +r[4]).filter(Number.isFinite)
       const first = +rows[0][1]
       const price = closes[closes.length - 1]
       if (!Number.isFinite(price) || !Number.isFinite(first) || first <= 0) continue
-      return { label: def.label, tag: def.tag, price, changePct: ((price / first) - 1) * 100, spark: closes }
+      return { price, changePct: ((price / first) - 1) * 100, spark: closes }
     } catch { /* try next host */ }
   }
   return null
 }
 
-export async function getTicker() {
-  if (Date.now() - tickerCache.at < 60_000) return tickerCache.data
+async function fromYahoo(symbol) {
+  for (const host of YAHOO_HOSTS) {
+    try {
+      const json = JSON.parse(await fetchText(
+        `${host}/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1h&range=1d`, 5000, { 'User-Agent': YAHOO_UA }))
+      const r = json?.chart?.result?.[0]
+      if (!r) continue
+      const closes = (r.indicators?.quote?.[0]?.close || []).filter(Number.isFinite)
+      const price = Number.isFinite(r.meta?.regularMarketPrice) ? r.meta.regularMarketPrice : closes[closes.length - 1]
+      const prev = [r.meta?.chartPreviousClose, r.meta?.previousClose, closes[0]].find(v => Number.isFinite(v) && v > 0)
+      if (!Number.isFinite(price) || !prev) continue
+      return { price, changePct: ((price / prev) - 1) * 100, spark: closes.length >= 2 ? closes : [] }
+    } catch { /* try next host */ }
+  }
+  return null
+}
+
+async function fromTwelve(symbol) {
+  const key = process.env.TWELVEDATA_API_KEY
+  if (!key) return null
+  try {
+    const json = JSON.parse(await fetchText(
+      `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}&interval=1h&outputsize=24&apikey=${encodeURIComponent(key)}`, 6000))
+    const closes = (json?.values || []).map(v => +v.close).filter(Number.isFinite).reverse() // API is newest-first
+    if (closes.length < 2) return null
+    const price = closes[closes.length - 1]
+    return { price, changePct: ((price / closes[0]) - 1) * 100, spark: closes }
+  } catch { return null }
+}
+
+async function loadTickerItem(def) {
+  for (const [provider, symbol] of def.src) {
+    let q = null
+    try {
+      if (provider === 'yahoo') q = await fromYahoo(symbol)
+      else if (provider === 'twelve') q = await fromTwelve(symbol)
+      else q = await fromBinance(provider, symbol)
+    } catch { q = null }
+    if (q) return { label: def.label, tag: def.tag, ...q }
+  }
+  return null
+}
+
+async function mapLimit(arr, limit, fn) {
+  const out = new Array(arr.length)
+  let next = 0
+  await Promise.all(Array.from({ length: Math.min(limit, arr.length) }, async () => {
+    while (next < arr.length) { const i = next++; out[i] = await fn(arr[i]) }
+  }))
+  return out
+}
+
+const EMPTY_TICKER = { items: [], total: TICKER_DEFS.length, failed: [] }
+let tickerCache = { at: 0, value: EMPTY_TICKER }
+let tickerInflight = null
+const lastGood = new Map() // label → { item, at }: rides out a brief provider hiccup
+
+function refreshTicker() {
   if (!tickerInflight) {
     tickerInflight = (async () => {
-      const items = (await Promise.all(TICKER_DEFS.map(loadTickerItem))).filter(Boolean)
-      // If everything failed, keep the previous good data rather than blanking the strip.
-      tickerCache = { at: Date.now(), data: items.length ? items : tickerCache.data }
-      return tickerCache.data
+      const results = await mapLimit(TICKER_DEFS, 6, loadTickerItem)
+      const now = Date.now()
+      const items = []
+      const failed = []
+      results.forEach((r, i) => {
+        const label = TICKER_DEFS[i].label
+        if (r) { lastGood.set(label, { item: r, at: now }); items.push(r); return }
+        const old = lastGood.get(label)
+        if (old && now - old.at < TICKER_STALE_KEEP_MS) items.push(old.item)
+        else failed.push(label)
+      })
+      if (failed.length) console.warn(`[news] ticker: no price for ${failed.join(', ')}`)
+      tickerCache = { at: now, value: { items, total: TICKER_DEFS.length, failed } }
+      return tickerCache.value
     })().finally(() => { tickerInflight = null })
   }
   return tickerInflight
 }
 
+// Serves the cached ticker instantly and refreshes behind the scenes. Only the
+// very first call waits (up to maxWaitMs) — it never holds up the page for long.
+export async function getTicker({ maxWaitMs = 5000 } = {}) {
+  const age = Date.now() - tickerCache.at
+  if (tickerCache.at && age <= TICKER_TTL_MS) return tickerCache.value
+  const job = refreshTicker()
+  if (tickerCache.at) return tickerCache.value // stale-while-revalidate
+  return Promise.race([job, sleep(maxWaitMs).then(() => tickerCache.value)])
+}
+
 // Exposed for tests only.
-export const __test = { parseFeed, cluster, tagsFor, computeHeat, tokens, jaccard }
+export const __test = { parseFeed, parseFeedDate, dedupeByUrl, cluster, tagsFor, computeHeat, tokens, jaccard }

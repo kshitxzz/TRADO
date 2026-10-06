@@ -1,13 +1,13 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import {
-  Newspaper, Clock, RefreshCw, ExternalLink, Eye, Crosshair, AlertCircle,
-  TrendingUp, TrendingDown, Minus, Flame,
+  Newspaper, RefreshCw, ExternalLink, Eye, Crosshair, AlertCircle,
+  TrendingUp, TrendingDown, Minus, Flame, Plus, X, Check,
 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import PageWrapper from '../components/layout/PageWrapper'
-import MarketHoursTab from '../components/news/MarketHoursTab'
 import { useAuth } from '../hooks/useAuth'
 import { useTimeFormat } from '../hooks/useTimeFormat'
+import { useTimezone, TIMEZONES } from '../hooks/useTimezone'
 import { supabase } from '../lib/supabaseClient'
 import { api } from '../lib/api'
 import { SESSIONS, activeSessionIds } from '../lib/marketSessions'
@@ -17,19 +17,22 @@ const GREEN = '#22C55E'
 const RED   = '#F43F5E'
 const AMBER = '#F59E0B'
 const GRAY  = '#9CA3AF'
+const PURPLE = '#8B5CF6'
 const IMPACT_COLOR    = { HIGH: RED, MEDIUM: AMBER, LOW: GRAY }
 const SENTIMENT_COLOR = { bullish: GREEN, bearish: RED, neutral: GRAY }
 
-// ── "Your markets": map the user's traded symbols onto story tags ─────────
+// ── "Your markets": map symbols onto story tags ───────────────────────────
 const CURRENCIES = new Set(['USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CAD', 'CHF', 'NZD'])
 const CRYPTO_BASES = new Set(['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'ADA', 'LTC', 'AVAX', 'LINK', 'DOT', 'TRX', 'MATIC', 'SHIB'])
 
+// MT5 brokers decorate symbols: "XAUUSD.m", "EURUSDm", "XAUUSD#" …
+const cleanSymbol = (raw) => String(raw || '').trim()
+  .replace(/[.#_-].*$/, '')
+  .replace(/^([A-Z0-9]{5,})[a-z]{1,3}$/, '$1')
+  .toUpperCase()
+
 function tagsForSymbol(raw) {
-  // MT5 brokers decorate symbols: "XAUUSD.m", "EURUSDm", "XAUUSD#" …
-  const s = String(raw || '').trim()
-    .replace(/[.#_-].*$/, '')
-    .replace(/^([A-Z0-9]{5,})[a-z]{1,3}$/, '$1')
-    .toUpperCase()
+  const s = cleanSymbol(raw)
   const tags = new Set()
   if (!s) return tags
 
@@ -50,6 +53,44 @@ function tagsForSymbol(raw) {
   return tags
 }
 
+// What the user types → a symbol we can match ("eur/usd" → EURUSD)
+const normalizeSymbol = (input) => String(input || '').toUpperCase().replace(/[^A-Z0-9]/g, '')
+
+const MAX_WATCHLIST = 20
+const SUGGESTIONS = [
+  { group: 'Forex',           items: ['EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'USDCAD', 'USDCHF', 'NZDUSD', 'EURJPY', 'GBPJPY'] },
+  { group: 'Metals & energy', items: ['XAUUSD', 'XAGUSD', 'USOIL', 'UKOIL', 'NATGAS'] },
+  { group: 'Crypto',          items: ['BTCUSD', 'ETHUSD', 'SOLUSD', 'XRPUSD', 'DOGEUSD'] },
+  { group: 'Indices',         items: ['US500', 'NAS100', 'US30'] },
+]
+const KNOWN_SYMBOLS = SUGGESTIONS.flatMap(g => g.items)
+
+// The watchlist lives in this browser, per account.
+function useWatchlist(userId) {
+  const key = userId ? `trado_news_watchlist:${userId}` : null
+  const [list, setList] = useState([])
+
+  useEffect(() => {
+    if (!key) return
+    try {
+      const raw = JSON.parse(localStorage.getItem(key) || '[]')
+      setList(Array.isArray(raw) ? raw.filter(x => typeof x === 'string').slice(0, MAX_WATCHLIST) : [])
+    } catch { setList([]) }
+  }, [key])
+
+  const toggle = useCallback((symbol) => {
+    setList(prev => {
+      const next = prev.includes(symbol)
+        ? prev.filter(s => s !== symbol)
+        : (prev.length >= MAX_WATCHLIST ? prev : [...prev, symbol])
+      if (key) { try { localStorage.setItem(key, JSON.stringify(next)) } catch { /* storage unavailable */ } }
+      return next
+    })
+  }, [key])
+
+  return [list, toggle]
+}
+
 // ── Small helpers ─────────────────────────────────────────────────────────
 function ago(iso, nowMs) {
   const t = new Date(iso).getTime()
@@ -65,8 +106,9 @@ function ago(iso, nowMs) {
 function fmtPrice(p) {
   if (!Number.isFinite(p)) return '—'
   if (p >= 10000) return p.toLocaleString('en-US', { maximumFractionDigits: 0 })
-  if (p >= 1)     return p.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-  return p.toFixed(4)
+  if (p >= 100)   return p.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  if (p >= 1)     return p.toFixed(4)
+  return p.toFixed(5)
 }
 
 const safeUrl = (u) => (typeof u === 'string' && /^https?:\/\//i.test(u) ? u : undefined)
@@ -102,30 +144,54 @@ function Skeleton({ className = '', style }) {
   return <div className={`animate-pulse rounded-lg ${className}`} style={{ background: 'rgba(255,255,255,0.05)', ...style }} />
 }
 
-// ── Ticker strip ──────────────────────────────────────────────────────────
+// ── Moving ticker (forex, metals, oil, crypto, indices) ───────────────────
+function TickerItem({ t }) {
+  const up = t.changePct >= 0
+  return (
+    <div className="flex items-center gap-2.5 whitespace-nowrap flex-shrink-0">
+      <span className="text-[11px] font-semibold" style={{ color: 'var(--text-secondary)' }}>{t.label}</span>
+      <span className="text-xs font-semibold tabular-nums" style={{ color: 'var(--text-primary)' }}>{fmtPrice(t.price)}</span>
+      <span className="text-[11px] font-semibold tabular-nums" style={{ color: up ? GREEN : RED }}>
+        {up ? '▲' : '▼'} {Math.abs(t.changePct).toFixed(2)}%
+      </span>
+      <Sparkline data={t.spark} up={up} />
+    </div>
+  )
+}
+
 function TickerStrip({ items }) {
   if (!items?.length) return null
+  // Repeat short lists so one copy always fills a wide screen, then render two
+  // identical copies and slide by exactly half → a seamless loop.
+  const base = items.length >= 10 ? items : Array.from({ length: Math.ceil(10 / items.length) }, () => items).flat()
+  const seconds = Math.max(45, base.length * 4)
+  const renderCopy = (copy) => base.map((t, i) => <TickerItem key={`${copy}${i}${t.label}`} t={t} />)
+
   return (
-    <div className="glass-card px-4 py-2.5 flex items-center gap-7 overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
-      {items.map(t => {
-        const up = t.changePct >= 0
-        return (
-          <div key={t.label} className="flex items-center gap-2.5 whitespace-nowrap flex-shrink-0">
-            <span className="text-[11px] font-semibold" style={{ color: 'var(--text-secondary)' }}>{t.label}</span>
-            <span className="text-xs font-semibold" style={{ color: 'var(--text-primary)' }}>{fmtPrice(t.price)}</span>
-            <span className="text-[11px] font-semibold" style={{ color: up ? GREEN : RED }}>
-              {up ? '▲' : '▼'} {Math.abs(t.changePct).toFixed(2)}%
-            </span>
-            <Sparkline data={t.spark} up={up} />
-          </div>
-        )
-      })}
+    <div className="glass-card px-4 py-2.5" role="region" aria-label="Market prices (hover to pause)">
+      <style>{`
+        .news-ticker-viewport { overflow: hidden; -webkit-mask-image: linear-gradient(90deg, transparent, #000 4%, #000 96%, transparent); mask-image: linear-gradient(90deg, transparent, #000 4%, #000 96%, transparent); }
+        .news-ticker-track { display: flex; width: max-content; animation: news-ticker-slide linear infinite; }
+        .news-ticker-viewport:hover .news-ticker-track { animation-play-state: paused; }
+        .news-ticker-copy { display: flex; align-items: center; gap: 28px; padding-right: 28px; flex-shrink: 0; }
+        @keyframes news-ticker-slide { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+        @media (prefers-reduced-motion: reduce) {
+          .news-ticker-viewport { overflow-x: auto; -webkit-mask-image: none; mask-image: none; }
+          .news-ticker-track { animation: none; }
+        }
+      `}</style>
+      <div className="news-ticker-viewport">
+        <div className="news-ticker-track" style={{ animationDuration: `${seconds}s` }}>
+          <div className="news-ticker-copy">{renderCopy('a')}</div>
+          <div className="news-ticker-copy" aria-hidden="true">{renderCopy('b')}</div>
+        </div>
+      </div>
     </div>
   )
 }
 
 // ── Desk bar (clock, sessions, pulse) ─────────────────────────────────────
-function DeskBar({ pulse, radarCount, hasSymbols, generatedAt, onRefresh, refreshing }) {
+function DeskBar({ pulse, radarCount, hasMarkets, generatedAt, updatedTitle, onRefresh, refreshing, tz, tzLabel }) {
   const { fmtTime } = useTimeFormat()
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
@@ -142,8 +208,8 @@ function DeskBar({ pulse, radarCount, hasSymbols, generatedAt, onRefresh, refres
       <div className="flex items-center gap-2">
         <span className="w-2 h-2 rounded-full animate-pulse" style={{ background: GREEN }} />
         <span className="font-semibold tracking-widest" style={{ color: GREEN }}>DESK LIVE</span>
-        <span className="tabular-nums" style={{ color: 'var(--text-secondary)' }}>
-          {fmtTime(now, { seconds: true, timeZone: 'UTC' })} UTC
+        <span className="tabular-nums" style={{ color: 'var(--text-secondary)' }} title="Your selected timezone">
+          {fmtTime(now, { seconds: true, timeZone: tz })} {tzLabel}
         </span>
       </div>
 
@@ -172,15 +238,15 @@ function DeskBar({ pulse, radarCount, hasSymbols, generatedAt, onRefresh, refres
       )}
 
       {pulse.highImpact > 0 && <span className="font-semibold tracking-wide" style={{ color: RED }}>{pulse.highImpact} HIGH-IMPACT</span>}
-      {hasSymbols && (
+      {hasMarkets && (
         <span className="flex items-center gap-1 font-semibold tracking-wide" style={{ color: 'var(--accent-purple-light)' }}>
           <Crosshair size={11} />{radarCount} ON YOUR RADAR
         </span>
       )}
 
       <div className="ml-auto flex items-center gap-2" style={{ color: 'var(--text-muted)' }}>
-        {generatedAt && <span>Updated {fmtTime(generatedAt)}</span>}
-        <button onClick={onRefresh} disabled={refreshing} title="Refresh news"
+        {generatedAt && <span title={updatedTitle}>Updated {ago(generatedAt, now)}</span>}
+        <button onClick={onRefresh} disabled={refreshing} title="Refresh news" aria-label="Refresh news"
                 className="p-1.5 rounded-md transition-colors hover:bg-white/5 disabled:opacity-50">
           <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} />
         </button>
@@ -189,9 +255,135 @@ function DeskBar({ pulse, radarCount, hasSymbols, generatedAt, onRefresh, refres
   )
 }
 
+// ── Your markets (watchlist) ──────────────────────────────────────────────
+function AddMarketPanel({ watchlist, onToggle }) {
+  const [q, setQ] = useState('')
+  const inputRef = useRef(null)
+  useEffect(() => { inputRef.current?.focus() }, [])
+
+  const norm = normalizeSymbol(q)
+  const groups = SUGGESTIONS
+    .map(g => ({ ...g, items: g.items.filter(s => !norm || s.includes(norm)) }))
+    .filter(g => g.items.length > 0)
+  const matches = groups.flatMap(g => g.items)
+  const canAddCustom = norm.length >= 3 && !KNOWN_SYMBOLS.includes(norm) && tagsForSymbol(norm).size > 0
+  const unrecognised = norm.length >= 3 && !canAddCustom && matches.length === 0
+  const full = watchlist.length >= MAX_WATCHLIST
+
+  const submit = () => {
+    if (canAddCustom && !full) { onToggle(norm); setQ(''); return }
+    if (matches.length === 1) onToggle(matches[0])
+  }
+
+  return (
+    <div role="dialog" aria-label="Add markets"
+         className="absolute left-3 right-3 sm:right-auto top-full mt-2 z-30 sm:w-[380px] rounded-xl p-3 shadow-2xl"
+         style={{ background: 'var(--bg-card)', border: '1px solid var(--border-glow)' }}>
+      <input ref={inputRef} value={q} onChange={e => setQ(e.target.value)}
+             onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); submit() } }}
+             placeholder="Search or type a symbol, e.g. EURUSD"
+             className="w-full text-sm rounded-lg px-3 py-2 outline-none"
+             style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid var(--border-subtle)', color: 'var(--text-primary)' }} />
+
+      <div className="max-h-72 overflow-y-auto mt-3 space-y-3">
+        {canAddCustom && (
+          <button onClick={() => { if (!full) { onToggle(norm); setQ('') } }} disabled={full}
+                  className="w-full text-left text-xs font-semibold px-3 py-2 rounded-lg disabled:opacity-50"
+                  style={{ color: 'var(--accent-purple-light)', background: 'rgba(139,92,246,0.12)', border: '1px dashed rgba(139,92,246,0.45)' }}>
+            + Add “{norm}”
+          </button>
+        )}
+
+        {groups.map(g => (
+          <div key={g.group}>
+            <p className="text-[10px] font-semibold tracking-widest mb-1.5" style={{ color: 'var(--text-muted)' }}>{g.group.toUpperCase()}</p>
+            <div className="flex flex-wrap gap-1.5">
+              {g.items.map(sym => {
+                const on = watchlist.includes(sym)
+                return (
+                  <button key={sym} onClick={() => onToggle(sym)} disabled={!on && full} aria-pressed={on}
+                          className="inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-1 rounded-lg transition-colors disabled:opacity-40"
+                          style={on
+                            ? { color: 'var(--accent-purple-light)', background: 'rgba(139,92,246,0.16)', border: '1px solid rgba(139,92,246,0.5)' }
+                            : { color: 'var(--text-secondary)', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-subtle)' }}>
+                    {on && <Check size={11} />}{sym}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        ))}
+
+        {unrecognised && (
+          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            “{norm}” isn't a market we can match news to yet. Try forex pairs (EURUSD), metals (XAUUSD), oil (USOIL), crypto (BTCUSD) or indices (US500).
+          </p>
+        )}
+      </div>
+
+      <p className="text-[10px] mt-3" style={{ color: 'var(--text-muted)' }}>
+        {watchlist.length}/{MAX_WATCHLIST} markets · saved in this browser · Esc to close
+      </p>
+    </div>
+  )
+}
+
+function YourMarkets({ watchlist, autoSymbols, onToggle }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    const onKey = (e) => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey) }
+  }, [open])
+
+  return (
+    <div ref={ref} className="glass-card px-4 py-3 relative">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="flex items-center gap-1.5 text-[10px] font-semibold tracking-widest mr-1" style={{ color: 'var(--accent-purple-light)' }}>
+          <Crosshair size={12} />YOUR MARKETS
+        </span>
+
+        {watchlist.map(sym => (
+          <span key={sym} className="inline-flex items-center gap-1 text-xs font-semibold pl-2.5 pr-1.5 py-1 rounded-lg"
+                style={{ color: 'var(--accent-purple-light)', background: 'rgba(139,92,246,0.14)', border: '1px solid rgba(139,92,246,0.4)' }}>
+            {sym}
+            <button onClick={() => onToggle(sym)} aria-label={`Remove ${sym}`} className="p-0.5 rounded hover:bg-white/10"><X size={11} /></button>
+          </span>
+        ))}
+
+        {autoSymbols.map(sym => (
+          <span key={`auto-${sym}`} title="Added automatically from your trades"
+                className="text-xs font-semibold px-2.5 py-1 rounded-lg"
+                style={{ color: 'var(--text-secondary)', border: '1px dashed var(--border-subtle)' }}>
+            {sym}
+          </span>
+        ))}
+
+        <button onClick={() => setOpen(o => !o)} aria-expanded={open}
+                className="inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-1 rounded-lg transition-colors hover:brightness-125"
+                style={{ color: '#fff', background: 'var(--gradient-primary)' }}>
+          <Plus size={13} />Add market
+        </button>
+      </div>
+
+      {watchlist.length === 0 && autoSymbols.length === 0 && (
+        <p className="text-[11px] mt-2" style={{ color: 'var(--text-muted)' }}>
+          Add the markets you trade and the news that affects them gets flagged and can be filtered.
+        </p>
+      )}
+
+      {open && <AddMarketPanel watchlist={watchlist} onToggle={onToggle} />}
+    </div>
+  )
+}
+
 // ── Live wire ─────────────────────────────────────────────────────────────
-function LiveWire({ items, nowMs }) {
-  const { fmtDateTime } = useTimeFormat()
+function LiveWire({ items, nowMs, stamp, clock }) {
   if (!items?.length) return null
   return (
     <div className="glass-card overflow-hidden">
@@ -205,11 +397,15 @@ function LiveWire({ items, nowMs }) {
       <div className="max-h-64 overflow-y-auto">
         {items.map(it => (
           <a key={it.id} href={safeUrl(it.url)} target="_blank" rel="noopener noreferrer"
+             title={`Published ${stamp(it.publishedAt)}`}
              className="grid grid-cols-[84px_1fr_auto] sm:grid-cols-[110px_1fr_auto] gap-3 items-baseline px-4 py-2.5 transition-colors hover:bg-white/[0.03]"
              style={{ borderBottom: '1px solid var(--border-subtle)' }}>
             <span className="text-[10px] font-semibold tracking-wider uppercase truncate" style={{ color: 'var(--text-muted)' }}>{it.source}</span>
             <span className="text-[13px] leading-snug" style={{ color: 'var(--text-primary)' }}>{it.title}</span>
-            <span className="text-[10px] whitespace-nowrap" title={fmtDateTime(it.publishedAt)} style={{ color: 'var(--text-muted)' }}>{ago(it.publishedAt, nowMs)}</span>
+            <span className="text-[10px] whitespace-nowrap text-right" style={{ color: 'var(--text-muted)' }}>
+              {ago(it.publishedAt, nowMs)}
+              <span className="hidden sm:inline"> · {clock(it.publishedAt)}</span>
+            </span>
           </a>
         ))}
       </div>
@@ -240,12 +436,11 @@ function TagRow({ tags, limit = 5 }) {
   )
 }
 
-function SourceLine({ story, nowMs }) {
-  const { fmtDateTime } = useTimeFormat()
+function SourceLine({ story, nowMs, stamp }) {
   const extra = story.sources.length - 1
   return (
     <div className="flex items-center justify-between gap-2 text-[11px]" style={{ color: 'var(--text-muted)' }}>
-      <span className="truncate" title={fmtDateTime(story.publishedAt)}>
+      <span className="truncate" title={`First reported ${stamp(story.publishedAt)}`}>
         {story.source}{extra > 0 ? ` +${extra} more` : ''} · {ago(story.publishedAt, nowMs)}
       </span>
       <a href={safeUrl(story.url)} target="_blank" rel="noopener noreferrer"
@@ -256,8 +451,8 @@ function SourceLine({ story, nowMs }) {
   )
 }
 
-function TopStory({ story, mine, ticker, nowMs }) {
-  const px = ticker?.find(t => story.tags.includes(t.tag))
+function TopStory({ story, mine, ticker, nowMs, stamp }) {
+  const px = ticker?.find(t => t.tag === story.tags.find(tag => ticker.some(x => x.tag === tag)))
   return (
     <div className="glass-card p-5 grid lg:grid-cols-[1fr_260px] gap-5"
          style={{ borderColor: 'rgba(139,92,246,0.25)' }}>
@@ -266,13 +461,13 @@ function TopStory({ story, mine, ticker, nowMs }) {
           <span className="text-[10px] font-semibold tracking-widest mr-1" style={{ color: 'var(--accent-purple-light)' }}>TOP STORY</span>
           <Chip color={IMPACT_COLOR[story.impact]}>{story.impact}</Chip>
           <SentimentChip sentiment={story.sentiment} />
-          {mine && <Chip color="#8B5CF6" icon={Crosshair}>YOUR MARKET</Chip>}
+          {mine && <Chip color={PURPLE} icon={Crosshair}>YOUR MARKET</Chip>}
         </div>
         <h2 className="text-lg sm:text-xl font-bold leading-snug" style={{ color: 'var(--text-primary)' }}>{story.title}</h2>
         {story.summary && <p className="text-sm leading-relaxed" style={{ color: 'var(--text-secondary)' }}>{story.summary}</p>}
         <WatchLine text={story.watch} />
         <TagRow tags={story.tags} />
-        <div className="mt-auto pt-1"><SourceLine story={story} nowMs={nowMs} /></div>
+        <div className="mt-auto pt-1"><SourceLine story={story} nowMs={nowMs} stamp={stamp} /></div>
       </div>
 
       <div className="flex flex-col gap-3">
@@ -295,7 +490,7 @@ function TopStory({ story, mine, ticker, nowMs }) {
             </div>
             <p className="text-xl font-bold my-1" style={{ color: 'var(--text-primary)' }}>{fmtPrice(px.price)}</p>
             <Sparkline data={px.spark} up={px.changePct >= 0} w={220} h={44} />
-            <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>Last 24h</p>
+            <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>Recent price action</p>
           </div>
         )}
       </div>
@@ -303,13 +498,13 @@ function TopStory({ story, mine, ticker, nowMs }) {
   )
 }
 
-function StoryCard({ story, mine, nowMs }) {
+function StoryCard({ story, mine, nowMs, stamp }) {
   return (
     <article className="glass-card p-4 flex flex-col gap-2.5"
              style={mine ? { borderColor: 'rgba(139,92,246,0.3)' } : undefined}>
       <div className="flex items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-1.5">
-          {mine && <Chip color="#8B5CF6" icon={Crosshair}>YOUR MARKET</Chip>}
+          {mine && <Chip color={PURPLE} icon={Crosshair}>YOUR MARKET</Chip>}
           <Chip color={IMPACT_COLOR[story.impact]}>{story.impact}</Chip>
           <SentimentChip sentiment={story.sentiment} />
         </div>
@@ -321,7 +516,7 @@ function StoryCard({ story, mine, nowMs }) {
       {story.summary && <p className="text-xs leading-relaxed line-clamp-3" style={{ color: 'var(--text-secondary)' }}>{story.summary}</p>}
       <WatchLine text={story.watch} />
       <TagRow tags={story.tags} limit={4} />
-      <div className="mt-auto pt-1"><SourceLine story={story} nowMs={nowMs} /></div>
+      <div className="mt-auto pt-1"><SourceLine story={story} nowMs={nowMs} stamp={stamp} /></div>
     </article>
   )
 }
@@ -343,26 +538,42 @@ function LoadingState() {
     <div className="space-y-4">
       <Skeleton className="h-11" />
       <Skeleton className="h-12" />
-      <Skeleton className="h-56" />
+      <Skeleton className="h-12" />
+      <Skeleton className="h-52" />
       <Skeleton className="h-52" />
       <div className="grid md:grid-cols-2 gap-4"><Skeleton className="h-44" /><Skeleton className="h-44" /></div>
     </div>
   )
 }
 
+const INITIAL_VISIBLE = 10
+
 // ── Page ──────────────────────────────────────────────────────────────────
 export default function News() {
   const { user } = useAuth()
-  const [tab, setTab] = useState('news')
+  const { fmtTime } = useTimeFormat()
+  const { timezone } = useTimezone()
   const [data, setData] = useState(null)
+  const [ticker, setTicker] = useState([])
+  const [tickerMeta, setTickerMeta] = useState(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
   const [filter, setFilter] = useState('all')
+  const [showAll, setShowAll] = useState(false)
   const [symbols, setSymbols] = useState([])
+  const [watchlist, toggleWatch] = useWatchlist(user?.id)
   const [nowMs, setNowMs] = useState(() => Date.now())
   const pendingTries = useRef(0)
   const lastStamp = useRef(null)
+
+  // Every time on this page is shown in the timezone chosen in the app.
+  const tzLabel = TIMEZONES.find(t => t.value === timezone)?.label.split(' — ')[0] || timezone
+  const clock = useCallback((iso) => fmtTime(iso, { timeZone: timezone }), [fmtTime, timezone])
+  const stamp = useCallback((iso) => {
+    const day = new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: timezone })
+    return `${day}, ${fmtTime(iso, { timeZone: timezone })} ${tzLabel}`
+  }, [fmtTime, timezone, tzLabel])
 
   const load = useCallback(async ({ force = false, silent = false } = {}) => {
     if (force) setRefreshing(true)
@@ -371,6 +582,8 @@ export default function News() {
       if (force && lastStamp.current && d.generatedAt === lastStamp.current) toast('Already up to date')
       lastStamp.current = d.generatedAt
       setData(d)
+      if (d.ticker?.length) setTicker(d.ticker)
+      if (d.tickerMeta) setTickerMeta(d.tickerMeta)
       setError('')
     } catch (e) {
       if (!silent) setError(e?.message || 'Could not load the news.')
@@ -382,12 +595,28 @@ export default function News() {
 
   useEffect(() => { load() }, [load])
 
-  // Relative timestamps tick every 30s; the data itself refreshes every 5 minutes while the tab is visible.
+  // Relative times tick every 30s; the stories refresh every 5 minutes while the tab is visible.
   useEffect(() => {
     const tick = setInterval(() => setNowMs(Date.now()), 30_000)
     const poll = setInterval(() => { if (document.visibilityState === 'visible') load({ silent: true }) }, 5 * 60_000)
     return () => { clearInterval(tick); clearInterval(poll) }
   }, [load])
+
+  // Prices refresh every minute (every 8s until the first prices arrive, a few tries only).
+  const hasTicker = ticker.length > 0
+  useEffect(() => {
+    let tries = 0
+    const id = setInterval(async () => {
+      if (document.visibilityState !== 'visible') return
+      if (!hasTicker && ++tries > 8) return
+      try {
+        const d = await api.get('/news/ticker')
+        if (d.ticker?.length) setTicker(d.ticker)
+        if (d.tickerMeta) setTickerMeta(d.tickerMeta)
+      } catch { /* keep showing the last prices */ }
+    }, hasTicker ? 60_000 : 8_000)
+    return () => clearInterval(id)
+  }, [hasTicker])
 
   // AI summaries land a few seconds after the headlines — re-check a few times.
   const aiState = data?.meta?.ai
@@ -408,11 +637,24 @@ export default function News() {
     return () => { cancelled = true }
   }, [user?.id])
 
+  // Most-traded recognised symbols that aren't already on the watchlist (shown as dashed chips).
+  const autoSymbols = useMemo(() => {
+    const counts = new Map()
+    for (const raw of symbols) {
+      const sym = cleanSymbol(raw)
+      if (!sym || tagsForSymbol(sym).size === 0) continue
+      counts.set(sym, (counts.get(sym) || 0) + 1)
+    }
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([s]) => s).filter(s => !watchlist.includes(s)).slice(0, 6)
+  }, [symbols, watchlist])
+
+  // Watchlist + everything the user trades decide what counts as "your market".
   const userTags = useMemo(() => {
     const all = new Set()
+    for (const s of watchlist) for (const t of tagsForSymbol(s)) all.add(t)
     for (const s of new Set(symbols)) for (const t of tagsForSymbol(s)) all.add(t)
     return all
-  }, [symbols])
+  }, [watchlist, symbols])
 
   const isMine = useCallback((story) => story.tags.some(t => userTags.has(t)), [userTags])
 
@@ -423,6 +665,8 @@ export default function News() {
     const r = stories.slice(1)
     return filter === 'mine' ? r.filter(isMine) : r
   }, [stories, filter, isMine])
+  const visible = filter === 'all' && !showAll ? rest.slice(0, INITIAL_VISIBLE) : rest
+  const hiddenCount = rest.length - visible.length
 
   const srcOk = data?.meta?.sources?.filter(s => s.ok).length ?? 0
   const srcAll = data?.meta?.sources?.length ?? 0
@@ -430,94 +674,92 @@ export default function News() {
   return (
     <PageWrapper>
       {/* Header */}
-      <div className="glass-card p-5 mb-5 flex items-center justify-between gap-4 flex-wrap">
-        <div className="flex items-center gap-3">
-          <div className="w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: 'var(--gradient-primary)' }}>
-            <Newspaper size={20} className="text-white" />
-          </div>
-          <div>
-            <h1 className="text-lg font-bold" style={{ color: 'var(--text-primary)' }}>News</h1>
-            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>What's moving markets right now, matched to your symbols</p>
-          </div>
+      <div className="glass-card p-5 mb-5 flex items-center gap-3">
+        <div className="w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: 'var(--gradient-primary)' }}>
+          <Newspaper size={20} className="text-white" />
         </div>
-        <div className="flex items-center gap-2">
-          <FilterChip active={tab === 'news'} onClick={() => setTab('news')}>
-            <span className="inline-flex items-center gap-1.5"><Flame size={13} />News</span>
-          </FilterChip>
-          <FilterChip active={tab === 'hours'} onClick={() => setTab('hours')}>
-            <span className="inline-flex items-center gap-1.5"><Clock size={13} />Market Hours</span>
-          </FilterChip>
+        <div>
+          <h1 className="text-lg font-bold" style={{ color: 'var(--text-primary)' }}>News</h1>
+          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>What's moving markets right now, matched to your symbols</p>
         </div>
       </div>
 
-      {tab === 'hours' && <MarketHoursTab />}
+      {loading && !data && <LoadingState />}
 
-      {tab === 'news' && (
-        <>
-          {loading && !data && <LoadingState />}
+      {!loading && !data && (
+        <div className="glass-card p-8 text-center">
+          <AlertCircle size={28} className="mx-auto mb-3" style={{ color: AMBER }} />
+          <p className="text-sm font-semibold mb-1" style={{ color: 'var(--text-primary)' }}>Couldn't load the news</p>
+          <p className="text-xs mb-4" style={{ color: 'var(--text-muted)' }}>{error || 'Try again in a moment.'}</p>
+          <button onClick={() => { setLoading(true); load() }} className="btn-primary text-sm px-4 py-2">Retry</button>
+        </div>
+      )}
 
-          {!loading && !data && (
-            <div className="glass-card p-8 text-center">
-              <AlertCircle size={28} className="mx-auto mb-3" style={{ color: AMBER }} />
-              <p className="text-sm font-semibold mb-1" style={{ color: 'var(--text-primary)' }}>Couldn't load the news</p>
-              <p className="text-xs mb-4" style={{ color: 'var(--text-muted)' }}>{error || 'Try again in a moment.'}</p>
-              <button onClick={() => { setLoading(true); load() }} className="btn-primary text-sm px-4 py-2">Retry</button>
-            </div>
-          )}
+      {data && (
+        <div className="space-y-4">
+          <TickerStrip items={ticker} />
+          <DeskBar
+            pulse={data.pulse}
+            radarCount={mineCount}
+            hasMarkets={userTags.size > 0}
+            generatedAt={data.generatedAt}
+            updatedTitle={`Fetched ${stamp(data.generatedAt)}`}
+            onRefresh={() => load({ force: true })}
+            refreshing={refreshing}
+            tz={timezone}
+            tzLabel={tzLabel}
+          />
+          <YourMarkets watchlist={watchlist} autoSymbols={autoSymbols} onToggle={toggleWatch} />
+          <LiveWire items={data.wire} nowMs={nowMs} stamp={stamp} clock={clock} />
 
-          {data && (
-            <div className="space-y-4">
-              <TickerStrip items={data.ticker} />
-              <DeskBar
-                pulse={data.pulse}
-                radarCount={mineCount}
-                hasSymbols={userTags.size > 0}
-                generatedAt={data.generatedAt}
-                onRefresh={() => load({ force: true })}
-                refreshing={refreshing}
-              />
-              <LiveWire items={data.wire} nowMs={nowMs} />
+          {top ? (
+            <>
+              <TopStory story={top} mine={isMine(top)} ticker={ticker} nowMs={nowMs} stamp={stamp} />
 
-              {top ? (
-                <>
-                  <TopStory story={top} mine={isMine(top)} ticker={data.ticker} nowMs={nowMs} />
-
-                  <div className="flex items-center justify-between gap-3 flex-wrap pt-1">
-                    <h2 className="text-sm font-bold" style={{ color: 'var(--text-primary)' }}>Latest stories</h2>
-                    {userTags.size > 0 && (
-                      <div className="flex items-center gap-2">
-                        <FilterChip active={filter === 'all'} onClick={() => setFilter('all')}>All</FilterChip>
-                        <FilterChip active={filter === 'mine'} onClick={() => setFilter('mine')}>Your markets ({mineCount})</FilterChip>
-                      </div>
-                    )}
+              <div className="flex items-center justify-between gap-3 flex-wrap pt-1">
+                <h2 className="text-sm font-bold" style={{ color: 'var(--text-primary)' }}>Latest stories</h2>
+                {userTags.size > 0 && (
+                  <div className="flex items-center gap-2">
+                    <FilterChip active={filter === 'all'} onClick={() => setFilter('all')}>All</FilterChip>
+                    <FilterChip active={filter === 'mine'} onClick={() => setFilter('mine')}>Your markets ({mineCount})</FilterChip>
                   </div>
+                )}
+              </div>
 
-                  {rest.length > 0 ? (
-                    <div className="grid md:grid-cols-2 gap-4">
-                      {rest.map(s => <StoryCard key={s.id} story={s} mine={isMine(s)} nowMs={nowMs} />)}
-                    </div>
-                  ) : (
-                    <div className="glass-card p-6 text-center text-xs" style={{ color: 'var(--text-muted)' }}>
-                      No other stories match your symbols right now.
-                    </div>
-                  )}
-                </>
+              {visible.length > 0 ? (
+                <div className="grid md:grid-cols-2 gap-4">
+                  {visible.map(s => <StoryCard key={s.id} story={s} mine={isMine(s)} nowMs={nowMs} stamp={stamp} />)}
+                </div>
               ) : (
-                <div className="glass-card p-8 text-center text-sm" style={{ color: 'var(--text-muted)' }}>
-                  No market-moving stories yet — the live wire above still updates.
+                <div className="glass-card p-6 text-center text-xs" style={{ color: 'var(--text-muted)' }}>
+                  {userTags.size === 0
+                    ? 'Add a market above and the stories that affect it will show up here.'
+                    : 'No other stories match your markets right now.'}
                 </div>
               )}
 
-              <p className="text-[11px] px-1 pb-2" style={{ color: 'var(--text-muted)' }}>
-                {srcAll > 0 && `${srcOk}/${srcAll} sources live · `}
-                {aiState === 'ready' && 'Summaries are AI-generated from public headlines. '}
-                {aiState === 'pending' && 'AI summaries are loading… '}
-                {aiState === 'unavailable' && 'AI summaries are unavailable right now, showing headlines only. '}
-                Sentiment and heat are rough indicators, not trading signals or financial advice. Open the source before acting on anything.
-              </p>
+              {hiddenCount > 0 && (
+                <div className="text-center">
+                  <FilterChip active={false} onClick={() => setShowAll(true)}>Show {hiddenCount} more</FilterChip>
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="glass-card p-8 text-center text-sm" style={{ color: 'var(--text-muted)' }}>
+              No market-moving stories yet — the live wire above still updates.
             </div>
           )}
-        </>
+
+          <p className="text-[11px] px-1 pb-2" style={{ color: 'var(--text-muted)' }}>
+            {srcAll > 0 && `${srcOk}/${srcAll} news sources live · `}
+            {tickerMeta?.total > 0 && `${tickerMeta.ok}/${tickerMeta.total} prices live · `}
+            {aiState === 'ready' && 'Summaries are AI-generated from public headlines. '}
+            {aiState === 'pending' && 'AI summaries are loading… '}
+            {aiState === 'unavailable' && 'AI summaries are unavailable right now, showing headlines only. '}
+            Times are shown in {tzLabel} and reflect when each outlet first published. Prices are indicative and may be delayed.
+            Sentiment and heat are rough indicators, not trading signals or financial advice. Open the source before acting on anything.
+          </p>
+        </div>
       )}
     </PageWrapper>
   )
