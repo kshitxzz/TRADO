@@ -62,6 +62,7 @@ function useCommandGroups(navigate, onClose) {
         items: [
           { id: 'tools',                     label: 'Trading Tools',           desc: 'Browse calculators and trading utilities', icon: Wrench,     run: go('/tools') },
           { id: 'position-size-calculator',  label: 'Position Size Calculator', desc: 'Calculate optimal lot size based on risk', icon: Calculator, run: go('/tools/position-size-calculator') },
+          { id: 'market-hours',              label: 'Forex Market Hours',      desc: 'Live trading sessions and best times to trade', icon: Clock,      run: go('/tools/market-hours') },
         ],
       },
       {

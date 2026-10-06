@@ -5,7 +5,7 @@ import {
 } from 'lucide-react'
 import PageWrapper from '../components/layout/PageWrapper'
 
-// Only Position Size Calculator is actually built right now — everything
+// Position Size Calculator and Forex Market Hours are built — everything
 // else is a placeholder so the grid communicates the roadmap without
 // shipping half-finished tools. Flip `available: true` and add a `path`
 // once a tool is ready.
@@ -24,7 +24,8 @@ const TOOLS = [
     title: 'Forex Market Hours',
     description: 'Track real-time trading sessions and find the best times to trade forex pairs',
     icon: Clock,
-    available: false,
+    path: '/tools/market-hours',
+    available: true,
   },
   {
     id: 'risk-reward-calculator',

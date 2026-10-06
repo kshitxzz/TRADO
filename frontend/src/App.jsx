@@ -29,6 +29,7 @@ import Pricing       from './pages/Pricing'
 import Tools         from './pages/Tools'
 import News          from './pages/News'
 import PositionSizeCalculator from './pages/tools/PositionSizeCalculator'
+import ForexMarketHours from './pages/tools/ForexMarketHours'
 import Performance   from './pages/analytics/Performance'
 import Reports       from './pages/analytics/Reports'
 import AdvancedReports from './pages/analytics/AdvancedReports'
@@ -112,6 +113,7 @@ export default function App() {
         <Route path="/tools"      element={<PrivateRoute><Tools /></PrivateRoute>} />
         <Route path="/news"       element={<PrivateRoute><News /></PrivateRoute>} />
         <Route path="/tools/position-size-calculator" element={<PrivateRoute><PositionSizeCalculator /></PrivateRoute>} />
+        <Route path="/tools/market-hours" element={<PrivateRoute><ForexMarketHours /></PrivateRoute>} />
 
         {/* Analytics */}
         <Route path="/analytics/performance"      element={<PrivateRoute><Performance /></PrivateRoute>} />
