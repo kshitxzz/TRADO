@@ -1,0 +1,35 @@
+import { Router } from 'express'
+import rateLimit from 'express-rate-limit'
+import { requireAuth } from '../middleware/auth.js'
+import { getCalendar, snapshot } from '../services/calendar.js'
+
+export function createCalendarRouter({ auth = requireAuth } = {}) {
+  const router = Router()
+  const LIMITER = rateLimit({ windowMs: 60_000, max: 60, message: { error: 'Too many calendar requests' } })
+
+  // GET /api/calendar            → cached schedule (identical for every user)
+  // GET /api/calendar?refresh=1  → asks for a fresh pull (server-throttled, shared by everyone)
+  // Times are UTC milliseconds; the browser converts to the user's own time zone.
+  router.get('/', auth, LIMITER, async (req, res) => {
+    try {
+      const data = await getCalendar({ force: req.query.refresh === '1' })
+      res.set('Cache-Control', 'no-store')
+      res.json(data)
+    } catch (err) {
+      console.error('[calendar]', err.message)
+      res.status(502).json({ error: 'The economic calendar feed is unreachable right now. Try again in a minute.' })
+    }
+  })
+
+  // GET /api/calendar/status → provider diagnostics only (no events). Handy after deploying
+  // to confirm the schedule feed and the optional actuals provider are healthy.
+  router.get('/status', auth, LIMITER, (_req, res) => {
+    const { meta } = snapshot()
+    res.set('Cache-Control', 'no-store')
+    res.json({ ...meta, events: undefined })
+  })
+
+  return router
+}
+
+export default createCalendarRouter()

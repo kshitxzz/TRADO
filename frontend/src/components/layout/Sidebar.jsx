@@ -5,7 +5,7 @@ import {
   LayoutDashboard, TrendingUp, BookOpen, Sparkles, Target,
   Trophy, Share2, Wallet, Settings, LogOut, ChevronLeft,
   ChevronRight, BarChart2, ChevronDown, ChevronUp, X,
-  BarChart3, Download, FileText, CalendarDays, Clock, Play, Brain, Wrench, Newspaper,
+  BarChart3, Download, FileText, CalendarDays, CalendarClock, Clock, Play, Brain, Wrench, Newspaper,
 } from 'lucide-react'
 import { useAuth } from '../../hooks/useAuth'
 import Logo from '../ui/Logo'
@@ -27,9 +27,10 @@ const NAV_MAIN = [
   { label: 'Journal',          icon: BookOpen,    path: '/journal' },
   { label: 'AI Analysis',      icon: Sparkles,    path: '/trado-ai' },
   { label: 'Trado AI 2.0',     icon: Brain,       path: '/trado-ai-2', badge: 'NEW' },
-  { label: 'Growth Roadmap',   icon: Target,      path: '/progress' },
+  { label: 'Economic Calendar', icon: CalendarClock, path: '/economic-calendar' },
   { label: 'News',             icon: Newspaper,   path: '/news' },
   { label: 'Tools',            icon: Wrench,      path: '/tools' },
+  { label: 'Growth Roadmap',   icon: Target,      path: '/progress' },
   { label: 'Share Cards',      icon: Share2,      path: '/share-cards' },
 ]
 

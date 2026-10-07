@@ -26,6 +26,7 @@ const TITLES = {
   '/trado-ai':                  'Trado AI',
   '/trado-ai-2':                'Trado AI 2.0',
   '/progress':                  'Progress Tracker',
+  '/economic-calendar':         'Economic Calendar',
   '/tools':                     'Trading Tools',
   '/tools/position-size-calculator': 'Position Size Calculator',
   '/tools/market-hours':         'Forex Market Hours',
