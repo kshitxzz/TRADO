@@ -95,8 +95,8 @@ export function groupByDay(events, now, tz) {
 export function countdownText(time, now) {
   const ms = time - now
   if (ms <= 0) return null
+  if (ms < 60000) return `${Math.max(1, Math.ceil(ms / 1000))}s left`
   const mins = Math.floor(ms / 60000)
-  if (mins < 1) return '<1m left'
   if (mins < 60) return `${mins}m left`
   const h = Math.floor(mins / 60)
   if (h < 24) return `${h}h ${mins % 60}m left`

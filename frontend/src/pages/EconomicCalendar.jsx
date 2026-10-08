@@ -11,7 +11,9 @@ import {
 
 const FLAGS = { US, EU, GB, JP, AU, CA, CH, NZ, CN }
 const PAGE_SIZE = 15
-const POLL_MS = 45_000
+const POLL_MS = 45_000           // normal refresh cadence
+const HOT_POLL_MS = 4_000        // around a release: re-check the server every few seconds
+const HOT_WINDOW_MS = 8 * 60_000 // how long after a release we keep waiting for the actual
 const FILTER_KEY = 'trado_calendar_filters'
 const ALL_IMPACTS = ['high', 'medium', 'low']
 
@@ -49,7 +51,7 @@ function CurrencyMenu({ value, onChange }) {
     return () => { document.removeEventListener('mousedown', away); document.removeEventListener('keydown', esc) }
   }, [open])
 
-  const label = value === 'ALL' ? 'All Currencies' : value === 'USD' ? 'US Only' : value
+  const label = value === 'ALL' ? 'All Currencies' : value
   const pick = (v) => { onChange(v); setOpen(false) }
   return (
     <div className="ec-ccy" ref={ref}>
@@ -66,7 +68,7 @@ function CurrencyMenu({ value, onChange }) {
           {CURRENCIES.map(c => (
             <button type="button" role="option" aria-selected={value === c.code} key={c.code} className={value === c.code ? 'sel' : ''} onClick={() => pick(c.code)}>
               <Flag code={c.code} size={18} />
-              <span>{c.code === 'USD' ? 'US Only' : c.code}</span>
+              <span>{c.code}</span>
               <em>{c.name}</em>
             </button>
           ))}
@@ -77,9 +79,13 @@ function CurrencyMenu({ value, onChange }) {
 }
 
 // ── One event row ─────────────────────────────────────────────────────────
+// FF writes bond-auction figures as "yield|bid-to-cover" (e.g. 4.83|2.7).
+const fmtVal = (e, v) => (e.category === 'Bond Auction' && v.includes('|') ? `${v.split('|')[0]}% | ${v.split('|')[1]}` : v)
+
 const EventRow = memo(function EventRow({ e, now, tz, timeFormat, open, onToggle, isNext, actualsOn }) {
   const countdown = countdownText(e.time, now)
   const released = countdown === null
+  const awaiting = released && e.actual == null && actualsOn && e.impact !== 'holiday' && now - e.time < HOT_WINDOW_MS
   const when = e.impact === 'holiday' ? 'All Day' : formatTime(e.time, timeFormat, { timeZone: tz })
   const full = `${new Date(e.time).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', timeZone: tz })} · ${formatTime(e.time, timeFormat, { timeZone: tz })}`
   const dash = <span className="ec-dash">-</span>
@@ -102,10 +108,12 @@ const EventRow = memo(function EventRow({ e, now, tz, timeFormat, open, onToggle
               ? <strong className="ec-count">{countdown}</strong>
               : e.actual != null
                 ? <strong className="ec-actual">{e.actual}</strong>
-                : <span className="ec-dash" title={actualsOn ? 'Not published yet' : 'This data feed does not publish actual values'}>-</span>}
+                : awaiting
+                  ? <span className="ec-wait" title="Released — waiting for the actual value"><i /><i /><i /></span>
+                  : <span className="ec-dash" title={actualsOn ? 'Not available from the data provider' : 'No actuals provider is connected (the Forex Factory feed has none)'}>-</span>}
           </span>
-          <span className="ec-stat"><label>FORECAST</label>{e.forecast != null ? <span className="ec-val">{e.forecast}</span> : dash}</span>
-          <span className="ec-stat"><label>PREVIOUS</label>{e.previous != null ? <span className="ec-val">{e.previous}</span> : dash}</span>
+          <span className="ec-stat"><label>FORECAST</label>{e.forecast != null ? <span className="ec-val">{fmtVal(e, e.forecast)}</span> : dash}</span>
+          <span className="ec-stat"><label>PREVIOUS</label>{e.previous != null ? <span className="ec-val">{fmtVal(e, e.previous)}</span> : dash}</span>
         </span>
         <ChevronDown size={15} className="ec-chev" />
         {isNext && <span className="ec-next">NEXT UP</span>}
@@ -165,11 +173,8 @@ export default function EconomicCalendar() {
     try { localStorage.setItem(FILTER_KEY, JSON.stringify({ tab, impacts: [...impacts], currency })) } catch { /* private mode */ }
   }, [tab, impacts, currency])
 
-  // Clock tick — countdowns and "Today" boundaries stay current
-  useEffect(() => {
-    const id = setInterval(() => setTick(Date.now()), 15_000)
-    return () => clearInterval(id)
-  }, [])
+  // Is a release happening right now? (drives 1-second ticks and fast polling)
+  const hotRef = useRef({ tick: false, poll: false })
 
   const load = useCallback(async ({ force = false, silent = false } = {}) => {
     if (force) setRefreshing(true)
@@ -192,12 +197,33 @@ export default function EconomicCalendar() {
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  // Live clock: 1s while a release is within a minute either side (so the countdown flips exactly on time),
+  // 15s otherwise.
   useEffect(() => {
-    const poll = () => { if (!document.hidden) load({ silent: true }) }
-    const id = setInterval(poll, POLL_MS)
-    document.addEventListener('visibilitychange', poll)
-    window.addEventListener('focus', poll)
-    return () => { clearInterval(id); document.removeEventListener('visibilitychange', poll); window.removeEventListener('focus', poll) }
+    let id
+    const run = () => {
+      setTick(Date.now())
+      id = setTimeout(run, hotRef.current.tick ? 1000 : 15_000)
+    }
+    id = setTimeout(run, 1000)
+    return () => clearTimeout(id)
+  }, [])
+
+  // Data refresh: every few seconds around a release (the server only re-asks its provider when it is
+  // worth it), 45s otherwise. Also refreshes the moment the tab regains focus.
+  useEffect(() => {
+    let id, dead = false
+    const loop = async () => {
+      if (dead) return
+      if (!document.hidden) await load({ silent: true })
+      id = setTimeout(loop, hotRef.current.poll ? HOT_POLL_MS : POLL_MS)
+    }
+    id = setTimeout(loop, POLL_MS)
+    const wake = () => { if (!document.hidden) load({ silent: true }) }
+    document.addEventListener('visibilitychange', wake)
+    window.addEventListener('focus', wake)
+    return () => { dead = true; clearTimeout(id); document.removeEventListener('visibilitychange', wake); window.removeEventListener('focus', wake) }
   }, [load])
 
   // Search debounce (shows the same short "loading" state as the reference)
@@ -211,6 +237,14 @@ export default function EconomicCalendar() {
   useEffect(() => { setCount(PAGE_SIZE); setExpanded(null) }, [tab, impacts, currency, debounced])
 
   const events = data?.events || []
+  // Release window: from 60s before an event until HOT_WINDOW after it (High/Medium only, like the server).
+  useEffect(() => {
+    const t = Date.now() + clockOffset.current
+    hotRef.current = {
+      tick: events.some(e => e.time - t < 60_000 && t - e.time < 60_000),
+      poll: events.some(e => e.impact !== 'low' && e.impact !== 'holiday' && e.time - t < 30_000 && t - e.time < HOT_WINDOW_MS && (e.actual == null)),
+    }
+  }, [events, tick])
   const filtered = useMemo(
     () => filterEvents(events, { tab, impacts, currency, query: debounced }, now, timezone),
     [events, tab, impacts, currency, debounced, now, timezone],
@@ -265,6 +299,7 @@ export default function EconomicCalendar() {
             <span>{zone.offset}</span>
             <span className={`ec-live ${delayed ? 'delayed' : ''}`}><i />{delayed ? 'DELAYED' : 'LIVE'}</span>
             {updated && <span className="ec-upd">Updated {updated}</span>}
+            {meta && !actualsOn && <span className="ec-upd" title="Actual values need an actuals provider. The Forex Factory feed publishes schedule, forecast and previous only.">· Actuals not connected</span>}
           </div>
         </div>
         <div className="ec-rule" />
@@ -463,6 +498,10 @@ html.light .ec {
 .ec-val, .ec-dash { font-size: 14.5px; font-weight: 500; color: var(--ec-muted); font-variant-numeric: tabular-nums; }
 .ec-dash { color: var(--ec-dim); }
 .ec-actual { font-size: 14.5px; font-weight: 700; color: var(--ec-text); font-variant-numeric: tabular-nums; }
+.ec-wait { display: inline-flex; gap: 4px; height: 20px; align-items: center; }
+.ec-wait i { width: 5px; height: 5px; border-radius: 50%; background: var(--ec-blue); animation: ecDot 1s ease-in-out infinite; }
+.ec-wait i:nth-child(2) { animation-delay: 0.15s; } .ec-wait i:nth-child(3) { animation-delay: 0.3s; }
+@keyframes ecDot { 0%, 80%, 100% { opacity: 0.25; transform: scale(0.8); } 40% { opacity: 1; transform: scale(1.15); } }
 .ec-count { font-size: 12.5px; font-weight: 700; color: var(--ec-text); white-space: nowrap; }
 .ec-chev { color: var(--ec-dim); transition: transform 240ms cubic-bezier(.4,0,.2,1), color 160ms ease; }
 .ec-row:hover .ec-chev { color: var(--ec-text); } .ec-row.open .ec-chev { transform: rotate(180deg); }

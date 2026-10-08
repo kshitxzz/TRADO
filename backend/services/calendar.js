@@ -32,7 +32,12 @@ const UA = 'Mozilla/5.0 (compatible; TradoCalendarBot/1.0)'
 const TTL_MS           = Math.max(5, parseInt(process.env.CALENDAR_TTL_MINUTES, 10) || 15) * 60_000
 const FORCE_MIN_AGE_MS = 2 * 60_000
 const FF_BACKOFF_MS    = 10 * 60_000
-const FMP_MIN_GAP_MS   = 10 * 60_000   // ≤ ~144 calls/day, inside FMP's free 250/day
+const FMP_MIN_GAP_MS   = 20 * 60_000   // catch-up polling for older releases
+// Around a release the actual is what traders are waiting for, so poll much faster —
+// but only for High/Medium events and only for 8 minutes after the release time.
+// Default 30s keeps a typical day inside FMP's free 250 calls/day; raise the speed on a paid plan.
+const HOT_GAP_MS       = Math.max(5, parseInt(process.env.ACTUALS_HOT_SECONDS, 10) || 30) * 1000
+const HOT_WINDOW_MS    = 8 * 60_000
 const HOUR = 3600_000
 
 // ── Fetch helper ─────────────────────────────────────────────────────────
@@ -290,9 +295,12 @@ async function pullSchedule() {
 async function pullActuals(events) {
   if (!state.actuals.enabled) return
   const now = Date.now()
-  // Only ask when something has actually been released without an actual yet.
-  const pending = events.some(e => e.actual == null && e.impact !== 'holiday' && e.time <= now && e.time >= now - 72 * HOUR)
-  if (!pending || now - state.actuals.lastFetch < FMP_MIN_GAP_MS) return
+  if (now < (state.actuals.pausedUntil || 0)) return
+  // Anything released (or releasing within 15s) that still has no actual.
+  const open = events.filter(e => e.actual == null && e.impact !== 'holiday' && e.time <= now + 15_000 && e.time >= now - 72 * HOUR)
+  if (!open.length) return
+  const hot = open.some(e => e.impact !== 'low' && now - e.time <= HOT_WINDOW_MS)
+  if (now - state.actuals.lastFetch < (hot ? HOT_GAP_MS : FMP_MIN_GAP_MS)) return
   state.actuals.lastFetch = now
   try {
     const url = `${FMP_URL}?from=${ymd(now - 3 * 24 * HOUR)}&to=${ymd(now + 24 * HOUR)}&apikey=${encodeURIComponent(process.env.FMP_API_KEY)}`
@@ -300,8 +308,12 @@ async function pullActuals(events) {
     if (!Array.isArray(rows)) throw new Error(rows?.['Error Message'] || 'Unexpected FMP response')
     state.actuals.matched = mergeActuals(events, rows)
     state.actuals.lastError = null
+    state.actuals.pausedUntil = 0
   } catch (err) {
     state.actuals.lastError = err.status ? `FMP HTTP ${err.status}` : err.message
+    // Plan has no access / bad key → stop hammering for an hour; rate-limited → 10 minutes.
+    if ([401, 402, 403].includes(err.status)) state.actuals.pausedUntil = now + 60 * 60_000
+    else if (err.status === 429) state.actuals.pausedUntil = now + 10 * 60_000
     console.error('[calendar] actuals:', state.actuals.lastError)
   }
 }
