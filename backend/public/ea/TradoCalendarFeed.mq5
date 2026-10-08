@@ -12,10 +12,13 @@
 //|   2. Tools > Options > Expert Advisors > tick "Allow WebRequest   |
 //|      for listed URL" and add your backend address                 |
 //|      (e.g. https://your-backend.onrender.com).                    |
-//|   3. Attach to ANY chart. Inputs: InpUrl and InpSecret            |
-//|      (InpSecret must equal CALENDAR_FEED_SECRET on the server).   |
-//|   4. Keep the terminal running (a VPS is ideal). Check the Experts|
-//|      tab: it logs every send and any error.                       |
+//|   3. MT5 allows ONE EA per chart, so open a NEW chart for this   |
+//|      (File > New Chart > any symbol) and drag this EA onto it.    |
+//|      Do not drop it on the chart that runs TradoSync - that would |
+//|      replace TradoSync. Fill in InpUrl and InpSecret (Inputs tab; |
+//|      InpSecret must equal CALENDAR_FEED_SECRET on the server).    |
+//|   4. Keep the terminal running (a VPS is ideal). The chart shows  |
+//|      a status panel; the Experts tab logs every send and error.   |
 //+------------------------------------------------------------------+
 #property copyright "Trado"
 #property version   "1.00"
@@ -36,9 +39,40 @@ string   g_sigs[];
 datetime g_lastFull = 0;
 bool     g_warnedUrl = false;
 
+// Shown on the chart so you can see at a glance what the EA is doing.
+string   g_status = "starting...";
+datetime g_lastOk = 0;
+int      g_sentTotal = 0;
+
 // country id -> currency cache
 long     g_cIds[];
 string   g_cCur[];
+
+//+------------------------------------------------------------------+
+bool InputsValid(string &why)
+  {
+   if(StringLen(InpSecret) < 8)
+     {
+      why = "set InpSecret (same value as CALENDAR_FEED_SECRET on your server, min 8 chars)";
+      return false;
+     }
+   if(StringFind(InpUrl, "YOUR-BACKEND") >= 0 || StringFind(InpUrl, "http") != 0)
+     {
+      why = "set InpUrl to https://<your-backend>/api/calendar/feed";
+      return false;
+     }
+   return true;
+  }
+
+void ShowStatus()
+  {
+   string t = "Trado Calendar Feed\n";
+   t += "Status: " + g_status + "\n";
+   if(g_lastOk > 0)
+      t += "Last successful send: " + TimeToString(g_lastOk, TIME_DATE | TIME_SECONDS) + " (PC time)\n";
+   t += "Events sent this session: " + IntegerToString(g_sentTotal) + "\n";
+   Comment(t);
+  }
 
 //+------------------------------------------------------------------+
 string JsonEscape(string s)
@@ -185,9 +219,11 @@ bool PostBatch(const string events, const bool full)
    int status = WebRequest("POST", InpUrl, "Content-Type: application/json\r\n", 8000, data, result, resHeaders);
    if(status == -1)
      {
+      int err = GetLastError();
+      g_status = "BLOCKED - WebRequest error " + IntegerToString(err) + ". Add your backend address under Tools > Options > Expert Advisors > Allow WebRequest";
       if(!g_warnedUrl)
         {
-         Print("TradoCalendarFeed: WebRequest failed, error ", GetLastError(),
+         Print("TradoCalendarFeed: WebRequest failed, error ", err,
                ". Add the backend address under Tools > Options > Expert Advisors > Allow WebRequest.");
          g_warnedUrl = true;
         }
@@ -195,10 +231,17 @@ bool PostBatch(const string events, const bool full)
      }
    if(status != 200)
      {
-      Print("TradoCalendarFeed: server answered ", status, " ", CharArrayToString(result, 0, 200, CP_UTF8));
+      string hint = "";
+      if(status == 401) hint = " - InpSecret does not match CALENDAR_FEED_SECRET";
+      else if(status == 503) hint = " - CALENDAR_FEED_SECRET is not set on the server (set it and redeploy)";
+      else if(status == 404) hint = " - wrong InpUrl, or the backend has not been redeployed with the calendar route";
+      g_status = "SERVER ERROR " + IntegerToString(status) + hint;
+      Print("TradoCalendarFeed: server answered ", status, hint, " ", CharArrayToString(result, 0, 200, CP_UTF8));
       return false;
      }
    g_warnedUrl = false;
+   g_status = "OK - sending";
+   g_lastOk = TimeLocal();
    return true;
   }
 
@@ -210,7 +253,10 @@ void Sync(const bool full)
    datetime now = TimeTradeServer();
    int n = CalendarValueHistory(values, now - InpBackHrs * 3600, now + InpAheadHrs * 3600);
    if(n <= 0)
+     {
+      g_status = "waiting for the MT5 calendar to load (needs an internet connection; open View > Toolbox > Calendar once)";
       return;
+     }
 
    string batch = "";
    int inBatch = 0, sent = 0;
@@ -254,6 +300,7 @@ void Sync(const bool full)
       sent += inBatch;
      }
 
+   g_sentTotal += sent;
    if(sent > 0)
       Print("TradoCalendarFeed: sent ", sent, full ? " events (full snapshot)" : " changed event(s)");
    if(full)
@@ -263,30 +310,42 @@ void Sync(const bool full)
 //+------------------------------------------------------------------+
 int OnInit()
   {
-   if(StringLen(InpSecret) < 8)
-     {
-      Print("TradoCalendarFeed: set InpSecret to the CALENDAR_FEED_SECRET value from your server (min 8 chars).");
-      return INIT_PARAMETERS_INCORRECT;
-     }
-   if(StringFind(InpUrl, "YOUR-BACKEND") >= 0)
-     {
-      Print("TradoCalendarFeed: set InpUrl to your backend's /api/calendar/feed address.");
-      return INIT_PARAMETERS_INCORRECT;
-     }
+   // Never fail here: MT5 silently removes an EA whose OnInit fails, which looks like "it won't attach".
+   // Stay attached, show what is missing on the chart, and start working once the inputs are right.
    EventSetTimer(MathMax(1, InpPollSec));
-   Sync(true);
+   string why;
+   if(InputsValid(why))
+     {
+      g_status = "connecting...";
+      Sync(true);
+     }
+   else
+     {
+      g_status = "WAITING FOR SETTINGS - " + why;
+      Print("TradoCalendarFeed: ", g_status, " (right-click the chart > Expert Advisors > Properties > Inputs)");
+     }
+   ShowStatus();
    return INIT_SUCCEEDED;
   }
 
 void OnDeinit(const int reason)
   {
    EventKillTimer();
+   Comment("");
   }
 
 void OnTimer()
   {
+   string why;
+   if(!InputsValid(why))
+     {
+      g_status = "WAITING FOR SETTINGS - " + why;
+      ShowStatus();
+      return;
+     }
    bool full = (g_lastFull == 0 || TimeLocal() - g_lastFull >= InpFullSec);
    Sync(full);
+   ShowStatus();
   }
 
 void OnTick() {}
