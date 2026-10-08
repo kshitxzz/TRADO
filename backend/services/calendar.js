@@ -200,11 +200,14 @@ export function normalizeFF(raw) {
 
 // ── Optional actuals (FMP) with strict matching ──────────────────────────
 const TOKEN_ALIASES = [
+  [/s\s*&\s*p global/g, ' '], [/non[- ]?manufacturing/g, 'services'],
   [/non[- ]?farm payrolls?/g, 'nfp'], [/consumer price index/g, 'cpi'], [/inflation rate/g, 'cpi'],
   [/producer price index/g, 'ppi'], [/\bmom\b|m\/m/g, 'mom'], [/\byoy\b|y\/y/g, 'yoy'], [/\bqoq\b|q\/q/g, 'qoq'],
   [/initial jobless claims|unemployment claims/g, 'claims'], [/&/g, ' and '],
 ]
-const STOP = new Set(['the', 'of', 'and', 'rate', 'index', 'change'])
+// Words that differ between providers without changing which release it is (periods, revision stage, publisher).
+const STOP = new Set(['the', 'of', 'and', 'rate', 'index', 'change', 'final', 'prelim', 'preliminary', 'flash', 'global',
+  'jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'sept', 'oct', 'nov', 'dec', 'q1', 'q2', 'q3', 'q4'])
 function titleTokens(t) {
   let s = String(t || '').toLowerCase()
   for (const [re, to] of TOKEN_ALIASES) s = s.replace(re, to)
@@ -322,6 +325,7 @@ function forecastsAgree(ev, row) {
 
 function candidatePairs(events, rows) {
   const pairs = []
+  const loose = []                                          // same currency + time + agreeing forecast, any title
   for (const ev of events) {
     if (ev.impact === 'holiday') continue
     const evTokens = titleTokens(ev.title)
@@ -330,9 +334,19 @@ function candidatePairs(events, rows) {
       const agree = forecastsAgree(ev, r)
       if (agree === false) continue
       const sim = jaccard(evTokens, r.tokens)
+      if (agree === true) loose.push({ ev, r, sim })
       if (sim < (agree === true ? 0.34 : 0.5)) continue     // without a forecast to confirm, demand a closer title
       pairs.push({ ev, r, sim })
     }
+  }
+  // Providers word titles differently ("ISM Services PMI" vs "ISM Non-Manufacturing PMI"). If an event and a
+  // feed row are the ONLY two things sharing a release minute, currency AND forecast figure, that is a match
+  // even with a weak title score — provided they are the same kind of release.
+  const perEv = new Map(), perRow = new Map()
+  for (const l of loose) { perEv.set(l.ev.id, (perEv.get(l.ev.id) || 0) + 1); perRow.set(l.r.id, (perRow.get(l.r.id) || 0) + 1) }
+  for (const l of loose) {
+    if (l.sim >= 0.34 || perEv.get(l.ev.id) !== 1 || perRow.get(l.r.id) !== 1) continue
+    if (l.sim >= 0.15 || classify(l.ev.title) === classify(l.r.name)) pairs.push(l)
   }
   return pairs.sort((x, y) => y.sim - x.sim)
 }
@@ -371,7 +385,7 @@ export function buildOverlay(events, rows, now = Date.now(), { allowExtras = tru
     overlay.set(ev.id, fix)
   }
   const extras = !allowExtras ? [] : rows
-    .filter(r => !used.has(r.id) && !(r.imp === 0 && !r.holiday) && Math.abs(r.time - now) < 4 * 24 * HOUR)
+    .filter(r => !used.has(r.id) && !(r.imp === 0 && !r.holiday) && Math.abs(r.time - now) < 9 * 24 * HOUR)
     .map(r => ({
       id: `mt5-${r.id}`, time: r.time, currency: r.currency, title: r.name,
       impact: r.holiday ? 'holiday' : MT5_IMPACT[r.imp],
@@ -407,7 +421,7 @@ export function ingestFeed(body) {
   if (body?.full === true) state.feed.rows = new Map()
   state.feed.offsetSec = Number(body.serverOffsetSec)
   for (const r of rows) state.feed.rows.set(r.id, r)
-  const cutoff = Date.now() - 4 * 24 * HOUR
+  const cutoff = Date.now() - 9 * 24 * HOUR
   for (const [k, r] of state.feed.rows) if (r.time < cutoff) state.feed.rows.delete(k)
   state.feed.receivedAt = Date.now()
   state.feed.count = state.feed.rows.size

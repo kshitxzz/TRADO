@@ -24,8 +24,8 @@
 input string InpUrl      = "https://YOUR-BACKEND/api/calendar/feed"; // full URL of POST /api/calendar/feed
 input string InpSecret   = "";    // same value as CALENDAR_FEED_SECRET on the server
 input int    InpPollSec  = 3;     // how often to look for changed values (seconds)
-input int    InpFullSec  = 120;   // how often to resend the whole window (seconds)
-input int    InpBackHrs  = 12;    // window start, hours before now
+input int    InpFullSec  = 180;   // how often to resend the whole window (seconds)
+input int    InpBackHrs  = 168;   // window start, hours before now (168 = the whole current week)
 input int    InpAheadHrs = 48;    // window end, hours after now
 
 #define BATCH 80
