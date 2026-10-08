@@ -15,6 +15,18 @@ const POLL_MS = 45_000           // normal refresh cadence
 const HOT_POLL_MS = 4_000        // around a release: re-check the server every few seconds
 const HOT_WINDOW_MS = 8 * 60_000 // how long after a release we keep waiting for the actual
 const FILTER_KEY = 'trado_calendar_filters'
+const VIEW_KEY = 'trado_calendar_view'
+
+// Investing.com's own free, embeddable Economic Calendar widget (investing.com → Webmaster Tools).
+// It is their sanctioned way to show their live calendar: actual / forecast / previous (including
+// revised previous) update on their side within about a second, with no scraping and no API cost.
+// To change countries, columns or time zone, generate new code at
+// https://www.investing.com/webmaster-tools/economic-calendar and replace ONLY the src value below.
+const INVESTING_WIDGET_SRC =
+  'https://sslecal2.investing.com?columns=exc_flags,exc_currency,exc_importance,exc_actual,exc_forecast,exc_previous' +
+  '&importance=1,2,3&features=datepicker,timezone' +
+  '&countries=25,32,6,37,72,22,17,39,14,10,35,43,56,36,110,11,26,12,4,5&calType=day&lang=1'
+const INVESTING_PAGE = 'https://www.investing.com/economic-calendar/'
 const ALL_IMPACTS = ['high', 'medium', 'low']
 
 function readFilters() {
@@ -74,6 +86,45 @@ function CurrencyMenu({ value, onChange }) {
           ))}
         </div>
       )}
+    </div>
+  )
+}
+
+// ── Live actuals (Investing.com official widget) ──────────────────────────
+function LiveActuals() {
+  const [loaded, setLoaded] = useState(false)
+  const [slow, setSlow] = useState(false)
+  useEffect(() => {
+    const id = setTimeout(() => setSlow(true), 12_000)
+    return () => clearTimeout(id)
+  }, [])
+  return (
+    <div className="ec-live-panel">
+      <p className="ec-live-note">
+        Live calendar from Investing.com. Actual, forecast and previous values update automatically as numbers are released.
+        Use the box at the top of the widget to pick your time zone.
+      </p>
+      <div className="ec-live-frame">
+        {!loaded && (
+          <div className="ec-live-wait">
+            <span className="ec-spin" />
+            {slow ? <span>Still loading… if nothing appears, <a href={INVESTING_PAGE} target="_blank" rel="noopener noreferrer">open Investing.com in a new tab</a>.</span> : <span>Loading live calendar…</span>}
+          </div>
+        )}
+        <iframe
+          title="Investing.com economic calendar"
+          src={INVESTING_WIDGET_SRC}
+          onLoad={() => setLoaded(true)}
+          loading="eager"
+          sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-forms"
+          frameBorder="0"
+          allowTransparency="true"
+        />
+      </div>
+      <div className="ec-live-credit">
+        Real Time Economic Calendar provided by{' '}
+        <a href="https://www.investing.com/" rel="nofollow noopener noreferrer" target="_blank">Investing.com</a>.
+      </div>
     </div>
   )
 }
@@ -150,6 +201,8 @@ export default function EconomicCalendar() {
   const { timeFormat } = useTimeFormat()
 
   const init = useMemo(readFilters, [])
+  const [view, setView] = useState(() => { try { return localStorage.getItem(VIEW_KEY) === 'live' ? 'live' : 'calendar' } catch { return 'calendar' } })
+  useEffect(() => { try { localStorage.setItem(VIEW_KEY, view) } catch { /* private mode */ } }, [view])
   const [tab, setTab] = useState(init.tab)
   const [impacts, setImpacts] = useState(() => new Set(init.impacts))
   const [currency, setCurrency] = useState(init.currency)
@@ -299,12 +352,24 @@ export default function EconomicCalendar() {
             <span>{zone.offset}</span>
             <span className={`ec-live ${delayed ? 'delayed' : ''}`}><i />{delayed ? 'DELAYED' : 'LIVE'}</span>
             {updated && <span className="ec-upd">Updated {updated}</span>}
-            {meta && !actualsOn && <span className="ec-upd" title="Actual values need an actuals provider. The Forex Factory feed publishes schedule, forecast and previous only.">· Actuals not connected</span>}
+            {meta && !actualsOn && view === 'calendar' && (
+              <button type="button" className="ec-link" onClick={() => setView('live')} title="This view's data feed has no actual values. Open the live Investing.com calendar for released numbers.">
+                · Live actuals ›
+              </button>
+            )}
             {meta && actualsOn && meta.actuals.lastError && <span className="ec-upd ec-warn" title="The actuals provider rejected or failed the last request, so Actual values cannot be filled in right now.">· Actuals unavailable ({meta.actuals.lastError})</span>}
           </div>
         </div>
         <div className="ec-rule" />
 
+        <div className="ec-views" role="tablist" aria-label="Calendar view">
+          <button type="button" role="tab" aria-selected={view === 'calendar'} className={view === 'calendar' ? 'on' : ''} onClick={() => setView('calendar')}>Calendar</button>
+          <button type="button" role="tab" aria-selected={view === 'live'} className={view === 'live' ? 'on' : ''} onClick={() => setView('live')}>
+            <i /> Live Actuals
+          </button>
+        </div>
+
+        {view === 'live' ? <LiveActuals /> : (<>
         {/* Tabs + filters */}
         <div className="ec-filters">
           <div className="ec-tabs" role="tablist">
@@ -389,6 +454,7 @@ export default function EconomicCalendar() {
             )}
           </>
         )}
+        </>)}
       </div>
     </PageWrapper>
   )
@@ -416,6 +482,21 @@ html.light .ec {
 .ec-live.delayed { color: #f59e0b; } .ec-live.delayed i { background: #f59e0b; animation: none; }
 .ec-upd { color: var(--ec-dim); } .ec-warn { color: #f59e0b; }
 @keyframes ecPulse { 0% { box-shadow: 0 0 0 0 rgba(34,197,94,0.55); } 70% { box-shadow: 0 0 0 7px rgba(34,197,94,0); } 100% { box-shadow: 0 0 0 0 rgba(34,197,94,0); } }
+.ec-views { display: inline-flex; gap: 4px; padding: 4px; margin-bottom: 20px; background: var(--ec-input); border: 1px solid var(--ec-border); border-radius: 12px; }
+.ec-views button { display: inline-flex; align-items: center; gap: 8px; padding: 8px 18px; border: none; background: none; border-radius: 9px; cursor: pointer; font-size: 13.5px; font-weight: 600; color: var(--ec-dim); transition: color 160ms ease, background 160ms ease; }
+.ec-views button:hover { color: var(--ec-text); }
+.ec-views button.on { background: var(--ec-blue); color: #fff; }
+.ec-views button i { width: 7px; height: 7px; border-radius: 50%; background: #22c55e; animation: ecPulse 1.8s ease-out infinite; }
+.ec-link { background: none; border: none; padding: 0; cursor: pointer; font-size: 12.5px; font-weight: 600; color: var(--ec-blue); } .ec-link:hover { text-decoration: underline; }
+.ec-live-panel { margin-bottom: 8px; }
+.ec-live-note { font-size: 13px; line-height: 1.6; color: var(--ec-muted); margin-bottom: 14px; max-width: 760px; }
+.ec-live-frame { position: relative; height: min(82vh, 920px); min-height: 520px; background: #fff; border: 1px solid var(--ec-border); border-radius: 16px; overflow: hidden; }
+.ec-live-frame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #fff; }
+.ec-live-wait { position: absolute; inset: 0; z-index: 1; display: flex; align-items: center; justify-content: center; gap: 12px; padding: 20px; text-align: center; font-size: 13px; color: #555; background: #fff; pointer-events: none; }
+.ec-live-wait a { color: #06529D; font-weight: 600; pointer-events: auto; }
+.ec-live-wait .ec-spin { border-color: #999; border-top-color: transparent; }
+.ec-live-credit { margin-top: 10px; font-size: 11.5px; color: var(--ec-dim); }
+.ec-live-credit a { color: var(--ec-muted); font-weight: 600; text-decoration: none; } .ec-live-credit a:hover { text-decoration: underline; }
 .ec-rule { height: 1px; background: var(--ec-border); margin: 0 0 18px; }
 
 /* tabs + impact + currency */
