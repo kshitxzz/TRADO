@@ -20,6 +20,13 @@
 //      unambiguous (same currency, same release time, same title family AND
 //      matching forecast/previous numbers). Anything doubtful is left blank.
 //
+//   3. OPTIONAL — a MetaTrader 5 feed (CALENDAR_FEED_SECRET). MT5 ships MetaQuotes'
+//      own economic calendar with actual / forecast / revised-previous values that
+//      update within seconds of a release. A small EA (public/ea/TradoCalendarFeed.mq5)
+//      running in the OWNER's terminal pushes it to POST /api/calendar/feed. Rows are
+//      merged with the same strict rules (currency + release time + title family +
+//      forecast agreement); rows that match nothing are shown as extra events.
+//
 // Events are identical for every user, so the feeds are fetched once, cached in
 // memory and shared. Forex Factory throttles aggressively, so the cache TTL is
 // 15 minutes and a manual refresh is limited to once every 2 minutes.
@@ -265,6 +272,149 @@ export function mergeActuals(events, fmpRows) {
   return matched
 }
 
+// ── MetaTrader 5 feed ────────────────────────────────────────────────────
+const MT5_CURRENCIES = new Set(['USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CAD', 'CHF', 'NZD', 'CNY'])
+const MT5_MULT = [1, 1e3, 1e6, 1e9, 1e12]                 // CALENDAR_MULTIPLIER_NONE … TRILLIONS
+const MT5_SUFFIX = ['', 'K', 'M', 'B', 'T']
+const MT5_IMPACT = ['low', 'low', 'medium', 'high']       // CALENDAR_IMPORTANCE_NONE, LOW, MODERATE, HIGH
+const FEED_MAX_AGE_MS = 5 * 60_000                        // feed counts as "live" for 5 min after its last post
+
+const numOrNull = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+
+// MT5 values arrive already expressed in the event's own multiplier ("8.28" + billions).
+export function fmtFeed(v, row) {
+  if (v == null) return null
+  const dig = Math.min(6, Math.max(0, row.dig | 0))
+  return `${v.toFixed(dig)}${MT5_SUFFIX[row.mult] || ''}${row.unit === 1 ? '%' : ''}`
+}
+
+export function normalizeFeed(body) {
+  const offset = Number(body?.serverOffsetSec)
+  if (!Number.isFinite(offset) || Math.abs(offset) > 14 * 3600) throw new Error('serverOffsetSec missing or out of range')
+  const rows = []
+  for (const r of Array.isArray(body?.events) ? body.events.slice(0, 3000) : []) {
+    if (!r || r.id == null || typeof r.name !== 'string') continue
+    const cur = String(r.cur || '').toUpperCase()
+    if (!MT5_CURRENCIES.has(cur) || !Number.isFinite(r.t)) continue
+    const time = (Number(r.t) - offset) * 1000                // server time → UTC ms
+    const mult = Math.min(4, Math.max(0, r.mult | 0))
+    const row = {
+      id: String(r.id), time, currency: cur, name: r.name.trim().slice(0, 200),
+      imp: Math.min(3, Math.max(0, r.imp | 0)), holiday: r.type === 2,
+      unit: r.unit | 0, mult, dig: r.dig | 0,
+      a: numOrNull(r.a), f: numOrNull(r.f), p: numOrNull(r.p), r: numOrNull(r.r),
+    }
+    row.tokens = titleTokens(row.name)
+    rows.push(row)
+  }
+  return rows
+}
+
+// Forecasts agree when they are equal after rounding to the precision Forex Factory printed.
+function forecastsAgree(ev, row) {
+  const p = parseNum(ev.forecast)
+  if (!p || row.f == null) return null                      // nothing to compare
+  const ffAbs = p.value
+  const feedAbs = row.f * MT5_MULT[row.mult]
+  const tol = 0.5 * Math.pow(10, -p.decimals) * (p.suffix ? SCALE[p.suffix] : 1)
+  return Math.abs(ffAbs - feedAbs) <= tol * 1.001 + 1e-9
+}
+
+function candidatePairs(events, rows) {
+  const pairs = []
+  for (const ev of events) {
+    if (ev.impact === 'holiday') continue
+    const evTokens = titleTokens(ev.title)
+    for (const r of rows) {
+      if (r.holiday || r.currency !== ev.currency || Math.abs(r.time - ev.time) > 2 * 60_000) continue
+      const agree = forecastsAgree(ev, r)
+      if (agree === false) continue
+      const sim = jaccard(evTokens, r.tokens)
+      if (sim < (agree === true ? 0.34 : 0.5)) continue     // without a forecast to confirm, demand a closer title
+      pairs.push({ ev, r, sim })
+    }
+  }
+  return pairs.sort((x, y) => y.sim - x.sim)
+}
+
+// A wrong server-offset would shift every row; catch it by comparing rows that obviously are
+// the same event (same title family AND matching forecast) but whose times differ by minutes/hours.
+export function feedClockSane(events, rows) {
+  const deltas = []
+  for (const ev of events) {
+    if (ev.impact === 'holiday') continue
+    const evTokens = titleTokens(ev.title)
+    for (const r of rows) {
+      if (r.holiday || r.currency !== ev.currency || Math.abs(r.time - ev.time) > 4 * HOUR) continue
+      if (forecastsAgree(ev, r) !== true || jaccard(evTokens, r.tokens) < 0.6) continue
+      deltas.push(r.time - ev.time)
+    }
+  }
+  if (deltas.length < 3) return { ok: true, verified: false, checked: deltas.length }
+  deltas.sort((a, b) => a - b)
+  const median = deltas[Math.floor(deltas.length / 2)]
+  const ok = Math.abs(median) <= 2 * 60_000
+  return { ok, verified: ok, checked: deltas.length, medianMs: median }
+}
+
+export function buildOverlay(events, rows, now = Date.now(), { allowExtras = true } = {}) {
+  const overlay = new Map()
+  const used = new Set()
+  for (const { ev, r } of candidatePairs(events, rows)) {
+    if (overlay.has(ev.id) || used.has(r.id)) continue
+    used.add(r.id)
+    const fix = { source: 'MetaQuotes' }
+    const a = fmtFeed(r.a, r); if (a != null) fix.actual = a
+    const f = fmtFeed(r.f, r); if (f != null) fix.forecast = f
+    const prev = r.r != null ? r.r : r.p
+    const p = fmtFeed(prev, r); if (p != null) { fix.previous = p; if (r.r != null) fix.previousRevised = true }
+    overlay.set(ev.id, fix)
+  }
+  const extras = !allowExtras ? [] : rows
+    .filter(r => !used.has(r.id) && !(r.imp === 0 && !r.holiday) && Math.abs(r.time - now) < 4 * 24 * HOUR)
+    .map(r => ({
+      id: `mt5-${r.id}`, time: r.time, currency: r.currency, title: r.name,
+      impact: r.holiday ? 'holiday' : MT5_IMPACT[r.imp],
+      forecast: fmtFeed(r.f, r), previous: fmtFeed(r.r != null ? r.r : r.p, r), actual: fmtFeed(r.a, r),
+      previousRevised: r.r != null, category: classify(r.name), measure: measureOf(r.name), summary: describe(r.name), source: 'MetaQuotes',
+    }))
+  return { overlay, extras, matched: overlay.size }
+}
+
+function recomputeFeed() {
+  const rows = [...state.feed.rows.values()]
+  if (!rows.length) { state.overlay = new Map(); state.extras = []; return }
+  const sane = feedClockSane(state.events, rows)
+  if (!sane.ok) {
+    state.feed.error = `Clock mismatch (feed is ${Math.round(sane.medianMs / 60000)} min off) — ignored`
+    state.overlay = new Map(); state.extras = []
+    return
+  }
+  state.feed.error = null
+  // Extra (MT5-only) events carry no second opinion on their release time, so they are shown only
+  // once the feed's clock has been proven right: ≥3 forecast-confirmed events line up to the minute,
+  // or such a check passed in the last 24h with the same server offset.
+  if (sane.verified) { state.feed.verifiedAt = Date.now(); state.feed.verifiedOffset = state.feed.offsetSec }
+  const trusted = sane.verified || (state.feed.verifiedOffset === state.feed.offsetSec && Date.now() - (state.feed.verifiedAt || 0) < 24 * HOUR)
+  const { overlay, extras, matched } = buildOverlay(state.events, rows, Date.now(), { allowExtras: trusted })
+  state.overlay = overlay; state.extras = extras
+  state.feed.matched = matched; state.feed.added = extras.length
+}
+
+// Called by POST /api/calendar/feed. `full: true` replaces everything, otherwise rows are upserted by id.
+export function ingestFeed(body) {
+  const rows = normalizeFeed(body)
+  if (body?.full === true) state.feed.rows = new Map()
+  state.feed.offsetSec = Number(body.serverOffsetSec)
+  for (const r of rows) state.feed.rows.set(r.id, r)
+  const cutoff = Date.now() - 4 * 24 * HOUR
+  for (const [k, r] of state.feed.rows) if (r.time < cutoff) state.feed.rows.delete(k)
+  state.feed.receivedAt = Date.now()
+  state.feed.count = state.feed.rows.size
+  recomputeFeed()
+  return { accepted: rows.length, total: state.feed.count, matched: state.feed.matched, added: state.feed.added, error: state.feed.error }
+}
+
 // ── Cache + orchestration ────────────────────────────────────────────────
 const state = {
   events: [],
@@ -276,6 +426,9 @@ const state = {
   weeks: { this: 0, next: 0 },
   actuals: { provider: process.env.FMP_API_KEY ? 'Financial Modeling Prep' : null, enabled: !!process.env.FMP_API_KEY, lastFetch: 0, lastError: null, matched: 0 },
   actualByKey: new Map(),  // id → actual, so a value survives a schedule refresh
+  feed: { configured: !!process.env.CALENDAR_FEED_SECRET, rows: new Map(), receivedAt: 0, error: null, matched: 0, added: 0, count: 0 },
+  overlay: new Map(),      // FF event id → values supplied by the MT5 feed
+  extras: [],              // MT5 events Forex Factory does not list
 }
 
 const ymd = (ms) => new Date(ms).toISOString().slice(0, 10)
@@ -329,6 +482,7 @@ async function refresh() {
     state.events = events
     state.updatedAt = Date.now()
     state.lastError = null
+    recomputeFeed()
   } catch (err) {
     state.lastError = err.status ? `Forex Factory HTTP ${err.status}` : err.message
     console.error('[calendar] schedule:', state.lastError)
@@ -359,19 +513,27 @@ export async function getCalendar({ force = false } = {}) {
 }
 
 export function snapshot() {
-  const stale = Date.now() - state.updatedAt > TTL_MS * 3
+  const now = Date.now()
+  const stale = now - state.updatedAt > TTL_MS * 3
+  const feedLive = state.feed.configured && now - state.feed.receivedAt < FEED_MAX_AGE_MS
+  const merged = state.events.map(e => (state.overlay.has(e.id) ? { ...e, ...state.overlay.get(e.id) } : e))
+  const events = state.extras.length ? [...merged, ...state.extras].sort((a, b) => a.time - b.time || a.title.localeCompare(b.title)) : merged
   return {
-    events: state.events,
-    serverTime: Date.now(),                 // lets the browser correct a wrong device clock
+    events,
+    serverTime: now,                        // lets the browser correct a wrong device clock
     meta: {
       updatedAt: state.updatedAt,
       stale,
       error: state.lastError,
       source: 'Forex Factory economic calendar',
       weeks: state.weeks,
-      actuals: { ...state.actuals },
+      actuals: { ...state.actuals, enabled: state.actuals.enabled || state.feed.configured },
+      feed: {
+        configured: state.feed.configured, live: feedLive, receivedAt: state.feed.receivedAt,
+        error: state.feed.error, matched: state.feed.matched, added: state.feed.added,
+      },
     },
   }
 }
 
-export const __test = { normalizeFF, classify, describe, measureOf, parseNum, formatLike, mergeActuals, titleTokens, agreeingScale }
+export const __test = { normalizeFeed, buildOverlay, feedClockSane, fmtFeed, ingestFeed, normalizeFF, classify, describe, measureOf, parseNum, formatLike, mergeActuals, titleTokens, agreeingScale }
