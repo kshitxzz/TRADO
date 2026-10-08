@@ -13,8 +13,10 @@
 //      an explicit UTC offset, so daylight-saving is already resolved upstream.
 //      https://nfs.faireconomy.media/ff_calendar_thisweek.json  (+ nextweek)
 //      This feed does NOT publish actual values.
-//   2. OPTIONAL — Financial Modeling Prep (FMP_API_KEY, free key) fills in
-//      "actual" after a release. It is merged ONLY when the match is
+//   2. OPTIONAL — Financial Modeling Prep (FMP_API_KEY) fills in "actual" after
+//      a release. NOTE: FMP's free Basic plan is an end-of-day test plan, so
+//      real-time actuals need a paid plan, and showing FMP data to your own
+//      users needs FMP's data display licence. It is merged ONLY when the match is
 //      unambiguous (same currency, same release time, same title family AND
 //      matching forecast/previous numbers). Anything doubtful is left blank.
 //
@@ -35,7 +37,7 @@ const FF_BACKOFF_MS    = 10 * 60_000
 const FMP_MIN_GAP_MS   = 20 * 60_000   // catch-up polling for older releases
 // Around a release the actual is what traders are waiting for, so poll much faster —
 // but only for High/Medium events and only for 8 minutes after the release time.
-// Default 30s keeps a typical day inside FMP's free 250 calls/day; raise the speed on a paid plan.
+// Default 30s is conservative on quota; raise the speed on a paid plan.
 const HOT_GAP_MS       = Math.max(5, parseInt(process.env.ACTUALS_HOT_SECONDS, 10) || 30) * 1000
 const HOT_WINDOW_MS    = 8 * 60_000
 const HOUR = 3600_000

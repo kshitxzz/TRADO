@@ -300,6 +300,7 @@ export default function EconomicCalendar() {
             <span className={`ec-live ${delayed ? 'delayed' : ''}`}><i />{delayed ? 'DELAYED' : 'LIVE'}</span>
             {updated && <span className="ec-upd">Updated {updated}</span>}
             {meta && !actualsOn && <span className="ec-upd" title="Actual values need an actuals provider. The Forex Factory feed publishes schedule, forecast and previous only.">· Actuals not connected</span>}
+            {meta && actualsOn && meta.actuals.lastError && <span className="ec-upd ec-warn" title="The actuals provider rejected or failed the last request, so Actual values cannot be filled in right now.">· Actuals unavailable ({meta.actuals.lastError})</span>}
           </div>
         </div>
         <div className="ec-rule" />
@@ -413,7 +414,7 @@ html.light .ec {
 .ec-live { display: inline-flex; align-items: center; gap: 6px; font-weight: 700; font-size: 11.5px; color: #22c55e; letter-spacing: 0.02em; }
 .ec-live i { width: 7px; height: 7px; border-radius: 50%; background: #22c55e; animation: ecPulse 1.8s ease-out infinite; }
 .ec-live.delayed { color: #f59e0b; } .ec-live.delayed i { background: #f59e0b; animation: none; }
-.ec-upd { color: var(--ec-dim); }
+.ec-upd { color: var(--ec-dim); } .ec-warn { color: #f59e0b; }
 @keyframes ecPulse { 0% { box-shadow: 0 0 0 0 rgba(34,197,94,0.55); } 70% { box-shadow: 0 0 0 7px rgba(34,197,94,0); } 100% { box-shadow: 0 0 0 0 rgba(34,197,94,0); } }
 .ec-rule { height: 1px; background: var(--ec-border); margin: 0 0 18px; }
 
