@@ -31,6 +31,7 @@
 import crypto from 'node:crypto'
 import { parseNum, formatLike, near } from './calendarNumbers.js'
 import { officialEnabled, officialStatus, fetchOfficialActuals, specFor } from './officialActuals.js'
+import { fedStatus, fetchFedActuals, fedKindOf } from './fedActuals.js'
 
 export { parseNum, formatLike }
 
@@ -55,6 +56,11 @@ const OFF_HOT_GAP_MS     = Math.max(5, parseInt(process.env.OFFICIAL_ACTUALS_HOT
 const OFF_HOT_WINDOW_MS  = 10 * 60_000
 const OFF_CATCHUP_GAP_MS = 30 * 60_000   // releases that are still blank (e.g. after a deploy or restart)
 const OFF_BACKFILL_MS    = 8 * 24 * HOUR // how far back to look: the whole Forex Factory week
+// Federal Reserve feeds (FOMC statement / minutes / projections, rate decision, Board members' speeches):
+// speeches are sometimes posted a little after the scheduled start, so watch for an hour.
+const FED_HOT_GAP_MS     = 30_000
+const FED_HOT_WINDOW_MS  = 60 * 60_000
+const FED_CATCHUP_GAP_MS = 10 * 60_000
 
 // ── Fetch helper ─────────────────────────────────────────────────────────
 async function fetchJson(url, timeoutMs = 10_000) {
@@ -178,6 +184,8 @@ export function normalizeFF(raw) {
       previous: clean(r.previous),
       actual: null,
       actualSource: null,
+      actualUrl: null,     // link to the source page (Federal Reserve items)
+      actualNote: null,    // e.g. the speech title
       category: classify(title),
       measure: measureOf(title),
       summary: describe(title),
@@ -275,7 +283,8 @@ const state = {
   weeks: { this: 0, next: 0 },
   actuals: { provider: null, enabled: false, lastFetch: 0, lastError: null, matched: 0 },   // FMP (optional)
   official: { lastFetch: 0, matched: 0 },
-  actualByKey: new Map(),  // id → { actual, source }, so a value survives a schedule refresh
+  fed: { lastFetch: 0, matched: 0 },
+  actualByKey: new Map(),  // id → { actual, source, url, note }, so a value survives a schedule refresh
 }
 
 const ymd = (ms) => new Date(ms).toISOString().slice(0, 10)
@@ -350,21 +359,39 @@ async function pullOfficial(events) {
   }
 }
 
-const actualsEnabled = () => officialEnabled() || !!process.env.FMP_API_KEY
+// Federal Reserve items need no key, so the actuals machinery is always on.
+async function pullFed(events) {
+  const now = Date.now()
+  const open = events.filter(e => e.actual == null && e.time <= now + 15_000 && e.time >= now - OFF_BACKFILL_MS && fedKindOf(e))
+  if (!open.length) return
+  const hot = open.some(e => now - e.time <= FED_HOT_WINDOW_MS)
+  if (now - state.fed.lastFetch < (hot ? FED_HOT_GAP_MS : FED_CATCHUP_GAP_MS)) return
+  state.fed.lastFetch = now
+  try {
+    const { updates } = await fetchFedActuals(open, now)
+    for (const u of updates) { u.ev.actual = u.text; u.ev.actualSource = u.source; u.ev.actualUrl = u.url || null; u.ev.actualNote = u.note || null }
+    state.fed.matched += updates.length
+  } catch (err) {
+    console.error('[calendar] fed actuals:', err.message)
+  }
+}
+
+const actualsEnabled = () => true
 
 async function pullActuals(events) {
   await pullOfficial(events)
+  await pullFed(events)
   await pullFmp(events)
 }
 
-const remember = () => { for (const e of state.events) if (e.actual != null) state.actualByKey.set(e.id, { actual: e.actual, source: e.actualSource }) }
+const remember = () => { for (const e of state.events) if (e.actual != null) state.actualByKey.set(e.id, { actual: e.actual, source: e.actualSource, url: e.actualUrl, note: e.actualNote }) }
 
 async function refresh() {
   state.attemptAt = Date.now()
   try {
     const events = await pullSchedule()
     // Carry over actuals we already know so a schedule refresh never blanks them.
-    for (const e of events) if (state.actualByKey.has(e.id)) { const k = state.actualByKey.get(e.id); e.actual = k.actual; e.actualSource = k.source }
+    for (const e of events) if (state.actualByKey.has(e.id)) { const k = state.actualByKey.get(e.id); e.actual = k.actual; e.actualSource = k.source; e.actualUrl = k.url || null; e.actualNote = k.note || null }
     state.events = events
     state.updatedAt = Date.now()
     state.lastError = null
@@ -398,13 +425,15 @@ export async function getCalendar({ force = false } = {}) {
 function actualsMeta() {
   const off = officialStatus()
   const fmpOn = !!process.env.FMP_API_KEY
-  const names = [off.enabled && 'U.S. official sources (BLS · FRED · EIA)', fmpOn && 'Financial Modeling Prep'].filter(Boolean)
+  const fed = fedStatus()
+  const names = [off.enabled && 'U.S. official sources (BLS · FRED · EIA)', 'Federal Reserve Board', fmpOn && 'Financial Modeling Prep'].filter(Boolean)
   return {
-    enabled: off.enabled || fmpOn,
-    provider: names.join(' + ') || null,
-    lastError: off.lastError || state.actuals.lastError,
-    matched: state.official.matched + state.actuals.matched,
+    enabled: true,
+    provider: names.join(' + '),
+    lastError: off.lastError || fed.lastError || state.actuals.lastError,
+    matched: state.official.matched + state.fed.matched + state.actuals.matched,
     official: { ...off, matched: state.official.matched },
+    fed: { ...fed, matched: state.fed.matched },
     fmp: { enabled: fmpOn, lastError: state.actuals.lastError, matched: state.actuals.matched },
   }
 }

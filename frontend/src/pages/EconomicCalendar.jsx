@@ -82,6 +82,11 @@ function CurrencyMenu({ value, onChange }) {
 // FF writes bond-auction figures as "yield|bid-to-cover" (e.g. 4.83|2.7).
 const fmtVal = (e, v) => (e.category === 'Bond Auction' && v.includes('|') ? `${v.split('|')[0]}% | ${v.split('|')[1]}` : v)
 
+// Federal Reserve items carry a link to the Fed's own page (speech text, statement, minutes …).
+const isFedLink = (u) => typeof u === 'string' && /^https:\/\/www\.federalreserve\.gov\//.test(u)
+const openLink = (ev, url) => { ev.stopPropagation(); ev.preventDefault(); window.open(url, '_blank', 'noopener,noreferrer') }
+const isFedEvent = (e) => /^(fomc |fed |federal funds rate)/i.test(e.title || '')
+
 const EventRow = memo(function EventRow({ e, now, tz, timeFormat, open, onToggle, isNext, actualsOn }) {
   const countdown = countdownText(e.time, now)
   const released = countdown === null
@@ -107,7 +112,12 @@ const EventRow = memo(function EventRow({ e, now, tz, timeFormat, open, onToggle
             {!released
               ? <strong className="ec-count">{countdown}</strong>
               : e.actual != null
-                ? <strong className="ec-actual">{e.actual}</strong>
+                ? (isFedLink(e.actualUrl)
+                  ? <span className="ec-actual ec-actual-link" role="link" tabIndex={0} title={e.actualNote || 'Open on federalreserve.gov'}
+                      onClick={(ev) => openLink(ev, e.actualUrl)} onKeyDown={(ev) => { if (ev.key === 'Enter') openLink(ev, e.actualUrl) }}>
+                      {e.actual}<ExternalLink size={11} />
+                    </span>
+                  : <strong className="ec-actual">{e.actual}</strong>)
                 : awaiting
                   ? <span className="ec-wait" title="Released — waiting for the actual value"><i /><i /><i /></span>
                   : <span className="ec-dash" title={actualsOn ? 'Not available from the data provider' : 'No actuals provider is connected (the Forex Factory feed has none)'}>-</span>}
@@ -242,7 +252,7 @@ export default function EconomicCalendar() {
     const t = Date.now() + clockOffset.current
     hotRef.current = {
       tick: events.some(e => e.time - t < 60_000 && t - e.time < 60_000),
-      poll: events.some(e => e.impact !== 'low' && e.impact !== 'holiday' && e.time - t < 30_000 && t - e.time < HOT_WINDOW_MS && (e.actual == null)),
+      poll: events.some(e => (e.impact !== 'low' || isFedEvent(e)) && e.impact !== 'holiday' && e.time - t < 30_000 && t - e.time < (isFedEvent(e) ? 45 * 60_000 : HOT_WINDOW_MS) && (e.actual == null)),
     }
   }, [events, tick])
   const filtered = useMemo(
@@ -499,6 +509,8 @@ html.light .ec {
 .ec-val, .ec-dash { font-size: 14.5px; font-weight: 500; color: var(--ec-muted); font-variant-numeric: tabular-nums; }
 .ec-dash { color: var(--ec-dim); }
 .ec-actual { font-size: 14.5px; font-weight: 700; color: var(--ec-text); font-variant-numeric: tabular-nums; }
+.ec-actual-link { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; color: var(--ec-blue); }
+.ec-actual-link:hover { text-decoration: underline; }
 .ec-wait { display: inline-flex; gap: 4px; height: 20px; align-items: center; }
 .ec-wait i { width: 5px; height: 5px; border-radius: 50%; background: var(--ec-blue); animation: ecDot 1s ease-in-out infinite; }
 .ec-wait i:nth-child(2) { animation-delay: 0.15s; } .ec-wait i:nth-child(3) { animation-delay: 0.3s; }
