@@ -113,7 +113,7 @@ const EventRow = memo(function EventRow({ e, now, tz, timeFormat, open, onToggle
                   : <span className="ec-dash" title={actualsOn ? 'Not available from the data provider' : 'No actuals provider is connected (the Forex Factory feed has none)'}>-</span>}
           </span>
           <span className="ec-stat"><label>FORECAST</label>{e.forecast != null ? <span className="ec-val">{fmtVal(e, e.forecast)}</span> : dash}</span>
-          <span className="ec-stat"><label>PREVIOUS</label>{e.previous != null ? <span className={`ec-val ${e.previousRevised ? 'ec-rev' : ''}`} title={e.previousRevised ? 'Revised value (the original figure was changed after publication)' : undefined}>{fmtVal(e, e.previous)}</span> : dash}</span>
+          <span className="ec-stat"><label>PREVIOUS</label>{e.previous != null ? <span className="ec-val">{fmtVal(e, e.previous)}</span> : dash}</span>
         </span>
         <ChevronDown size={15} className="ec-chev" />
         {isNext && <span className="ec-next">NEXT UP</span>}
@@ -133,12 +133,8 @@ const EventRow = memo(function EventRow({ e, now, tz, timeFormat, open, onToggle
               <label>EVENT SUMMARY</label>
               <p>
                 {e.summary} Scheduled for {full}{e.currency !== 'ALL' ? ` (${e.currency})` : ''}.
-                {e.id.startsWith('mt5-')
-                  ? ' Source: MetaQuotes economic calendar (via MetaTrader 5).'
-                  : e.source === 'MetaQuotes'
-                    ? ' Schedule and impact rating: Forex Factory. Actual, forecast and previous: MetaQuotes (MetaTrader 5).'
-                    : ' Impact rating, forecast and previous: Forex Factory.'}
-                {released && e.actual != null && !e.source && ' Actual: Financial Modeling Prep.'}
+                {' '}Impact rating, forecast and previous: Forex Factory.
+                {released && e.actual != null && ' Actual: Financial Modeling Prep.'}
               </p>
             </div>
           </div>
@@ -303,9 +299,7 @@ export default function EconomicCalendar() {
             <span>{zone.offset}</span>
             <span className={`ec-live ${delayed ? 'delayed' : ''}`}><i />{delayed ? 'DELAYED' : 'LIVE'}</span>
             {updated && <span className="ec-upd">Updated {updated}</span>}
-            {meta?.feed?.configured && meta.feed.live && !meta.feed.error && <span className="ec-upd ec-ok" title="Actual, forecast and previous values are streaming from the MetaTrader 5 (MetaQuotes) calendar.">· Actuals live</span>}
-            {meta?.feed?.configured && (!meta.feed.live || meta.feed.error) && <span className="ec-upd ec-warn" title={meta.feed.error || (meta.feed.receivedAt ? 'The MetaTrader 5 feed has not reported for over 5 minutes, so new actual values will not appear until it reconnects.' : 'The server is ready but has received nothing from MetaTrader 5 yet. Check that TradoCalendarFeed is attached to a chart, the backend URL is allowed under Tools > Options > Expert Advisors, and InpSecret matches CALENDAR_FEED_SECRET.')}>· Actuals feed offline</span>}
-            {meta && !meta.feed?.configured && !actualsOn && <span className="ec-upd" title="Actual values need an actuals provider. The Forex Factory feed publishes schedule, forecast and previous only.">· Actuals not connected</span>}
+            {meta && !actualsOn && <span className="ec-upd" title="Actual values need an actuals provider. The Forex Factory feed publishes schedule, forecast and previous only.">· Actuals not connected</span>}
             {meta && actualsOn && meta.actuals.lastError && <span className="ec-upd ec-warn" title="The actuals provider rejected or failed the last request, so Actual values cannot be filled in right now.">· Actuals unavailable ({meta.actuals.lastError})</span>}
           </div>
         </div>
@@ -420,7 +414,7 @@ html.light .ec {
 .ec-live { display: inline-flex; align-items: center; gap: 6px; font-weight: 700; font-size: 11.5px; color: #22c55e; letter-spacing: 0.02em; }
 .ec-live i { width: 7px; height: 7px; border-radius: 50%; background: #22c55e; animation: ecPulse 1.8s ease-out infinite; }
 .ec-live.delayed { color: #f59e0b; } .ec-live.delayed i { background: #f59e0b; animation: none; }
-.ec-upd { color: var(--ec-dim); } .ec-warn { color: #f59e0b; } .ec-ok { color: #22c55e; }
+.ec-upd { color: var(--ec-dim); } .ec-warn { color: #f59e0b; }
 @keyframes ecPulse { 0% { box-shadow: 0 0 0 0 rgba(34,197,94,0.55); } 70% { box-shadow: 0 0 0 7px rgba(34,197,94,0); } 100% { box-shadow: 0 0 0 0 rgba(34,197,94,0); } }
 .ec-rule { height: 1px; background: var(--ec-border); margin: 0 0 18px; }
 
@@ -504,7 +498,6 @@ html.light .ec {
 .ec-stat label { font-size: 9.5px; font-weight: 600; letter-spacing: 0.12em; color: var(--ec-label); cursor: inherit; }
 .ec-val, .ec-dash { font-size: 14.5px; font-weight: 500; color: var(--ec-muted); font-variant-numeric: tabular-nums; }
 .ec-dash { color: var(--ec-dim); }
-.ec-rev { color: #f59e0b; text-decoration: underline dotted; text-underline-offset: 4px; }
 .ec-actual { font-size: 14.5px; font-weight: 700; color: var(--ec-text); font-variant-numeric: tabular-nums; }
 .ec-wait { display: inline-flex; gap: 4px; height: 20px; align-items: center; }
 .ec-wait i { width: 5px; height: 5px; border-radius: 50%; background: var(--ec-blue); animation: ecDot 1s ease-in-out infinite; }
