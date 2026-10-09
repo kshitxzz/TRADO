@@ -134,7 +134,7 @@ const EventRow = memo(function EventRow({ e, now, tz, timeFormat, open, onToggle
               <p>
                 {e.summary} Scheduled for {full}{e.currency !== 'ALL' ? ` (${e.currency})` : ''}.
                 {' '}Impact rating, forecast and previous: Forex Factory.
-                {released && e.actual != null && ' Actual: Financial Modeling Prep.'}
+                {released && e.actual != null && ` Actual: ${e.actualSource || 'data provider'}.`}
               </p>
             </div>
           </div>

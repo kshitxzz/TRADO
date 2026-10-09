@@ -13,8 +13,12 @@
 //      an explicit UTC offset, so daylight-saving is already resolved upstream.
 //      https://nfs.faireconomy.media/ff_calendar_thisweek.json  (+ nextweek)
 //      This feed does NOT publish actual values.
-//   2. OPTIONAL — Financial Modeling Prep (FMP_API_KEY) fills in "actual" after
-//      a release. NOTE: FMP's free Basic plan is an end-of-day test plan, so
+//   2. FREE official sources fill in "actual" for US releases (services/officialActuals.js):
+//      BLS (jobs, CPI, PPI), FRED (claims, retail sales, trade, PCE, GDP) and EIA (oil / gas
+//      inventories). Each needs a free key (BLS_API_KEY, FRED_API_KEY, EIA_API_KEY). They run
+//      on the server, so they work whether or not anyone has an EA connected.
+//   3. OPTIONAL — Financial Modeling Prep (FMP_API_KEY) fills in "actual" after
+//      a release, only for events the official sources left blank. NOTE: FMP's free Basic plan is an end-of-day test plan, so
 //      real-time actuals need a paid plan, and showing FMP data to your own
 //      users needs FMP's data display licence. It is merged ONLY when the match is
 //      unambiguous (same currency, same release time, same title family AND
@@ -25,6 +29,10 @@
 // 15 minutes and a manual refresh is limited to once every 2 minutes.
 // ─────────────────────────────────────────────────────────────────────────
 import crypto from 'node:crypto'
+import { parseNum, formatLike, near } from './calendarNumbers.js'
+import { officialEnabled, officialStatus, fetchOfficialActuals, specFor } from './officialActuals.js'
+
+export { parseNum, formatLike }
 
 const FF_THIS = 'https://nfs.faireconomy.media/ff_calendar_thisweek.json'
 const FF_NEXT = 'https://nfs.faireconomy.media/ff_calendar_nextweek.json'
@@ -41,6 +49,11 @@ const FMP_MIN_GAP_MS   = 20 * 60_000   // catch-up polling for older releases
 const HOT_GAP_MS       = Math.max(5, parseInt(process.env.ACTUALS_HOT_SECONDS, 10) || 30) * 1000
 const HOT_WINDOW_MS    = 8 * 60_000
 const HOUR = 3600_000
+// Official sources are free and first-party, so they are polled faster and for every mapped
+// release (not only High/Medium) — but only for 10 minutes after the release time.
+const OFF_HOT_GAP_MS     = Math.max(5, parseInt(process.env.OFFICIAL_ACTUALS_HOT_SECONDS, 10) || 15) * 1000
+const OFF_HOT_WINDOW_MS  = 10 * 60_000
+const OFF_CATCHUP_GAP_MS = 30 * 60_000   // older releases that are still blank (e.g. after a server restart)
 
 // ── Fetch helper ─────────────────────────────────────────────────────────
 async function fetchJson(url, timeoutMs = 10_000) {
@@ -134,27 +147,7 @@ export function measureOf(title) {
   return null
 }
 
-// ── Number handling (used only to verify cross-provider matches) ─────────
-const SCALE = { K: 1e3, M: 1e6, B: 1e9, T: 1e12 }
-export function parseNum(s) {
-  if (s == null) return null
-  const str = String(s).trim()
-  if (!str || str.includes('|')) return null              // auction "yield|bid-to-cover" pairs
-  const m = str.match(/^(-?\d+(?:\.\d+)?)\s*([KMBT])?\s*(%)?$/i)
-  if (!m) return null
-  const scale = m[2] ? SCALE[m[2].toUpperCase()] : 1
-  return { value: parseFloat(m[1]) * scale, raw: parseFloat(m[1]), suffix: m[2] ? m[2].toUpperCase() : '', pct: !!m[3], decimals: (m[1].split('.')[1] || '').length }
-}
-
-// Render `num` in the same style as an existing sample string ("200K", "5.4%", "55.1").
-export function formatLike(sample, num) {
-  const p = parseNum(sample)
-  if (!p || !Number.isFinite(num)) return null
-  const v = p.suffix ? num / SCALE[p.suffix] : num
-  return `${v.toFixed(Math.min(2, p.decimals))}${p.suffix}${p.pct ? '%' : ''}`
-}
-
-const near = (a, b) => Math.abs(a - b) <= 1e-6 * Math.max(1, Math.abs(a), Math.abs(b))
+// Number helpers (parseNum, formatLike, near) live in calendarNumbers.js.
 
 // ── Forex Factory normalisation ──────────────────────────────────────────
 const IMPACTS = { high: 'high', medium: 'medium', low: 'low', holiday: 'holiday' }
@@ -183,6 +176,7 @@ export function normalizeFF(raw) {
       forecast: clean(r.forecast),
       previous: clean(r.previous),
       actual: null,
+      actualSource: null,
       category: classify(title),
       measure: measureOf(title),
       summary: describe(title),
@@ -262,6 +256,7 @@ export function mergeActuals(events, fmpRows) {
     const text = formatLike(sample, r.actual * scale)
     if (!text) continue
     ev.actual = text
+    ev.actualSource = 'Financial Modeling Prep'
     r.used = true
     matched++
   }
@@ -277,8 +272,9 @@ const state = {
   ffBackoffUntil: 0,
   lastError: null,
   weeks: { this: 0, next: 0 },
-  actuals: { provider: process.env.FMP_API_KEY ? 'Financial Modeling Prep' : null, enabled: !!process.env.FMP_API_KEY, lastFetch: 0, lastError: null, matched: 0 },
-  actualByKey: new Map(),  // id → actual, so a value survives a schedule refresh
+  actuals: { provider: null, enabled: false, lastFetch: 0, lastError: null, matched: 0 },   // FMP (optional)
+  official: { lastFetch: 0, matched: 0 },
+  actualByKey: new Map(),  // id → { actual, source }, so a value survives a schedule refresh
 }
 
 const ymd = (ms) => new Date(ms).toISOString().slice(0, 10)
@@ -297,8 +293,8 @@ async function pullSchedule() {
   return [...a, ...b].sort((x, y) => x.time - y.time || x.title.localeCompare(y.title))
 }
 
-async function pullActuals(events) {
-  if (!state.actuals.enabled) return
+async function pullFmp(events) {
+  if (!process.env.FMP_API_KEY) return
   const now = Date.now()
   if (now < (state.actuals.pausedUntil || 0)) return
   // Anything released (or releasing within 15s) that still has no actual.
@@ -323,12 +319,39 @@ async function pullActuals(events) {
   }
 }
 
+// Official US sources first (free, first-party); FMP only fills what is still blank.
+async function pullOfficial(events) {
+  if (!officialEnabled()) return
+  const now = Date.now()
+  const open = events.filter(e => e.actual == null && e.impact !== 'holiday' && e.time <= now + 15_000 && e.time >= now - 24 * HOUR && specFor(e))
+  if (!open.length) return
+  const hot = open.some(e => now - e.time <= OFF_HOT_WINDOW_MS)
+  if (now - state.official.lastFetch < (hot ? OFF_HOT_GAP_MS : OFF_CATCHUP_GAP_MS)) return
+  state.official.lastFetch = now
+  try {
+    const { updates } = await fetchOfficialActuals(open, now)
+    for (const u of updates) { u.ev.actual = u.text; u.ev.actualSource = u.source }
+    state.official.matched += updates.length
+  } catch (err) {
+    console.error('[calendar] official actuals:', err.message)        // never includes a key
+  }
+}
+
+const actualsEnabled = () => officialEnabled() || !!process.env.FMP_API_KEY
+
+async function pullActuals(events) {
+  await pullOfficial(events)
+  await pullFmp(events)
+}
+
+const remember = () => { for (const e of state.events) if (e.actual != null) state.actualByKey.set(e.id, { actual: e.actual, source: e.actualSource }) }
+
 async function refresh() {
   state.attemptAt = Date.now()
   try {
     const events = await pullSchedule()
     // Carry over actuals we already know so a schedule refresh never blanks them.
-    for (const e of events) if (state.actualByKey.has(e.id)) e.actual = state.actualByKey.get(e.id)
+    for (const e of events) if (state.actualByKey.has(e.id)) { const k = state.actualByKey.get(e.id); e.actual = k.actual; e.actualSource = k.source }
     state.events = events
     state.updatedAt = Date.now()
     state.lastError = null
@@ -338,7 +361,7 @@ async function refresh() {
     if (!state.events.length) throw err                  // nothing cached → caller reports failure
   }
   await pullActuals(state.events)
-  for (const e of state.events) if (e.actual != null) state.actualByKey.set(e.id, e.actual)
+  remember()
 }
 
 export async function getCalendar({ force = false } = {}) {
@@ -351,14 +374,26 @@ export async function getCalendar({ force = false } = {}) {
     if (!state.inflight) state.inflight = refresh().finally(() => { state.inflight = null })
     // First load must wait; later refreshes also wait briefly so the response is fresh.
     await state.inflight
-  } else if (state.actuals.enabled && !state.inflight) {
+  } else if (actualsEnabled() && !state.inflight) {
     // Schedule is fresh, but a release may have just landed — let the actuals path decide.
-    state.inflight = pullActuals(state.events).then(() => {
-      for (const e of state.events) if (e.actual != null) state.actualByKey.set(e.id, e.actual)
-    }).finally(() => { state.inflight = null })
+    state.inflight = pullActuals(state.events).then(remember).finally(() => { state.inflight = null })
     await state.inflight
   }
   return snapshot()
+}
+
+function actualsMeta() {
+  const off = officialStatus()
+  const fmpOn = !!process.env.FMP_API_KEY
+  const names = [off.enabled && 'U.S. official sources (BLS · FRED · EIA)', fmpOn && 'Financial Modeling Prep'].filter(Boolean)
+  return {
+    enabled: off.enabled || fmpOn,
+    provider: names.join(' + ') || null,
+    lastError: off.lastError || state.actuals.lastError,
+    matched: state.official.matched + state.actuals.matched,
+    official: { ...off, matched: state.official.matched },
+    fmp: { enabled: fmpOn, lastError: state.actuals.lastError, matched: state.actuals.matched },
+  }
 }
 
 export function snapshot() {
@@ -372,7 +407,7 @@ export function snapshot() {
       error: state.lastError,
       source: 'Forex Factory economic calendar',
       weeks: state.weeks,
-      actuals: { ...state.actuals },
+      actuals: actualsMeta(),
     },
   }
 }

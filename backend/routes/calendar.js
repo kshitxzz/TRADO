@@ -2,6 +2,7 @@ import { Router } from 'express'
 import rateLimit from 'express-rate-limit'
 import { requireAuth } from '../middleware/auth.js'
 import { getCalendar, snapshot } from '../services/calendar.js'
+import { probeOfficial } from '../services/officialActuals.js'
 
 export function createCalendarRouter({ auth = requireAuth } = {}) {
   const router = Router()
@@ -27,6 +28,26 @@ export function createCalendarRouter({ auth = requireAuth } = {}) {
     const { meta } = snapshot()
     res.set('Cache-Control', 'no-store')
     res.json({ ...meta, events: undefined })
+  })
+
+  // GET /api/calendar/actuals-check → dry run of the official actuals sources. Reads the latest
+  // observation of every mapped series (BLS / FRED / EIA) so you can confirm after deploying that the
+  // keys work and every series ID resolves, without waiting for a release. Result is cached for
+  // 10 minutes and shared, so it cannot be used to burn the free API quotas.
+  let probeCache = null
+  let probeInflight = null
+  router.get('/actuals-check', auth, LIMITER, async (_req, res) => {
+    try {
+      if (!probeCache || Date.now() - probeCache.at > 10 * 60_000) {
+        if (!probeInflight) probeInflight = probeOfficial().then(r => { probeCache = r }).finally(() => { probeInflight = null })
+        await probeInflight
+      }
+      res.set('Cache-Control', 'no-store')
+      res.json(probeCache)
+    } catch (err) {
+      console.error('[calendar] actuals-check:', err.message)
+      res.status(500).json({ error: 'Check failed' })
+    }
   })
 
   return router
