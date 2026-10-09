@@ -53,7 +53,8 @@ const HOUR = 3600_000
 // release (not only High/Medium) — but only for 10 minutes after the release time.
 const OFF_HOT_GAP_MS     = Math.max(5, parseInt(process.env.OFFICIAL_ACTUALS_HOT_SECONDS, 10) || 15) * 1000
 const OFF_HOT_WINDOW_MS  = 10 * 60_000
-const OFF_CATCHUP_GAP_MS = 30 * 60_000   // older releases that are still blank (e.g. after a server restart)
+const OFF_CATCHUP_GAP_MS = 30 * 60_000   // releases that are still blank (e.g. after a deploy or restart)
+const OFF_BACKFILL_MS    = 8 * 24 * HOUR // how far back to look: the whole Forex Factory week
 
 // ── Fetch helper ─────────────────────────────────────────────────────────
 async function fetchJson(url, timeoutMs = 10_000) {
@@ -323,7 +324,19 @@ async function pullFmp(events) {
 async function pullOfficial(events) {
   if (!officialEnabled()) return
   const now = Date.now()
-  const open = events.filter(e => e.actual == null && e.impact !== 'holiday' && e.time <= now + 15_000 && e.time >= now - 24 * HOUR && specFor(e))
+  // Anything released this week that is still blank. Releases older than 24h are only backfilled when
+  // they are the LATEST release of that indicator: once a newer one is out, the agency's series may
+  // have been revised and would no longer show the originally published number.
+  const latest = new Map()
+  for (const e of events) {
+    const sp = e.time <= now + 15_000 ? specFor(e) : null
+    if (sp && !(latest.get(sp.name) >= e.time)) latest.set(sp.name, e.time)
+  }
+  const open = events.filter(e => {
+    if (e.actual != null || e.impact === 'holiday' || e.time > now + 15_000 || e.time < now - OFF_BACKFILL_MS) return false
+    const sp = specFor(e)
+    return !!sp && (now - e.time <= 24 * HOUR || latest.get(sp.name) === e.time)
+  })
   if (!open.length) return
   const hot = open.some(e => now - e.time <= OFF_HOT_WINDOW_MS)
   if (now - state.official.lastFetch < (hot ? OFF_HOT_GAP_MS : OFF_CATCHUP_GAP_MS)) return
