@@ -29,10 +29,12 @@
 // 15 minutes and a manual refresh is limited to once every 2 minutes.
 // ─────────────────────────────────────────────────────────────────────────
 import crypto from 'node:crypto'
-import { parseNum, formatLike, near } from './calendarNumbers.js'
+import { parseNum, formatLike } from './calendarNumbers.js'
+import { titleTokens, jaccard, agreeingScale } from './calendarMatch.js'
 import { officialEnabled, officialStatus, fetchOfficialActuals, specFor } from './officialActuals.js'
 import { fedStatus, fetchFedActuals, fedKindOf } from './fedActuals.js'
 import { treasuryStatus, fetchAuctionActuals, auctionSpecFor } from './treasuryAuctions.js'
+import { mergeFeed, feedStatus } from './calendarFeed.js'
 
 export { parseNum, formatLike }
 
@@ -201,41 +203,7 @@ export function normalizeFF(raw) {
 }
 
 // ── Optional actuals (FMP) with strict matching ──────────────────────────
-const TOKEN_ALIASES = [
-  [/s\s*&\s*p global/g, ' '], [/non[- ]?manufacturing/g, 'services'],
-  [/non[- ]?farm payrolls?/g, 'nfp'], [/consumer price index/g, 'cpi'], [/inflation rate/g, 'cpi'],
-  [/producer price index/g, 'ppi'], [/\bmom\b|m\/m/g, 'mom'], [/\byoy\b|y\/y/g, 'yoy'], [/\bqoq\b|q\/q/g, 'qoq'],
-  [/initial jobless claims|unemployment claims/g, 'claims'], [/&/g, ' and '],
-]
-// Words that differ between providers without changing which release it is (periods, revision stage, publisher).
-const STOP = new Set(['the', 'of', 'and', 'rate', 'index', 'change', 'final', 'prelim', 'preliminary', 'flash', 'global',
-  'jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'sept', 'oct', 'nov', 'dec', 'q1', 'q2', 'q3', 'q4'])
-function titleTokens(t) {
-  let s = String(t || '').toLowerCase()
-  for (const [re, to] of TOKEN_ALIASES) s = s.replace(re, to)
-  return new Set(s.replace(/[^a-z0-9 ]+/g, ' ').split(/\s+/).filter(w => w && !STOP.has(w)))
-}
-function jaccard(a, b) {
-  if (!a.size || !b.size) return 0
-  let inter = 0
-  for (const x of a) if (b.has(x)) inter++
-  return inter / (a.size + b.size - inter)
-}
-
-// FMP scale is not guaranteed to equal FF's (142 vs 142K). Find the scale at
-// which FMP's own previous/estimate reproduce FF's forecast/previous exactly.
-const CANDIDATE_SCALES = [1, 1e3, 1e6, 1e9, 1e-3, 1e-6, 1e-9]
-function agreeingScale(ff, fmp) {
-  const pairs = [[parseNum(ff.previous), fmp.previous], [parseNum(ff.forecast), fmp.estimate]]
-    .filter(([p, v]) => p && typeof v === 'number' && Number.isFinite(v))
-  if (!pairs.length) return null
-  for (const s of CANDIDATE_SCALES) {
-    // Percent strings are plain numbers on both sides; K/M/B strings are expanded by parseNum.
-    const hits = pairs.filter(([p, v]) => near(p.pct ? p.raw : p.value, v * s)).length
-    if (hits === pairs.length) return s            // every available figure must agree
-  }
-  return null
-}
+// Title matching and scale detection live in calendarMatch.js (shared with the MT5 feed).
 
 export function mergeActuals(events, fmpRows) {
   let matched = 0
@@ -290,6 +258,7 @@ const state = {
   actuals: { provider: null, enabled: false, lastFetch: 0, lastError: null, matched: 0 },   // FMP (optional)
   official: { lastFetch: 0, matched: 0 },
   fed: { lastFetch: 0, matched: 0 },
+  feed: { matched: 0 },
   auctions: { lastFetch: 0, matched: 0 },
   nextWeek: { at: 0, events: [] },
   actualByKey: new Map(),  // id → { actual, source, url, note }, so a value survives a schedule refresh
@@ -403,12 +372,19 @@ async function pullAuctions(events) {
   }
 }
 
+// MT5 calendar values pushed by the feeder terminal (in memory — nothing to fetch). Fills only what the
+// sources above left blank.
+function pullFeed(events) {
+  try { state.feed.matched += mergeFeed(events, Date.now()) } catch (err) { console.error('[calendar] mt5 feed:', err.message) }
+}
+
 const actualsEnabled = () => true
 
 async function pullActuals(events) {
   await pullOfficial(events)
   await pullFed(events)
   await pullAuctions(events)
+  pullFeed(events)
   await pullFmp(events)
 }
 
@@ -463,15 +439,17 @@ function actualsMeta() {
   const fmpOn = !!process.env.FMP_API_KEY
   const fed = fedStatus()
   const tre = treasuryStatus()
-  const names = [off.enabled && 'U.S. official sources (BLS · FRED · EIA)', 'Federal Reserve Board', 'U.S. Treasury', fmpOn && 'Financial Modeling Prep'].filter(Boolean)
+  const feed = feedStatus()
+  const names = [off.enabled && 'U.S. official sources (BLS · FRED · EIA)', 'Federal Reserve Board', 'U.S. Treasury', feed.enabled && 'MetaTrader 5 calendar feed', fmpOn && 'Financial Modeling Prep'].filter(Boolean)
   return {
     enabled: true,
     provider: names.join(' + '),
     lastError: off.lastError || fed.lastError || tre.lastError || state.actuals.lastError,
-    matched: state.official.matched + state.fed.matched + state.auctions.matched + state.actuals.matched,
+    matched: state.official.matched + state.fed.matched + state.auctions.matched + state.feed.matched + state.actuals.matched,
     official: { ...off, matched: state.official.matched },
     fed: { ...fed, matched: state.fed.matched },
     auctions: { ...tre, matched: state.auctions.matched },
+    feed,
     fmp: { enabled: fmpOn, lastError: state.actuals.lastError, matched: state.actuals.matched },
   }
 }

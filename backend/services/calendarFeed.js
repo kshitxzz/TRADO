@@ -1,0 +1,186 @@
+// ─────────────────────────────────────────────────────────────────────────
+// MT5 economic-calendar feed (Phase 2).
+//
+// One designated terminal running TradoSync with InpPushCalendar = true pushes the actual values
+// of MetaQuotes' built-in MT5 calendar to POST /api/calendar/feed. This module stores them (in
+// memory — the EA re-sends the last 24 h every 20 min, so a restart heals itself) and fills
+// blank "actual" cells on the Forex Factory schedule. It is what covers the releases that have no
+// free public API: ISM / S&P Global PMIs, UoM sentiment, ADP, RCM/TIPP, non-USD data, and more.
+//
+// ACCURACY RULES (a blank beats a wrong number):
+//   • Only blank, already-released events are filled — official sources always win.
+//   • An MT5 value is matched to an FF event only when ALL of these hold:
+//       – same currency and release time within 2 minutes;
+//       – the MT5 "previous" (or revised previous) reproduces FF's "previous" at FF's own
+//         displayed precision — this also reveals the unit scale (142 vs 142K);
+//       – the titles look alike, OR (names differ — MetaQuotes words things differently) the
+//         numbers fit exactly one FF event at that time and no other.
+//     Ambiguous → blank.
+//   • The result is written in FF's own style ("151K", "0.3%") and must be a plausible size
+//     next to FF's forecast / previous.
+// ─────────────────────────────────────────────────────────────────────────
+import { SCALE, parseNum, formatLike, near, roundHalfAway } from './calendarNumbers.js'
+import { titleTokens, jaccard, CANDIDATE_SCALES } from './calendarMatch.js'
+
+export const SOURCE = 'MetaTrader 5 economic calendar (MetaQuotes)'
+const KEEP_MS = 72 * 3600_000
+const MAX_ROWS = 5000
+const MAX_PER_PUSH = 400
+const TIME_TOL_MS = 2 * 60_000
+const SUSPECT_TOL_MS = 3 * 3600_000
+
+const store = new Map()                  // key → row
+const stats = { lastPushAt: 0, pushes: 0, accepted: 0, rejected: 0, matched: 0, offsetHint: null, lastReject: null }
+
+// Users (Supabase user ids) whose TradoSync terminal may feed the calendar. Empty → feature off.
+export function feederIds() {
+  return new Set(String(process.env.CALENDAR_FEEDER_USER_IDS || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean))
+}
+
+export function resetFeed() {
+  store.clear()
+  Object.assign(stats, { lastPushAt: 0, pushes: 0, accepted: 0, rejected: 0, matched: 0, offsetHint: null, lastReject: null })
+}
+
+// ── Ingest ───────────────────────────────────────────────────────────────
+const fin = (x) => {
+  if (x == null || x === '' || typeof x === 'boolean') return null
+  const n = Number(x)
+  return Number.isFinite(n) && Math.abs(n) < 1e15 ? n : null
+}
+
+function sanitizeRow(v, now) {
+  if (!v || typeof v !== 'object') return null
+  const currency = String(v.cur || '').toUpperCase()
+  if (!/^[A-Z]{3}$/.test(currency)) return null
+  const t = fin(v.t)
+  if (t == null) return null
+  const time = Math.round(t) * 1000
+  if (time < now - KEEP_MS || time > now + 15 * 60_000) return null
+  const actual = fin(v.a)
+  if (actual == null) return null
+  const name = String(v.name || '').replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, 160)
+  if (!name) return null
+  const id = String(v.id ?? '').replace(/[^0-9a-zA-Z_-]/g, '').slice(0, 40)
+  return {
+    key: id ? `id:${id}` : `n:${currency}|${time}|${name}`,
+    time, currency, name, tokens: titleTokens(name),
+    actual, previous: fin(v.p), revised: fin(v.rp), forecast: fin(v.f),
+    used: false,
+  }
+}
+
+export function ingest(values, now = Date.now()) {
+  const list = Array.isArray(values) ? values.slice(0, MAX_PER_PUSH) : []
+  let accepted = 0, rejected = 0
+  for (const v of list) {
+    const row = sanitizeRow(v, now)
+    if (row) { store.set(row.key, row); accepted++ } else rejected++
+  }
+  for (const [k, r] of store) if (now - r.time > KEEP_MS) store.delete(k)
+  if (store.size > MAX_ROWS) {
+    const oldest = [...store.entries()].sort((a, b) => a[1].time - b[1].time).slice(0, store.size - MAX_ROWS)
+    for (const [k] of oldest) store.delete(k)
+  }
+  stats.lastPushAt = now; stats.pushes++; stats.accepted += accepted; stats.rejected += rejected
+  if (rejected) stats.lastReject = `${rejected} of ${list.length} values were rejected (bad format or time)`
+  return { accepted, rejected }
+}
+
+export function feedStatus() {
+  return { enabled: feederIds().size > 0, lastPushAt: stats.lastPushAt || null, pushes: stats.pushes, rows: store.size,
+           matched: stats.matched, offsetHint: stats.offsetHint, lastReject: stats.lastReject }
+}
+
+// ── Matching ─────────────────────────────────────────────────────────────
+const dom = (p) => (p.pct ? p.raw : p.value)
+const unitOf = (p) => (p.suffix ? SCALE[p.suffix] : 1)
+
+// Does v × s, shown at FF's precision, equal FF's figure p?
+function reproduces(p, v, s) {
+  if (v == null) return false
+  const dec = Math.min(2, p.decimals)
+  const shown = p.pct ? roundHalfAway(v * s, dec) : roundHalfAway((v * s) / unitOf(p), dec) * unitOf(p)
+  return near(shown, dom(p))
+}
+
+// The multiplier that turns MT5's number into FF's unit, or null. FF's "previous" must be reproduced
+// by MT5's previous (or revised previous). A previous of exactly 0 can't reveal the scale, so then
+// FF's forecast has to reproduce MT5's forecast instead.
+export function feedScale(ev, r) {
+  const prev = parseNum(ev.previous)
+  const fc = parseNum(ev.forecast)
+  const anchor = prev ? { p: prev, vals: [r.previous, r.revised] } : fc ? { p: fc, vals: [r.forecast] } : null
+  if (!anchor) return null
+  const ok = CANDIDATE_SCALES.filter(s => anchor.vals.some(v => reproduces(anchor.p, v, s)))
+  if (!ok.length) return null
+  if (dom(anchor.p) !== 0) return ok[0]
+  if (prev && fc && dom(fc) !== 0) {
+    const byForecast = CANDIDATE_SCALES.find(s => reproduces(fc, r.forecast, s))
+    if (byForecast != null) return byForecast
+  }
+  return null
+}
+
+function plausible(ev, text) {
+  const t = parseNum(text)
+  const anchors = [parseNum(ev.forecast), parseNum(ev.previous)].filter(Boolean)
+  if (!t || !anchors.length) return false
+  const floor = t.pct ? 1 : (t.suffix ? SCALE[t.suffix] : 1)
+  const bound = Math.max(10 * Math.max(...anchors.map(a => Math.abs(dom(a)))), floor)
+  return Math.abs(dom(t) - dom(anchors[0])) <= bound
+}
+
+const median = (a) => { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)] }
+
+export function mergeFeed(events, now = Date.now()) {
+  const rows = [...store.values()].filter(r => now - r.time <= KEEP_MS)
+  if (!rows.length) return 0
+  for (const r of rows) r.used = false
+  const open = events.filter(e => e.actual == null && e.impact !== 'holiday' && e.time <= now + 5 * 60_000 && (parseNum(e.previous) || parseNum(e.forecast)))
+  let matched = 0
+
+  for (const ev of open) {
+    const evTokens = titleTokens(ev.title)
+    const cands = []
+    for (const r of rows) {
+      if (r.used || r.currency !== ev.currency || Math.abs(r.time - ev.time) > TIME_TOL_MS) continue
+      const scale = feedScale(ev, r)
+      if (scale == null) continue
+      cands.push({ r, scale, sim: jaccard(evTokens, r.tokens) })
+    }
+    if (!cands.length) continue
+    cands.sort((a, b) => b.sim - a.sim)
+    const top = cands[0]
+    if (cands.length > 1 && (top.sim === cands[1].sim || top.sim < 0.34)) continue         // ambiguous → blank
+    if (cands.length === 1 && top.sim < 0.2) {
+      // Names look different. Accept only if this row's numbers fit no other FF event at that time.
+      const rivals = events.filter(o => o !== ev && o.currency === ev.currency && Math.abs(o.time - ev.time) <= TIME_TOL_MS && feedScale(o, top.r) != null)
+      if (rivals.length) continue
+    }
+    const sample = parseNum(ev.previous) ? ev.previous : ev.forecast
+    const text = formatLike(sample, top.r.actual * top.scale)
+    if (!text || !plausible(ev, text)) continue
+    ev.actual = text
+    ev.actualSource = SOURCE
+    top.r.used = true
+    matched++
+  }
+
+  // Diagnostics: rows that fit an FF event perfectly except for the clock → the EA's time offset is off.
+  const deltas = []
+  for (const r of rows) {
+    if (r.used) continue
+    for (const ev of open) {
+      if (ev.actual != null || ev.currency !== r.currency) continue
+      const dt = r.time - ev.time
+      if (Math.abs(dt) <= TIME_TOL_MS || Math.abs(dt) > SUSPECT_TOL_MS) continue
+      if (feedScale(ev, r) == null || jaccard(titleTokens(ev.title), r.tokens) < 0.34) continue
+      deltas.push(Math.round(dt / 60_000))
+      break
+    }
+  }
+  stats.offsetHint = deltas.length ? { count: deltas.length, minutes: median(deltas) } : null
+  stats.matched += matched
+  return matched
+}

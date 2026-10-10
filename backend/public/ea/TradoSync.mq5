@@ -19,9 +19,17 @@
 //| 3. Drag TradoSync onto any chart. In the Inputs tab, paste the      |
 //|    Sync Key and Server URL shown on the Accounts page.              |
 //| 4. Make sure "Allow Algo Trading" is enabled (top toolbar).         |
+//|                                                                    |
+//| CALENDAR FEEDER (optional, for ONE terminal only — normally yours) |
+//| Set InpPushCalendar = true and TradoSync also pushes the actual    |
+//| values of MT5's built-in economic calendar to Trado's shared       |
+//| calendar. Your Trado user ID must be listed in the server's        |
+//| CALENDAR_FEEDER_USER_IDS. Leave it false on every other terminal — |
+//| then none of the calendar code ever runs and trade sync is exactly |
+//| as before. The calendar push never runs inside the trade-sync path.|
 //+------------------------------------------------------------------+
 #property copyright "Trado"
-#property version   "1.10"
+#property version   "1.20"
 #property strict
 
 //──── Inputs ─────────────────────────────────────────────────────────
@@ -31,12 +39,25 @@ input int    InpMinTickSyncMs       = 1000;                                    /
 input int    InpSyncIntervalSeconds = 5;                                       // Fallback timer — catches symbols/quiet periods with no ticks
 input int    InpHistoryLookbackDays = 7;                                      // Rolling window after the first full sync
 input bool   InpSendCandles         = true;                                   // Upload this broker's own candles around each closed trade (Trade Replay)
+input bool   InpPushCalendar        = false;                                  // FEEDER ONLY: push MT5 economic-calendar actuals to Trado. Leave OFF on normal terminals.
+input int    InpCalendarPollSeconds = 10;                                     // Feeder: how often to look for new calendar values (min 5)
 
 //──── State ──────────────────────────────────────────────────────────
 int      g_offsetSeconds = 0;     // broker-server-time -> UTC offset, auto-detected
 datetime g_lastSyncAt     = 0;
 ulong    g_lastSyncMs     = 0;    // ms clock — throttle floor for tick-driven syncs
 string   g_gvFirstRun;            // GlobalVariable name — persists across terminal restarts
+
+// Calendar feeder state (only touched when InpPushCalendar = true)
+ulong    g_calChangeId      = 0;  // MT5 calendar change cursor
+ulong    g_calLastPollMs    = 0;
+ulong    g_calLastHistMs    = 0;  // last full 24 h re-send
+ulong    g_calBackoffUntil  = 0;
+int      g_calFails         = 0;
+bool     g_calRefusedLogged = false;
+ulong    g_ceId[];                // event info cache: name + currency never change
+string   g_ceName[];
+string   g_ceCur[];
 
 struct PositionAgg
 {
@@ -77,6 +98,9 @@ int OnInit()
    // the real "live" feel comes from OnTick below, which fires exactly
    // when MT5's own Profit column updates.
    EventSetTimer(MathMax(InpSyncIntervalSeconds, 1));
+   if(InpPushCalendar)
+      Print("TradoSync: calendar feeder is ON — new MT5 economic-calendar actuals are pushed to Trado (checked every ",
+            MathMax(InpCalendarPollSeconds, 5), " s). Use an English-language terminal for the clearest names.");
    Comment("Trado Sync: starting…");
    DoSync(); // initial push on attach
    return INIT_SUCCEEDED;
@@ -100,7 +124,7 @@ void SyncIfDue()
    DoSync();
 }
 
-void OnTimer() { SyncIfDue(); }
+void OnTimer() { SyncIfDue(); CalendarTick(); }
 
 // Fires on every real price tick for this chart's symbol — the same event
 // MT5's own Trade tab uses to update its Profit column live. This is what
@@ -308,7 +332,7 @@ int NextAttempt(const long posId)
 }
 
 // POST a JSON body, return the HTTP status (or -1) and the response text.
-int PostJson(const string url, const string body, string &response)
+int PostJson(const string url, const string body, string &response, const int timeoutMs = 15000)
 {
    char post[];
    int len = StringToCharArray(body, post, 0, -1, CP_UTF8);
@@ -320,10 +344,10 @@ int PostJson(const string url, const string body, string &response)
    string headers = "Content-Type: application/json\r\n";
 
    ResetLastError();
-   int status = WebRequest("POST", url, headers, 15000, post, result, resultHeaders);
+   int status = WebRequest("POST", url, headers, timeoutMs, post, result, resultHeaders);
    if(status == -1)
    {
-      Print("TradoSync: candle upload failed, WebRequest error ", GetLastError());
+      Print("TradoSync: request failed, WebRequest error ", GetLastError());
       response = "";
       return -1;
    }
@@ -481,6 +505,179 @@ void SyncCandles()
       if(CaptureAndSendCandles(baseUrl, posId, parts[1], openUtc, closeUtc, lastChance))
          Print("TradoSync: broker candles stored for position ", posId);
    }
+}
+
+
+//+------------------------------------------------------------------+
+//| CALENDAR FEEDER (InpPushCalendar = true only)                      |
+//| Reads actual values from MT5's built-in economic calendar and       |
+//| pushes them to Trado. Local lookups first; the network is touched   |
+//| only when there is something new, with a short timeout and an       |
+//| exponential back-off, and never from inside DoSync().               |
+//+------------------------------------------------------------------+
+
+// Event name + currency, cached (they never change for an event id).
+bool CalEventInfo(const ulong eventId, string &name, string &cur)
+{
+   int n = ArraySize(g_ceId);
+   for(int i = 0; i < n; i++)
+   {
+      if(g_ceId[i] == eventId)
+      {
+         name = g_ceName[i];
+         cur  = g_ceCur[i];
+         return true;
+      }
+   }
+
+   MqlCalendarEvent calEvent;
+   if(!CalendarEventById(eventId, calEvent)) return false;
+   MqlCalendarCountry country;
+   if(!CalendarCountryById((long)calEvent.country_id, country)) return false;
+   if(StringLen(country.currency) != 3) return false;      // pseudo-countries without a real currency
+
+   if(n >= 800)                                            // keep the cache bounded
+   {
+      ArrayResize(g_ceId, 0);
+      ArrayResize(g_ceName, 0);
+      ArrayResize(g_ceCur, 0);
+      n = 0;
+   }
+   ArrayResize(g_ceId,   n + 1);
+   ArrayResize(g_ceName, n + 1);
+   ArrayResize(g_ceCur,  n + 1);
+   g_ceId[n]   = eventId;
+   g_ceName[n] = calEvent.name;
+   g_ceCur[n]  = country.currency;
+   name = calEvent.name;
+   cur  = country.currency;
+   return true;
+}
+
+string CalNum(const double v)
+{
+   if(!MathIsValidNumber(v)) return "null";
+   return DoubleToString(v, 6);
+}
+
+// One calendar value as a JSON object, or "" when it has no actual yet / no usable event info.
+string CalValueJson(MqlCalendarValue &v, const int offsetSeconds)
+{
+   if(!v.HasActualValue()) return "";
+
+   string name = "", cur = "";
+   if(!CalEventInfo(v.event_id, name, cur)) return "";
+
+   string prev = "null", revised = "null", fcst = "null";
+   if(v.HasPreviousValue()) prev    = CalNum(v.GetPreviousValue());
+   if(v.HasRevisedValue())  revised = CalNum(v.GetRevisedValue());
+   if(v.HasForecastValue()) fcst    = CalNum(v.GetForecastValue());
+
+   long utc = (long)v.time - (long)offsetSeconds;           // calendar times are trade-server time
+   return "{\"id\":" + IntegerToString((long)v.id) +
+          ",\"cur\":\"" + JsonEscape(cur) + "\"" +
+          ",\"name\":\"" + JsonEscape(name) + "\"" +
+          ",\"t\":" + IntegerToString(utc) +
+          ",\"a\":" + CalNum(v.GetActualValue()) +
+          ",\"p\":" + prev +
+          ",\"rp\":" + revised +
+          ",\"f\":" + fcst + "}";
+}
+
+// Append released values that have an actual to `items`, newest first, at most 200 per push.
+void CalCollect(MqlCalendarValue &vals[], const int n, const int offsetSeconds, string &items, int &count)
+{
+   datetime nowServer = TimeTradeServer();
+   for(int i = n - 1; i >= 0 && count < 200; i--)
+   {
+      if(vals[i].time > nowServer + 600) continue;          // not released yet
+      string one = CalValueJson(vals[i], offsetSeconds);
+      if(one == "") continue;
+      if(count > 0) items += ",";
+      items += one;
+      count++;
+   }
+}
+
+void CalendarTick()
+{
+   if(!InpPushCalendar) return;
+
+   ulong now = GetTickCount64();
+   if(now < g_calBackoffUntil) return;
+   if(g_calLastPollMs != 0 && (now - g_calLastPollMs) < (ulong)MathMax(InpCalendarPollSeconds, 5) * 1000) return;
+   g_calLastPollMs = now;
+
+   int    offsetSeconds = (int)(TimeTradeServer() - TimeGMT());
+   string items = "";
+   int    count = 0;
+
+   // 1) What changed since the last poll (new actuals, revisions) — local lookup, no network.
+   if(g_calChangeId == 0)
+   {
+      MqlCalendarValue none[];
+      ulong cid = 0;
+      CalendarValueLast(cid, none);       // the first call only returns the current change id
+      g_calChangeId   = cid;
+      g_calLastHistMs = 0;                // so the history catch-up below runs right away
+   }
+   else
+   {
+      MqlCalendarValue changes[];
+      int nChanges = CalendarValueLast(g_calChangeId, changes);
+      if(nChanges > 0) CalCollect(changes, nChanges, offsetSeconds, items, count);
+   }
+
+   // 2) At start and every 20 minutes: re-send the last 24 h, so a restarted server or a failed push heals itself.
+   if(g_calLastHistMs == 0 || (now - g_calLastHistMs) >= 20 * 60 * 1000)
+   {
+      MqlCalendarValue hist[];
+      datetime to   = TimeTradeServer() + 300;
+      datetime from = to - 24 * 3600;
+      int nHist = CalendarValueHistory(hist, from, to);
+      if(nHist > 0) CalCollect(hist, nHist, offsetSeconds, items, count);
+      g_calLastHistMs = now;
+   }
+
+   if(count == 0) return;
+
+   string url = InpServerUrl;
+   if(StringReplace(url, "/broker/ea/sync", "/calendar/feed") <= 0)
+   {
+      Print("TradoSync: calendar feed switched off — cannot derive its URL from the Server URL input.");
+      g_calBackoffUntil = now + 3600 * 1000;
+      return;
+   }
+
+   string body = "{\"token\":\"" + JsonEscape(InpApiKey) + "\"" +
+                 ",\"login\":" + IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN)) +
+                 ",\"values\":[" + items + "]}";
+   string response = "";
+   int status = PostJson(url, body, response, 4000);
+
+   if(status == 200)
+   {
+      g_calFails = 0;
+      g_calRefusedLogged = false;
+      Print("TradoSync: calendar feed sent ", count, " value(s)");
+      return;
+   }
+
+   if(status == 401 || status == 403 || status == 503)
+   {
+      if(!g_calRefusedLogged)
+         Print("TradoSync: calendar feed refused (HTTP ", status, ") — this Trado user is not an allowed feeder, or the feed is off on the server (CALENDAR_FEEDER_USER_IDS).");
+      g_calRefusedLogged = true;
+      g_calBackoffUntil  = now + 10 * 60 * 1000;
+      return;
+   }
+
+   // Network / server trouble: resend the whole 24 h soon, and wait longer after every failure (30 s … 5 min).
+   g_calFails++;
+   g_calLastHistMs = 0;
+   int waitSec = MathMin(300, 15 * (1 << MathMin(g_calFails, 5)));
+   g_calBackoffUntil = now + (ulong)waitSec * 1000;
+   Print("TradoSync: calendar feed push failed (HTTP ", status, ") — retrying in ", waitSec, " s");
 }
 
 //+------------------------------------------------------------------+

@@ -25,6 +25,7 @@ import notificationsRoutes from './routes/notifications.js'
 import candlesRoutes from './routes/candles.js'
 import newsRoutes from './routes/news.js'
 import calendarRoutes from './routes/calendar.js'
+import calendarFeedRoutes from './routes/calendarFeed.js'
 import eaCandlesRoutes from './routes/eaCandles.js'
 
 const app  = express()
@@ -47,7 +48,7 @@ app.use(express.json({
 // app usage (dashboard loads, AI calls, etc.) from the same machine.
 app.use(rateLimit({
   windowMs: 60_000, max: 120, message: { error: 'Too many requests' },
-  skip: (req) => req.path === '/api/broker/ea/sync' || req.path.startsWith('/api/broker/ea/candles'),
+  skip: (req) => req.path === '/api/broker/ea/sync' || req.path.startsWith('/api/broker/ea/candles') || req.path.startsWith('/api/calendar/feed'),
 }))
 
 // EA sync gets its own generous budget: tick-driven, throttled to ~1/sec
@@ -59,6 +60,11 @@ app.use('/api/broker/ea/sync', rateLimit({
 
 // EA candle capture: ≤ 1 poll / 15s from the EA plus one upload per trade.
 app.use('/api/broker/ea/candles', rateLimit({
+  windowMs: 60_000, max: 60, message: { error: 'Too many requests' },
+}))
+
+// MT5 economic-calendar feed (one designated terminal): changes only, polled every ~10 s at most.
+app.use('/api/calendar/feed', rateLimit({
   windowMs: 60_000, max: 60, message: { error: 'Too many requests' },
 }))
 
@@ -75,6 +81,7 @@ app.use('/api/stats',    statsRoutes)
 app.use('/api/notifications', notificationsRoutes)
 app.use('/api/candles', candlesRoutes)
 app.use('/api/news', newsRoutes)
+app.use('/api/calendar/feed', calendarFeedRoutes)   // before /api/calendar: token auth, not a browser session
 app.use('/api/calendar', calendarRoutes)
 
 // ── Health ──
