@@ -29,7 +29,7 @@
 //| as before. The calendar push never runs inside the trade-sync path.|
 //+------------------------------------------------------------------+
 #property copyright "Trado"
-#property version   "1.20"
+#property version   "1.21"
 #property strict
 
 //──── Inputs ─────────────────────────────────────────────────────────
@@ -51,7 +51,10 @@ string   g_gvFirstRun;            // GlobalVariable name — persists across ter
 // Calendar feeder state (only touched when InpPushCalendar = true)
 ulong    g_calChangeId      = 0;  // MT5 calendar change cursor
 ulong    g_calLastPollMs    = 0;
-ulong    g_calLastHistMs    = 0;  // last full 24 h re-send
+ulong    g_calLastHistMs    = 0;  // last 24 h refresh
+int      g_calBackfillDay   = 0;  // 0..7 = back-filling that many days ago; 8 = done
+ulong    g_calLastFullMs    = 0;  // when the last full 8-day back-fill started
+string   g_calBoot          = ""; // Trado server restart id from the last reply
 ulong    g_calBackoffUntil  = 0;
 int      g_calFails         = 0;
 bool     g_calRefusedLogged = false;
@@ -514,7 +517,28 @@ void SyncCandles()
 //| pushes them to Trado. Local lookups first; the network is touched   |
 //| only when there is something new, with a short timeout and an       |
 //| exponential back-off, and never from inside DoSync().               |
+//| After every start (and whenever the Trado server restarts) the last |
+//| 8 days are re-sent, one day per poll, so the whole week fills in.   |
 //+------------------------------------------------------------------+
+
+// The currencies Trado's calendar lists.
+bool CalWantedCurrency(const string cur)
+{
+   return (cur == "USD" || cur == "EUR" || cur == "GBP" || cur == "JPY" || cur == "AUD" ||
+           cur == "NZD" || cur == "CAD" || cur == "CHF" || cur == "CNY");
+}
+
+// Pull "key":"value" out of a flat JSON reply.
+string JsonStringField(const string json, const string key)
+{
+   string needle = "\"" + key + "\":\"";
+   int p = StringFind(json, needle);
+   if(p < 0) return "";
+   p += StringLen(needle);
+   int q = StringFind(json, "\"", p);
+   if(q < 0) return "";
+   return StringSubstr(json, p, q - p);
+}
 
 // Event name + currency, cached (they never change for an event id).
 bool CalEventInfo(const ulong eventId, string &name, string &cur)
@@ -567,6 +591,7 @@ string CalValueJson(MqlCalendarValue &v, const int offsetSeconds)
 
    string name = "", cur = "";
    if(!CalEventInfo(v.event_id, name, cur)) return "";
+   if(!CalWantedCurrency(cur)) return "";
 
    string prev = "null", revised = "null", fcst = "null";
    if(v.HasPreviousValue()) prev    = CalNum(v.GetPreviousValue());
@@ -599,6 +624,13 @@ void CalCollect(MqlCalendarValue &vals[], const int n, const int offsetSeconds, 
    }
 }
 
+// A history window was handled (sent, or had nothing to send): move on.
+void CalHistDone(const int histKind, const ulong now)
+{
+   if(histKind == 1) g_calBackfillDay++;
+   else if(histKind == 2) g_calLastHistMs = now;
+}
+
 void CalendarTick()
 {
    if(!InpPushCalendar) return;
@@ -608,9 +640,10 @@ void CalendarTick()
    if(g_calLastPollMs != 0 && (now - g_calLastPollMs) < (ulong)MathMax(InpCalendarPollSeconds, 5) * 1000) return;
    g_calLastPollMs = now;
 
-   int    offsetSeconds = (int)(TimeTradeServer() - TimeGMT());
-   string items = "";
-   int    count = 0;
+   int      offsetSeconds = (int)(TimeTradeServer() - TimeGMT());
+   datetime serverNow     = TimeTradeServer();
+   string   items = "";
+   int      count = 0;
 
    // 1) What changed since the last poll (new actuals, revisions) — local lookup, no network.
    if(g_calChangeId == 0)
@@ -618,8 +651,7 @@ void CalendarTick()
       MqlCalendarValue none[];
       ulong cid = 0;
       CalendarValueLast(cid, none);       // the first call only returns the current change id
-      g_calChangeId   = cid;
-      g_calLastHistMs = 0;                // so the history catch-up below runs right away
+      g_calChangeId = cid;
    }
    else
    {
@@ -628,18 +660,42 @@ void CalendarTick()
       if(nChanges > 0) CalCollect(changes, nChanges, offsetSeconds, items, count);
    }
 
-   // 2) At start and every 20 minutes: re-send the last 24 h, so a restarted server or a failed push heals itself.
-   if(g_calLastHistMs == 0 || (now - g_calLastHistMs) >= 20 * 60 * 1000)
+   // 2) One history window per poll: first the 8-day back-fill (one day at a time, newest day first), then a
+   //    24 h refresh every 20 minutes. The back-fill repeats every 3 h and whenever the Trado server restarts.
+   if(g_calLastFullMs == 0) g_calLastFullMs = now;
+   if(g_calBackfillDay >= 8 && (now - g_calLastFullMs) >= 3 * 3600 * 1000)
    {
-      MqlCalendarValue hist[];
-      datetime to   = TimeTradeServer() + 300;
-      datetime from = to - 24 * 3600;
-      int nHist = CalendarValueHistory(hist, from, to);
-      if(nHist > 0) CalCollect(hist, nHist, offsetSeconds, items, count);
-      g_calLastHistMs = now;
+      g_calBackfillDay = 0;
+      g_calLastFullMs  = now;
    }
 
-   if(count == 0) return;
+   int histKind = 0;                      // 0 = none, 1 = back-fill day g_calBackfillDay, 2 = 24 h refresh
+   int histDay  = 0;
+   if(g_calBackfillDay < 8)
+   {
+      histKind = 1;
+      histDay  = g_calBackfillDay;
+   }
+   else if(g_calLastHistMs == 0 || (now - g_calLastHistMs) >= 20 * 60 * 1000)
+   {
+      histKind = 2;
+   }
+
+   if(histKind != 0)
+   {
+      MqlCalendarValue hist[];
+      long     span = (long)histDay * 86400;
+      datetime to   = (datetime)((long)serverNow + 300 - span);
+      datetime from = (datetime)((long)to - 86400);
+      int nHist = CalendarValueHistory(hist, from, to);
+      if(nHist > 0) CalCollect(hist, nHist, offsetSeconds, items, count);
+   }
+
+   if(count == 0)
+   {
+      CalHistDone(histKind, now);         // nothing to send for this window: just move on
+      return;
+   }
 
    string url = InpServerUrl;
    if(StringReplace(url, "/broker/ea/sync", "/calendar/feed") <= 0)
@@ -659,6 +715,19 @@ void CalendarTick()
    {
       g_calFails = 0;
       g_calRefusedLogged = false;
+      CalHistDone(histKind, now);
+
+      string boot = JsonStringField(response, "boot");
+      if(StringLen(boot) > 0)
+      {
+         if(StringLen(g_calBoot) > 0 && boot != g_calBoot)
+         {
+            g_calBackfillDay = 0;         // the server restarted and lost its in-memory feed: send the last 8 days again
+            g_calLastFullMs  = now;
+            Print("TradoSync: Trado server restarted — re-sending the last 8 days of calendar values");
+         }
+         g_calBoot = boot;
+      }
       Print("TradoSync: calendar feed sent ", count, " value(s)");
       return;
    }
@@ -672,9 +741,9 @@ void CalendarTick()
       return;
    }
 
-   // Network / server trouble: resend the whole 24 h soon, and wait longer after every failure (30 s … 5 min).
+   // Network / server trouble: retry the same window, and wait longer after every failure (30 s … 5 min).
    g_calFails++;
-   g_calLastHistMs = 0;
+   g_calLastHistMs = 0;                   // changes read above are not re-delivered — do a 24 h refresh soon
    int waitSec = MathMin(300, 15 * (1 << MathMin(g_calFails, 5)));
    g_calBackoffUntil = now + (ulong)waitSec * 1000;
    Print("TradoSync: calendar feed push failed (HTTP ", status, ") — retrying in ", waitSec, " s");
