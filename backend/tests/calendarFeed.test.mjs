@@ -146,3 +146,35 @@ test('debug explains each blank: no MT5 value / previous differs / clock offset'
   assert.match(d['Final Services PMI'], /no MT5 value at this time/)
   assert.match(d['RCM/TIPP Economic Optimism'], /60 min/)
 })
+
+test('number-less API bulletin is filled from the MT5 "API Crude Oil Stock Change" row, with MT5\'s own unit', () => {
+  const events = [ev('API Weekly Statistical Bulletin', null, null, -10)]
+  ingest([row('API Crude Oil Stock Change', -2.43, -1.1, -10, { m: 2 })], NOW)
+  assert.equal(mergeFeed(events, NOW), 1)
+  assert.equal(events[0].actual, '-2.4M')
+})
+
+test('API bulletin: no unit information, two candidate rows, or another event → stays blank', () => {
+  let events = [ev('API Weekly Statistical Bulletin', null, null, -10)]
+  ingest([row('API Crude Oil Stock Change', -2.43, -1.1, -10)], NOW)                  // no multiplier
+  assert.equal(mergeFeed(events, NOW), 0)
+  resetFeed()
+  events = [ev('API Weekly Statistical Bulletin', null, null, -10)]
+  ingest([row('API Crude Oil Stock Change', -2.43, null, -10, { m: 2, id: 'a' }), row('API Crude Oil Stock Change Cushing', 0.4, null, -10, { m: 2, id: 'b' })], NOW)
+  assert.equal(mergeFeed(events, NOW), 0)
+  resetFeed()
+  events = [ev('API Weekly Statistical Bulletin', null, null, -10)]
+  ingest([row('EIA Crude Oil Stocks Change', -3.2, null, -10, { m: 2 })], NOW)
+  assert.equal(mergeFeed(events, NOW), 0)
+  assert.match(feedDebug()[0].why, /no MT5 value named like this/)
+})
+
+test('a few minutes apart is fine when the titles clearly agree, not otherwise', () => {
+  const same = [ev('ISM Services PMI', '55.1', '55.4', -20)]
+  ingest([row('ISM Non-Manufacturing PMI', 54.8, 55.4, -14)], NOW)                     // 6 min later
+  assert.equal(mergeFeed(same, NOW), 1)
+  resetFeed()
+  const differ = [ev('Non-Farm Employment Change', '150K', '22K', -20)]
+  ingest([row('Employment Report', 151, 22, -14)], NOW)                                // 6 min later, unrelated name
+  assert.equal(mergeFeed(differ, NOW), 0)
+})

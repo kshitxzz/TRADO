@@ -1,12 +1,12 @@
 import { useState, useEffect, useMemo, useRef, useCallback, memo } from 'react'
-import { Search, RefreshCw, ChevronDown, ExternalLink, Globe, Clock, X, AlertCircle } from 'lucide-react'
+import { Search, RefreshCw, ChevronDown, ExternalLink, Globe, Clock, X, AlertCircle, CalendarOff, CalendarDays } from 'lucide-react'
 import { US, EU, GB, JP, AU, CA, CH, NZ, CN } from 'country-flag-icons/react/1x1'
 import PageWrapper from '../components/layout/PageWrapper'
 import { api } from '../lib/api'
 import { useTimezone } from '../hooks/useTimezone'
 import { useTimeFormat, formatTime } from '../hooks/useTimeFormat'
 import {
-  CURRENCIES, CCY, TABS, filterEvents, groupByDay, dayNumber, countdownText, zoneLabel, sourceUrl, IMPACT_LABEL,
+  CURRENCIES, CCY, TABS, filterEvents, groupByDay, dayNumber, weekdayOf, countdownText, zoneLabel, sourceUrl, IMPACT_LABEL,
 } from '../lib/economicCalendar'
 
 const FLAGS = { US, EU, GB, JP, AU, CA, CH, NZ, CN }
@@ -173,6 +173,127 @@ const EventRow = memo(function EventRow({ e, now, tz, timeFormat, open, onToggle
 })
 
 // ── Page ──────────────────────────────────────────────────────────────────
+// ── Empty state ───────────────────────────────────────────────────────────
+const WHEN = { upcoming: 'coming up', today: 'today', tomorrow: 'tomorrow', week: 'this week', all: 'on the calendar' }
+const IMPACT_WORD = { high: 'High', medium: 'Medium', low: 'Low' }
+
+// Says WHY nothing is shown and what to do next — never just "no events".
+function EmptyState({ events, tab, impacts, currency, query, now, tz, timeFormat, onQuery, onCurrency, onImpacts, onTab, onReset, onRefresh }) {
+  const q = query.trim()
+  const allImp = impacts.size === ALL_IMPACTS.length
+  const count = (over) => filterEvents(events, { tab, impacts, currency, query: q, ...over }, now, tz).length
+  const everything = new Set(ALL_IMPACTS)
+
+  // Nothing loaded at all (provider unreachable / first load).
+  if (events.length === 0) {
+    return (
+      <div className="ec-empty">
+        <span className="ec-empty-ico"><CalendarDays size={22} /></span>
+        <h3>The calendar has no events yet</h3>
+        <p>No events have been received from the data provider so far. Give it a moment, then refresh.</p>
+        <div className="ec-empty-actions"><button type="button" onClick={onRefresh}>Refresh</button></div>
+      </div>
+    )
+  }
+
+  const nothingAtAll = count({ query: '', currency: 'ALL', impacts: everything }) === 0
+
+  // The filters are what hides events: say which ones, and offer one-click ways to widen them.
+  if (!nothingAtAll) {
+    const impactText = allImp ? '' : `${[...ALL_IMPACTS].filter(i => impacts.has(i)).map(i => IMPACT_WORD[i]).join(' & ')} impact `
+    const ccyText = currency === 'ALL' ? '' : `${currency} `
+    const options = [
+      q && { label: 'Clear search', n: count({ query: '' }), run: () => onQuery('') },
+      currency !== 'ALL' && { label: 'All currencies', n: count({ currency: 'ALL' }), run: () => onCurrency('ALL') },
+      !allImp && { label: 'All impact levels', n: count({ impacts: everything }), run: () => onImpacts(everything) },
+    ].filter(o => o && o.n > 0)
+    return (
+      <div className="ec-empty">
+        <span className="ec-empty-ico"><Search size={22} /></span>
+        <h3>No events match your filters</h3>
+        <p>
+          There are no {impactText}{ccyText}events {WHEN[tab]}{q ? <> matching “{q}”</> : null}. Widen your filters to see what’s on the calendar.
+        </p>
+        <div className="ec-empty-actions">
+          {options.map(o => (
+            <button key={o.label} type="button" onClick={o.run}>{o.label} · {o.n} {o.n === 1 ? 'event' : 'events'}</button>
+          ))}
+          <button type="button" onClick={onReset}>Show everything</button>
+        </div>
+      </div>
+    )
+  }
+
+  // Genuinely nothing scheduled in any currency or impact level for this period.
+  const dayNum = dayNumber(now, tz) + (tab === 'tomorrow' ? 1 : 0)
+  const dayText = new Date(dayNum * 86_400_000).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric', timeZone: 'UTC' })
+  const weekend = (tab === 'today' || tab === 'tomorrow') && [0, 6].includes(weekdayOf(dayNum))
+  const title = { upcoming: 'No upcoming events', today: 'No events today', tomorrow: 'No events tomorrow', week: 'No events this week', all: 'No events on the calendar' }[tab]
+  const next = events.find(e => e.time > now)
+  const nextWhen = next
+    ? `${new Date(next.time).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', timeZone: tz })} · ${formatTime(next.time, timeFormat, { timeZone: tz })}`
+    : null
+  return (
+    <div className="ec-empty">
+      <span className="ec-empty-ico"><CalendarOff size={22} /></span>
+      <h3>{title}</h3>
+      <p>
+        {tab === 'today' || tab === 'tomorrow'
+          ? <><b>{dayText}</b> — {weekend
+            ? 'it’s the weekend, so the major markets are closed and no economic releases are scheduled.'
+            : 'nothing is scheduled in any currency or impact level, so there is no market-moving news to track.'}</>
+          : 'Nothing is scheduled in any currency or impact level, so there is no market-moving news to track.'}
+      </p>
+      {next && tab !== 'upcoming' && (
+        <div className="ec-empty-next">
+          <Flag code={next.currency} size={20} />
+          <span><b>Next event:</b> {next.title} <small>({next.currency}) · {nextWhen}</small></span>
+        </div>
+      )}
+      <div className="ec-empty-actions">
+        {tab !== 'upcoming' && next && <button type="button" onClick={() => onTab('upcoming')}>View upcoming events</button>}
+        {tab !== 'week' && <button type="button" onClick={() => onTab('week')}>View this week</button>}
+      </div>
+    </div>
+  )
+}
+
+// ── Diagnostics (only when the page is opened as /calendar?debug) ─────────
+function DebugPanel({ debug, meta, tz }) {
+  const feed = meta?.actuals?.feed
+  const probe = debug.officialProbe
+  const at = (iso) => new Date(iso).toLocaleString('en-GB', { timeZone: tz, hour12: false, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+  return (
+    <section className="ec-debug">
+      <h3>Actuals diagnostics</h3>
+      <p>
+        MT5 feed: {feed?.enabled ? 'on' : 'off (CALENDAR_FEEDER_USER_IDS not set)'} · pushes {feed?.pushes ?? 0} · stored {feed?.rows ?? 0} · matched {feed?.matched ?? 0}
+        {' '}· last push {feed?.lastPushAt ? at(new Date(feed.lastPushAt).toISOString()) : 'never'}
+        {feed?.offsetHint ? ` · clock offset ≈ ${feed.offsetHint.minutes} min (${feed.offsetHint.count} rows)` : ''}
+      </p>
+      <h4>Released events still blank ({debug.feedUnmatched?.length || 0})</h4>
+      <ul>
+        {(debug.feedUnmatched || []).map((x, i) => (
+          <li key={i}>
+            <b>{x.event}</b> ({x.currency}) · {at(x.at)} · FF forecast {x.ffForecast ?? '–'} / previous {x.ffPrevious ?? '–'}
+            <br />→ {x.why}
+            {x.mt5Nearby?.map((m, j) => (
+              <div key={j} className="ec-debug-row">MT5: “{m.name}” actual {String(m.actual)} · previous {String(m.previous ?? '–')} · revised {String(m.revisedPrevious ?? '–')} · forecast {String(m.forecast ?? '–')}{m.multiplier != null ? ` · multiplier ${m.multiplier}` : ''}</div>
+            ))}
+          </li>
+        ))}
+      </ul>
+      <h4>Official sources {probe ? `(${probe.ok}/${probe.total} series reachable)` : '(not checked yet — reload in a minute)'}</h4>
+      {probe?.failed?.length > 0 && (
+        <ul>{probe.failed.map((f, i) => <li key={i}><b>{f.event}</b> · {f.provider} {f.series} → {f.error}</li>)}</ul>
+      )}
+      {probe?.latest?.length > 0 && (
+        <ul>{probe.latest.map((f, i) => <li key={i}>{f.event} · {f.provider} {f.series} · {f.period} = {String(f.value)} ({f.calc})</li>)}</ul>
+      )}
+    </section>
+  )
+}
+
 export default function EconomicCalendar() {
   const { timezone } = useTimezone()
   const { timeFormat } = useTimeFormat()
@@ -384,10 +505,12 @@ export default function EconomicCalendar() {
             </div>
 
             {!searching && filtered.length === 0 && (
-              <div className="ec-empty">
-                <p>No events match these filters.</p>
-                <button type="button" onClick={clearFilters}>Show everything</button>
-              </div>
+              <EmptyState
+                events={events} tab={tab} impacts={impacts} currency={currency} query={debounced}
+                now={now} tz={timezone} timeFormat={timeFormat}
+                onQuery={(v) => { setQuery(v); setDebounced(v) }} onCurrency={setCurrency} onImpacts={setImpacts}
+                onTab={setTab} onReset={clearFilters} onRefresh={() => load({ force: true })}
+              />
             )}
 
             {!searching && groups.map(g => (
@@ -419,6 +542,8 @@ export default function EconomicCalendar() {
             )}
           </>
         )}
+
+        {data?.debug && <DebugPanel debug={data.debug} meta={meta} tz={timezone} />}
       </div>
     </PageWrapper>
   )
@@ -564,6 +689,19 @@ html.light .ec {
 .ec-more button:hover:not(:disabled) { border-color: rgba(8,100,247,0.5); background: var(--ec-hover); }
 .ec-more button.busy { border-color: var(--ec-blue); box-shadow: 0 0 0 3px rgba(8,100,247,0.14); cursor: default; }
 .ec-end { text-align: center; padding: 14px 0 6px; font-size: 12px; color: var(--ec-dim); }
+.ec-empty-ico { width: 54px; height: 54px; border-radius: 50%; display: grid; place-items: center; background: var(--ec-chip); border: 1px solid var(--ec-border); color: var(--ec-muted); margin-bottom: 2px; }
+.ec-empty h3 { margin: 0; font-size: 18px; font-weight: 700; color: var(--ec-text); }
+.ec-empty p { margin: 0; max-width: 480px; line-height: 1.6; }
+.ec-empty p b { color: var(--ec-text); font-weight: 600; }
+.ec-empty-next { display: flex; align-items: center; gap: 10px; padding: 11px 16px; margin-top: 6px; background: var(--ec-card); border: 1px solid var(--ec-border); border-radius: 12px; color: var(--ec-text); font-size: 13px; text-align: left; }
+.ec-empty-next small { color: var(--ec-muted); font-size: 12px; }
+.ec-empty-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 8px; }
+.ec-debug { margin-top: 40px; padding: 18px 20px; background: var(--ec-card); border: 1px dashed var(--ec-border); border-radius: 14px; font-size: 12.5px; line-height: 1.6; color: var(--ec-muted); }
+.ec-debug h3 { margin: 0 0 6px; font-size: 14px; color: var(--ec-text); }
+.ec-debug h4 { margin: 16px 0 6px; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ec-text); }
+.ec-debug ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 8px; }
+.ec-debug b { color: var(--ec-text); }
+.ec-debug-row { padding-left: 12px; color: var(--ec-muted); }
 .ec-empty, .ec-error { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 54px 0; color: var(--ec-muted); font-size: 14px; text-align: center; }
 .ec-empty button, .ec-error button { padding: 9px 18px; background: var(--ec-card); border: 1px solid var(--ec-border); border-radius: 10px; color: var(--ec-text); font-size: 13px; font-weight: 600; cursor: pointer; } .ec-empty button:hover, .ec-error button:hover { border-color: rgba(8,100,247,0.5); }
 .ec-error { color: #f0425f; } .ec-error p { color: var(--ec-muted); }

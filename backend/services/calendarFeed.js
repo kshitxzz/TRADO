@@ -27,6 +27,7 @@ const KEEP_MS = 9 * 86_400_000         // the EA back-fills 8 days after every s
 const MAX_ROWS = 5000
 const MAX_PER_PUSH = 400
 const TIME_TOL_MS = 2 * 60_000
+const WIDE_TOL_MS = 10 * 60_000          // allowed when the titles clearly agree (sources round release times differently)
 const SUSPECT_TOL_MS = 3 * 3600_000
 
 const store = new Map()                  // key → row
@@ -66,6 +67,7 @@ function sanitizeRow(v, now) {
     key: id ? `id:${id}` : `n:${currency}|${time}|${name}`,
     time, currency, name, tokens: titleTokens(name),
     actual, previous: fin(v.p), revised: fin(v.rp), forecast: fin(v.f),
+    mult: [0, 1, 2, 3, 4].includes(Number(v.m)) ? Number(v.m) : null,      // MT5 multiplier: 0 none, 1 K, 2 M, 3 B, 4 T
     used: false,
   }
 }
@@ -136,7 +138,15 @@ function diagnose(open, rows) {
   const out = []
   for (const ev of open.filter(e => e.actual == null).sort((a, b) => b.time - a.time)) {
     if (out.length >= 25) break
-    const near = rows.filter(r => r.currency === ev.currency && Math.abs(r.time - ev.time) <= TIME_TOL_MS)
+    const spec = anchorlessSpec(ev)
+    if (spec) {
+      const named = rows.filter(r => r.currency === ev.currency && spec.mt5.test(r.name))
+      out.push({ event: ev.title, currency: ev.currency, at: new Date(ev.time).toISOString(), ffForecast: ev.forecast, ffPrevious: ev.previous,
+                 why: named.length ? 'an MT5 value exists but its time/unit did not fit (see mt5Nearby)' : 'no MT5 value named like this (the MT5 calendar may not carry it)',
+                 mt5Nearby: named.slice(0, 3).map(r => ({ name: r.name, at: new Date(r.time).toISOString(), actual: r.actual, multiplier: r.mult })) })
+      continue
+    }
+    const near = rows.filter(r => r.currency === ev.currency && Math.abs(r.time - ev.time) <= WIDE_TOL_MS)
     let why
     if (!near.length) {
       const off = rows.find(r => r.currency === ev.currency && Math.abs(r.time - ev.time) <= SUSPECT_TOL_MS && feedScale(ev, r) != null && jaccard(titleTokens(ev.title), r.tokens) >= 0.34)
@@ -154,6 +164,20 @@ function diagnose(open, rows) {
 
 export const feedDebug = () => stats.unmatched
 
+// Events Forex Factory lists WITHOUT any numbers (so there is nothing to cross-check) but whose figure the MT5
+// calendar carries under a different name. Matched by name + time (±5 min) and only when exactly one MT5 row fits.
+const ANCHORLESS = [
+  { ff: /^api weekly statistical bulletin$/i, mt5: /^api\b.*\bcrude/i },     // API crude-oil stock change
+]
+const SUFFIX = ['', 'K', 'M', 'B', 'T']
+function anchorlessText(r) {
+  if (r.mult == null || r.mult < 1) return null                             // no unit information → don't guess
+  const v = roundHalfAway(r.actual, 1)
+  if (Math.abs(v) >= 1000) return null
+  return `${v.toFixed(1)}${SUFFIX[r.mult]}`.replace(/^-(0\.0)/, '$1')
+}
+const anchorlessSpec = (ev) => (typeof ev.title === 'string' ? ANCHORLESS.find(a => a.ff.test(ev.title.trim())) : null)
+
 const median = (a) => { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)] }
 
 export function mergeFeed(events, now = Date.now()) {
@@ -167,10 +191,14 @@ export function mergeFeed(events, now = Date.now()) {
     const evTokens = titleTokens(ev.title)
     const cands = []
     for (const r of rows) {
-      if (r.used || r.currency !== ev.currency || Math.abs(r.time - ev.time) > TIME_TOL_MS) continue
+      if (r.used || r.currency !== ev.currency) continue
+      const dt = Math.abs(r.time - ev.time)
+      if (dt > WIDE_TOL_MS) continue
       const scale = feedScale(ev, r)
       if (scale == null) continue
-      cands.push({ r, scale, sim: jaccard(evTokens, r.tokens) })
+      const sim = jaccard(evTokens, r.tokens)
+      if (dt > TIME_TOL_MS && sim < 0.34) continue                          // a few minutes apart needs a clear title match
+      cands.push({ r, scale, sim })
     }
     if (!cands.length) continue
     cands.sort((a, b) => b.sim - a.sim)
@@ -190,6 +218,19 @@ export function mergeFeed(events, now = Date.now()) {
     matched++
   }
 
+  // Number-less events (API bulletin): by name + time, unit from MT5's own multiplier.
+  const anchorless = events.filter(e => e.actual == null && e.impact !== 'holiday' && e.time <= now + 5 * 60_000 && anchorlessSpec(e))
+  for (const ev of anchorless) {
+    const spec = anchorlessSpec(ev)
+    const c = rows.filter(r => !r.used && r.currency === ev.currency && Math.abs(r.time - ev.time) <= 5 * 60_000 && spec.mt5.test(r.name))
+    const text = c.length === 1 ? anchorlessText(c[0]) : null
+    if (!text) continue
+    ev.actual = text
+    ev.actualSource = SOURCE
+    c[0].used = true
+    matched++
+  }
+
   // Diagnostics: rows that fit an FF event perfectly except for the clock → the EA's time offset is off.
   const deltas = []
   for (const r of rows) {
@@ -204,7 +245,7 @@ export function mergeFeed(events, now = Date.now()) {
     }
   }
   stats.offsetHint = deltas.length ? { count: deltas.length, minutes: median(deltas) } : null
-  stats.unmatched = diagnose(open, rows)
+  stats.unmatched = diagnose([...open, ...anchorless], rows)
   stats.matched += matched
   return matched
 }

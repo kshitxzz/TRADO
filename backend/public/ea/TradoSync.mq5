@@ -29,7 +29,7 @@
 //| as before. The calendar push never runs inside the trade-sync path.|
 //+------------------------------------------------------------------+
 #property copyright "Trado"
-#property version   "1.21"
+#property version   "1.22"
 #property strict
 
 //──── Inputs ─────────────────────────────────────────────────────────
@@ -61,6 +61,7 @@ bool     g_calRefusedLogged = false;
 ulong    g_ceId[];                // event info cache: name + currency never change
 string   g_ceName[];
 string   g_ceCur[];
+int      g_ceMult[];
 
 struct PositionAgg
 {
@@ -541,7 +542,7 @@ string JsonStringField(const string json, const string key)
 }
 
 // Event name + currency, cached (they never change for an event id).
-bool CalEventInfo(const ulong eventId, string &name, string &cur)
+bool CalEventInfo(const ulong eventId, string &name, string &cur, int &mult)
 {
    int n = ArraySize(g_ceId);
    for(int i = 0; i < n; i++)
@@ -550,6 +551,7 @@ bool CalEventInfo(const ulong eventId, string &name, string &cur)
       {
          name = g_ceName[i];
          cur  = g_ceCur[i];
+         mult = g_ceMult[i];
          return true;
       }
    }
@@ -565,16 +567,20 @@ bool CalEventInfo(const ulong eventId, string &name, string &cur)
       ArrayResize(g_ceId, 0);
       ArrayResize(g_ceName, 0);
       ArrayResize(g_ceCur, 0);
+      ArrayResize(g_ceMult, 0);
       n = 0;
    }
    ArrayResize(g_ceId,   n + 1);
    ArrayResize(g_ceName, n + 1);
    ArrayResize(g_ceCur,  n + 1);
+   ArrayResize(g_ceMult, n + 1);
    g_ceId[n]   = eventId;
    g_ceName[n] = calEvent.name;
    g_ceCur[n]  = country.currency;
+   g_ceMult[n] = (int)calEvent.multiplier;
    name = calEvent.name;
    cur  = country.currency;
+   mult = g_ceMult[n];
    return true;
 }
 
@@ -590,7 +596,8 @@ string CalValueJson(MqlCalendarValue &v, const int offsetSeconds)
    if(!v.HasActualValue()) return "";
 
    string name = "", cur = "";
-   if(!CalEventInfo(v.event_id, name, cur)) return "";
+   int    mult = 0;
+   if(!CalEventInfo(v.event_id, name, cur, mult)) return "";
    if(!CalWantedCurrency(cur)) return "";
 
    string prev = "null", revised = "null", fcst = "null";
@@ -606,7 +613,8 @@ string CalValueJson(MqlCalendarValue &v, const int offsetSeconds)
           ",\"a\":" + CalNum(v.GetActualValue()) +
           ",\"p\":" + prev +
           ",\"rp\":" + revised +
-          ",\"f\":" + fcst + "}";
+          ",\"f\":" + fcst +
+          ",\"m\":" + IntegerToString(mult) + "}";
 }
 
 // Append released values that have an actual to `items`, newest first, at most 200 per push.
