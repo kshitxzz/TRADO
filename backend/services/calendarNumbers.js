@@ -25,3 +25,10 @@ export function formatLike(sample, num) {
 }
 
 export const near = (a, b) => Math.abs(a - b) <= 1e-6 * Math.max(1, Math.abs(a), Math.abs(b))
+
+// Round half away from zero, tolerant of binary-float noise (2.4500000000000002 → 2.5, 2.65 → 2.7).
+export function roundHalfAway(x, dec) {
+  const f = 10 ** dec
+  const r = Math.round(Math.abs(x) * f + 1e-9) / f
+  return x < 0 ? -r : r
+}

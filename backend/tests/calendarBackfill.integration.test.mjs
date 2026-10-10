@@ -14,7 +14,7 @@ const { __test } = await import('../services/officialActuals.js')
 test('earlier-this-week releases are backfilled; superseded ones are not', async () => {
   const now = Date.now()
   const DAY = 86_400_000
-  const trade = now - 3 * DAY, claimsOld = now - 6 * DAY, claimsNew = now - 2 * DAY
+  const trade = now - 3 * DAY, claimsOld = now - 7.5 * DAY, claimsNew = now - 0.5 * DAY      // exactly one week apart → always different weeks
   const ff = (title, t, forecast, previous) => ({ title, country: 'USD', impact: 'Low', date: new Date(t).toISOString(), forecast, previous })
   const obs = {
     BOPGSTB: [{ date: `${__test.expectedPeriod('M2', trade)}-01`, value: '-78300' }, { date: '2026-01-01', value: '-80000' }],

@@ -32,6 +32,7 @@ import crypto from 'node:crypto'
 import { parseNum, formatLike, near } from './calendarNumbers.js'
 import { officialEnabled, officialStatus, fetchOfficialActuals, specFor } from './officialActuals.js'
 import { fedStatus, fetchFedActuals, fedKindOf } from './fedActuals.js'
+import { treasuryStatus, fetchAuctionActuals, auctionSpecFor } from './treasuryAuctions.js'
 
 export { parseNum, formatLike }
 
@@ -42,6 +43,11 @@ const FMP_URL = 'https://financialmodelingprep.com/stable/economic-calendar'
 const UA = 'Mozilla/5.0 (compatible; TradoCalendarBot/1.0)'
 const TTL_MS           = Math.max(5, parseInt(process.env.CALENDAR_TTL_MINUTES, 10) || 15) * 60_000
 const FORCE_MIN_AGE_MS = 2 * 60_000
+// When a data release due within the next 6 hours (or just out) still has no forecast, look at Forex
+// Factory every 5 minutes instead of every TTL, so a forecast shows up in the journal soon after FF
+// publishes it. Next week's file is only re-read every 30 minutes, which keeps total requests low.
+const FAST_TTL_MS          = Math.min(TTL_MS, 5 * 60_000)
+const NEXT_WEEK_MIN_AGE_MS = 30 * 60_000
 const FF_BACKOFF_MS    = 10 * 60_000
 const FMP_MIN_GAP_MS   = 20 * 60_000   // catch-up polling for older releases
 // Around a release the actual is what traders are waiting for, so poll much faster —
@@ -284,13 +290,16 @@ const state = {
   actuals: { provider: null, enabled: false, lastFetch: 0, lastError: null, matched: 0 },   // FMP (optional)
   official: { lastFetch: 0, matched: 0 },
   fed: { lastFetch: 0, matched: 0 },
+  auctions: { lastFetch: 0, matched: 0 },
+  nextWeek: { at: 0, events: [] },
   actualByKey: new Map(),  // id → { actual, source, url, note }, so a value survives a schedule refresh
 }
 
 const ymd = (ms) => new Date(ms).toISOString().slice(0, 10)
 
 async function pullSchedule() {
-  const [thisWeek, nextWeek] = await Promise.allSettled([fetchJson(FF_THIS), fetchJson(FF_NEXT)])
+  const needNext = Date.now() - state.nextWeek.at >= NEXT_WEEK_MIN_AGE_MS
+  const [thisWeek, nextWeek] = await Promise.allSettled([fetchJson(FF_THIS), needNext ? fetchJson(FF_NEXT) : Promise.resolve(null)])
   if (thisWeek.status === 'rejected') {
     if (thisWeek.reason?.status === 429) state.ffBackoffUntil = Date.now() + FF_BACKOFF_MS
     throw thisWeek.reason
@@ -298,7 +307,9 @@ async function pullSchedule() {
   const a = normalizeFF(thisWeek.value)
   if (!a.length) throw new Error('Forex Factory feed returned no events')
   // Next week's file only exists part-way through the week — a miss is normal.
-  const b = nextWeek.status === 'fulfilled' ? normalizeFF(nextWeek.value) : []
+  if (needNext) state.nextWeek = { at: Date.now(), events: nextWeek.status === 'fulfilled' ? normalizeFF(nextWeek.value) : [] }
+  const seen = new Set(a.map(e => e.id))                                        // week roll-over: never list an event twice
+  const b = state.nextWeek.events.filter(e => !seen.has(e.id))
   state.weeks = { this: a.length, next: b.length }
   return [...a, ...b].sort((x, y) => x.time - y.time || x.title.localeCompare(y.title))
 }
@@ -376,11 +387,28 @@ async function pullFed(events) {
   }
 }
 
+async function pullAuctions(events) {
+  const now = Date.now()
+  const open = events.filter(e => e.actual == null && e.time <= now + 15_000 && e.time >= now - OFF_BACKFILL_MS && auctionSpecFor(e))
+  if (!open.length) return
+  const hot = open.some(e => now - e.time <= FED_HOT_WINDOW_MS)          // results post within minutes of the 1 pm ET auction
+  if (now - state.auctions.lastFetch < (hot ? FED_HOT_GAP_MS : FED_CATCHUP_GAP_MS)) return
+  state.auctions.lastFetch = now
+  try {
+    const { updates } = await fetchAuctionActuals(open, now)
+    for (const u of updates) { u.ev.actual = u.text; u.ev.actualSource = u.source }
+    state.auctions.matched += updates.length
+  } catch (err) {
+    console.error('[calendar] auction actuals:', err.message)
+  }
+}
+
 const actualsEnabled = () => true
 
 async function pullActuals(events) {
   await pullOfficial(events)
   await pullFed(events)
+  await pullAuctions(events)
   await pullFmp(events)
 }
 
@@ -404,10 +432,18 @@ async function refresh() {
   remember()
 }
 
+// A data release (not a speech / statement / auction) due soon that has no forecast yet.
+const expectsForecast = (e) => e.impact !== 'holiday' && e.category !== 'Speech' && e.category !== 'Holiday' && e.category !== 'Bond Auction' &&
+  !/\b(statement|minutes|projections|speaks|testifies|api weekly)\b/i.test(e.title)
+function ttlNow(now) {
+  const waiting = state.events.some(e => e.forecast == null && expectsForecast(e) && e.time > now - 15 * 60_000 && e.time < now + 6 * HOUR)
+  return waiting ? FAST_TTL_MS : TTL_MS
+}
+
 export async function getCalendar({ force = false } = {}) {
   const now = Date.now()
   const age = now - state.updatedAt
-  const minAge = force ? FORCE_MIN_AGE_MS : TTL_MS
+  const minAge = force ? FORCE_MIN_AGE_MS : ttlNow(now)
   const throttled = now < state.ffBackoffUntil
   const needs = !state.events.length || (age >= minAge && now - state.attemptAt >= 30_000 && !throttled)
   if (needs) {
@@ -426,14 +462,16 @@ function actualsMeta() {
   const off = officialStatus()
   const fmpOn = !!process.env.FMP_API_KEY
   const fed = fedStatus()
-  const names = [off.enabled && 'U.S. official sources (BLS · FRED · EIA)', 'Federal Reserve Board', fmpOn && 'Financial Modeling Prep'].filter(Boolean)
+  const tre = treasuryStatus()
+  const names = [off.enabled && 'U.S. official sources (BLS · FRED · EIA)', 'Federal Reserve Board', 'U.S. Treasury', fmpOn && 'Financial Modeling Prep'].filter(Boolean)
   return {
     enabled: true,
     provider: names.join(' + '),
-    lastError: off.lastError || fed.lastError || state.actuals.lastError,
-    matched: state.official.matched + state.fed.matched + state.actuals.matched,
+    lastError: off.lastError || fed.lastError || tre.lastError || state.actuals.lastError,
+    matched: state.official.matched + state.fed.matched + state.auctions.matched + state.actuals.matched,
     official: { ...off, matched: state.official.matched },
     fed: { ...fed, matched: state.fed.matched },
+    auctions: { ...tre, matched: state.auctions.matched },
     fmp: { enabled: fmpOn, lastError: state.actuals.lastError, matched: state.actuals.matched },
   }
 }
@@ -454,4 +492,4 @@ export function snapshot() {
   }
 }
 
-export const __test = { normalizeFF, classify, describe, measureOf, parseNum, formatLike, mergeActuals, titleTokens, agreeingScale }
+export const __test = { normalizeFF, classify, describe, measureOf, parseNum, formatLike, mergeActuals, titleTokens, agreeingScale, expectsForecast }

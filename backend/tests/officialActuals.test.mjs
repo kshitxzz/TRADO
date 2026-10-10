@@ -114,3 +114,24 @@ test('format mismatch with FF (no % sign where one is expected) stays blank', ()
   const e = ev('Unemployment Rate', '2026-10-02T12:30:00Z', '4.3', '4.3')
   assert.equal(evaluate(s, e, rows({ '2026-09': 4.4, '2026-08': 4.3 })), null)
 })
+
+test('consumer credit: monthly change in billions (release in October covers August)', () => {
+  const s = spec('Consumer Credit m/m')
+  const e = ev('Consumer Credit m/m', '2026-10-07T19:00:00Z', '14.5B', '18.1B')
+  assert.equal(evaluate(s, e, rows({ '2026-08-01': 5120.3, '2026-07-01': 5103.9, '2026-06-01': 5085.8 })), '16.4B')
+  assert.equal(evaluate(s, e, rows({ '2026-07-01': 5103.9, '2026-06-01': 5085.8 })), null)   // August not published yet
+})
+
+test('housing starts / permits / JOLTS are shown in millions like FF', () => {
+  const hs = spec('Housing Starts')
+  assert.equal(evaluate(hs, ev('Housing Starts', '2026-10-16T12:30:00Z', '1.31M', '1.29M'), rows({ '2026-09-01': 1318 })), '1.32M')
+  const bp = spec('Building Permits')
+  assert.equal(evaluate(bp, ev('Building Permits', '2026-10-16T12:30:00Z', '1.40M', '1.38M'), rows({ '2026-09-01': 1402 })), '1.40M')
+  const jo = spec('JOLTS Job Openings')
+  assert.equal(evaluate(jo, ev('JOLTS Job Openings', '2026-10-06T14:00:00Z', '7.20M', '7.18M'), rows({ '2026-08': 7231 })), '7.23M')
+})
+
+test('"Final Wholesale Inventories" is deliberately not mapped (the final estimate revises the same month in place)', () => {
+  assert.equal(spec('Final Wholesale Inventories m/m'), null)
+  assert.equal(spec('Prelim UoM Consumer Sentiment'), null)
+})

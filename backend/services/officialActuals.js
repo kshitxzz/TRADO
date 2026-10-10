@@ -28,7 +28,7 @@
 // API keys are read from the environment at call time and never logged or sent
 // to the browser.
 // ─────────────────────────────────────────────────────────────────────────
-import { SCALE, parseNum, formatLike, near } from './calendarNumbers.js'
+import { SCALE, parseNum, formatLike, near, roundHalfAway } from './calendarNumbers.js'
 
 const UA = 'Mozilla/5.0 (compatible; TradoCalendarBot/1.0)'
 const BLS_URL  = 'https://api.bls.gov/publicAPI/v2/timeseries/data/'
@@ -235,6 +235,11 @@ export const SPECS = [
   { name: 'Core PCE Price Index m/m',   re: /^core pce price index m\/m$/i,   per: 'M1', calc: 'pct1',  unit: 1,   fmt: 'pct', check: 'loose',    src: [fred('PCEPILFE')] },
   // Only the ADVANCE estimate: the Second/Third estimates revise the same quarter in place, so a
   // stale advance value could be mistaken for the new one. Those two are deliberately not mapped.
+  { name: 'Consumer Credit m/m',         re: /^consumer credit m\/m$/i,         per: 'M2', calc: 'diff',  unit: 1e9, fmt: 'sfx', check: 'loose',    src: [fred('TOTALSL')] },
+  { name: 'Industrial Production m/m',   re: /^industrial production m\/m$/i,   per: 'M1', calc: 'pct1',  unit: 1,   fmt: 'pct', check: 'loose',    src: [fred('INDPRO')] },
+  { name: 'Housing Starts',              re: /^housing starts$/i,               per: 'M1', calc: 'level', unit: 1e3, fmt: 'sfx', check: 'loose',    src: [fred('HOUST')] },
+  { name: 'Building Permits',            re: /^building permits$/i,             per: 'M1', calc: 'level', unit: 1e3, fmt: 'sfx', check: 'loose',    src: [fred('PERMIT')] },
+  { name: 'JOLTS Job Openings',          re: /^jolts job openings$/i,           per: 'M2', calc: 'level', unit: 1e3, fmt: 'sfx', check: 'loose',    src: [bls('JTS000000000000000JOL'), fred('JTSJOL')] },
   { name: 'Advance GDP q/q',            re: /^advance gdp q\/q$/i,            per: 'Q1', calc: 'level', unit: 1,   fmt: 'pct', check: 'loose',    src: [fred('A191RL1Q225SBEA')] },
   { name: 'Crude Oil Inventories',      re: /^crude oil inventories$/i,       per: 'FRI',calc: 'diff',  unit: 1e3, fmt: 'sfx', check: 'previous', src: [eia('petroleum/stoc/wstk', 'WCESTUS1')] },
   { name: 'Natural Gas Storage',        re: /^natural gas storage$/i,         per: 'FRI',calc: 'diff',  unit: 1e9, fmt: 'sfx', check: 'previous', src: [eia('natural-gas/stor/wkly', 'NW2_EPG0_SWO_R48_BCF')] },
@@ -283,12 +288,6 @@ function calcAt(spec, map, key) {
   if (prior == null) return null
   if (spec.calc === 'diff') return cur - prior
   return prior === 0 ? null : (cur / prior - 1) * 100                         // pct1 / pct12
-}
-
-function roundHalfAway(x, dec) {
-  const f = 10 ** dec
-  const r = Math.round(Math.abs(x) * f + 1e-9) / f
-  return x < 0 ? -r : r
 }
 
 // Returns the formatted actual (e.g. "0.3%", "150K") or null when anything is doubtful.

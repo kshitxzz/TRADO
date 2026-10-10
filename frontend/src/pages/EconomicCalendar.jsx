@@ -85,6 +85,11 @@ const fmtVal = (e, v) => (e.category === 'Bond Auction' && v.includes('|') ? `${
 // Federal Reserve items carry a link to the Fed's own page (speech text, statement, minutes …).
 const isFedLink = (u) => typeof u === 'string' && /^https:\/\/www\.federalreserve\.gov\//.test(u)
 const openLink = (ev, url) => { ev.stopPropagation(); ev.preventDefault(); window.open(url, '_blank', 'noopener,noreferrer') }
+// Events that are words, not numbers (speeches, statements, minutes …): show a label instead of the three data columns.
+const NARRATIVE_RE = /\b(speaks|speech|testifies|testimony|press conference|statement|minutes|meeting accounts|projections)\b/i
+const narrativeLabel = (t) => /press conference/i.test(t) ? 'Press conference' : /testif|testimony/i.test(t) ? 'Testimony' : /speaks|speech/i.test(t) ? 'Speech'
+  : /minutes|meeting accounts/i.test(t) ? 'Minutes' : /projections/i.test(t) ? 'Projections' : 'Statement'
+const isNarrative = (e) => NARRATIVE_RE.test(e.title || '') && e.forecast == null && e.previous == null
 const isFedEvent = (e) => /^(fomc |fed |federal funds rate)/i.test(e.title || '')
 
 const EventRow = memo(function EventRow({ e, now, tz, timeFormat, open, onToggle, isNext, actualsOn }) {
@@ -106,6 +111,18 @@ const EventRow = memo(function EventRow({ e, now, tz, timeFormat, open, onToggle
           <b>{e.title}</b>
           {e.measure && <small>{e.measure}</small>}
         </span>
+        {isNarrative(e)
+          ? (
+            <span className="ec-stats ec-stats-narr">
+              {isFedLink(e.actualUrl)
+                ? <span className="ec-narr ec-narr-link" role="link" tabIndex={0} title={e.actualNote || 'Open on federalreserve.gov'}
+                    onClick={(ev) => openLink(ev, e.actualUrl)} onKeyDown={(ev) => { if (ev.key === 'Enter') openLink(ev, e.actualUrl) }}>
+                    {narrativeLabel(e.title)}<ExternalLink size={12} />
+                  </span>
+                : <span className="ec-narr">{narrativeLabel(e.title)}</span>}
+            </span>
+          )
+          : (
         <span className="ec-stats">
           <span className="ec-stat">
             <label>ACTUAL</label>
@@ -117,7 +134,7 @@ const EventRow = memo(function EventRow({ e, now, tz, timeFormat, open, onToggle
                       onClick={(ev) => openLink(ev, e.actualUrl)} onKeyDown={(ev) => { if (ev.key === 'Enter') openLink(ev, e.actualUrl) }}>
                       {e.actual}<ExternalLink size={11} />
                     </span>
-                  : <strong className="ec-actual">{e.actual}</strong>)
+                  : <strong className="ec-actual">{fmtVal(e, e.actual)}</strong>)
                 : awaiting
                   ? <span className="ec-wait" title="Released — waiting for the actual value"><i /><i /><i /></span>
                   : <span className="ec-dash" title={actualsOn ? 'Not available from the data provider' : 'No actuals provider is connected (the Forex Factory feed has none)'}>-</span>}
@@ -125,6 +142,7 @@ const EventRow = memo(function EventRow({ e, now, tz, timeFormat, open, onToggle
           <span className="ec-stat"><label>FORECAST</label>{e.forecast != null ? <span className="ec-val">{fmtVal(e, e.forecast)}</span> : dash}</span>
           <span className="ec-stat"><label>PREVIOUS</label>{e.previous != null ? <span className="ec-val">{fmtVal(e, e.previous)}</span> : dash}</span>
         </span>
+          )}
         <ChevronDown size={15} className="ec-chev" />
         {isNext && <span className="ec-next">NEXT UP</span>}
       </button>
@@ -509,6 +527,10 @@ html.light .ec {
 .ec-val, .ec-dash { font-size: 14.5px; font-weight: 500; color: var(--ec-muted); font-variant-numeric: tabular-nums; }
 .ec-dash { color: var(--ec-dim); }
 .ec-actual { font-size: 14.5px; font-weight: 700; color: var(--ec-text); font-variant-numeric: tabular-nums; }
+.ec-stats-narr { width: 268px; justify-content: flex-end; align-items: center; }
+.ec-narr { display: inline-flex; align-items: center; gap: 5px; padding: 6px 13px; border-radius: 999px; font-size: 12px; font-weight: 600; letter-spacing: 0.04em; color: var(--ec-muted); background: var(--ec-chip); border: 1px solid var(--ec-border); }
+.ec-narr-link { color: var(--ec-blue); border-color: rgba(8,100,247,0.4); cursor: pointer; }
+.ec-narr-link:hover { text-decoration: underline; }
 .ec-actual-link { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; color: var(--ec-blue); }
 .ec-actual-link:hover { text-decoration: underline; }
 .ec-wait { display: inline-flex; gap: 4px; height: 20px; align-items: center; }
@@ -545,12 +567,12 @@ html.light .ec {
 .ec-error { color: #f0425f; } .ec-error p { color: var(--ec-muted); }
 
 /* responsive */
-@media (max-width: 1100px) { .ec-filters { gap: 18px; } .ec-main { grid-template-columns: 84px 24px 54px 84px minmax(0, 1fr) auto 18px; gap: 0 12px; padding: 14px; } .ec-stat { width: 72px; } }
+@media (max-width: 1100px) { .ec-stats-narr { width: 224px; } .ec-filters { gap: 18px; } .ec-main { grid-template-columns: 84px 24px 54px 84px minmax(0, 1fr) auto 18px; gap: 0 12px; padding: 14px; } .ec-stat { width: 72px; } }
 @media (max-width: 820px) {
   .ec-head h1 { font-size: 28px; }
   .ec-tabs, .ec-imp { overflow-x: auto; max-width: 100%; scrollbar-width: none; } .ec-tabs::-webkit-scrollbar, .ec-imp::-webkit-scrollbar { display: none; }
   .ec-main { grid-template-columns: auto auto auto 1fr 18px; grid-template-areas: "time flag chip impact chev" "title title title title title" "stats stats stats stats stats"; gap: 10px 10px; padding: 14px 12px; }
-  .ec-time { grid-area: time; } .ec-main > .ec-flag { grid-area: flag; } .ec-chip { grid-area: chip; } .ec-impact { grid-area: impact; } .ec-chev { grid-area: chev; justify-self: end; } .ec-title { grid-area: title; } .ec-stats { grid-area: stats; justify-content: space-between; gap: 4px; } .ec-stat { flex: 1; width: auto; align-items: flex-start; }
+  .ec-time { grid-area: time; } .ec-main > .ec-flag { grid-area: flag; } .ec-chip { grid-area: chip; } .ec-impact { grid-area: impact; } .ec-chev { grid-area: chev; justify-self: end; } .ec-title { grid-area: title; } .ec-stats { grid-area: stats; justify-content: space-between; gap: 4px; } .ec-stats-narr { width: auto; justify-content: flex-start; } .ec-stat { flex: 1; width: auto; align-items: flex-start; }
   .ec-next { right: 38px; } .ec-exp-body { margin: 0 12px; }
   .ec-day h2 { font-size: 22px; } .ec-search { width: 100%; }
 }
