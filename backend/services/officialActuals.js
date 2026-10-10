@@ -235,7 +235,7 @@ export const SPECS = [
   { name: 'Core PCE Price Index m/m',   re: /^core pce price index m\/m$/i,   per: 'M1', calc: 'pct1',  unit: 1,   fmt: 'pct', check: 'loose',    src: [fred('PCEPILFE')] },
   // Only the ADVANCE estimate: the Second/Third estimates revise the same quarter in place, so a
   // stale advance value could be mistaken for the new one. Those two are deliberately not mapped.
-  { name: 'Consumer Credit m/m',         re: /^consumer credit m\/m$/i,         per: 'M2', calc: 'diff',  unit: 1e9, fmt: 'sfx', check: 'loose',    src: [fred('TOTALSL')] },
+  { name: 'Consumer Credit m/m',         re: /^consumer credit m\/m$/i,         per: 'M2', calc: 'diff',  unit: 1e9, unitAlt: [1e6], fmt: 'sfx', check: 'loose', src: [fred('TOTALSL')] },
   { name: 'Industrial Production m/m',   re: /^industrial production m\/m$/i,   per: 'M1', calc: 'pct1',  unit: 1,   fmt: 'pct', check: 'loose',    src: [fred('INDPRO')] },
   { name: 'Housing Starts',              re: /^housing starts$/i,               per: 'M1', calc: 'level', unit: 1e3, fmt: 'sfx', check: 'loose',    src: [fred('HOUST')] },
   { name: 'Building Permits',            re: /^building permits$/i,             per: 'M1', calc: 'level', unit: 1e3, fmt: 'sfx', check: 'loose',    src: [fred('PERMIT')] },
@@ -292,6 +292,16 @@ function calcAt(spec, map, key) {
 
 // Returns the formatted actual (e.g. "0.3%", "150K") or null when anything is doubtful.
 export function evaluate(spec, ev, rows) {
+  // Some series' units are easy to misremember (FRED reports consumer credit in billions or millions depending on
+  // the series). Try the expected unit first, then any alternatives; the size check against FF picks the right one.
+  for (const unit of [spec.unit, ...(spec.unitAlt || [])]) {
+    const text = evaluateWithUnit(spec, unit, ev, rows)
+    if (text) return text
+  }
+  return null
+}
+
+function evaluateWithUnit(spec, unit, ev, rows) {
   const map = toMap(spec, rows)
   const key = expectedPeriod(spec.per, ev.time)
 
@@ -304,7 +314,7 @@ export function evaluate(spec, ev, rows) {
   const val = (k) => {
     const raw = calcAt(spec, map, k)
     if (raw == null) return null
-    return spec.fmt === 'pct' ? roundHalfAway(raw, dec) : raw * spec.unit
+    return spec.fmt === 'pct' ? roundHalfAway(raw, dec) : raw * unit
   }
   const textOf = (n) => { const t = formatLike(sampleStr, n); return t ? t.replace(/^-(0(?:\.0+)?)(?=[KMBT%]|$)/, '$1') : null }
   const dom = (p) => (p.pct ? p.raw : p.value)

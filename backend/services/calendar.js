@@ -31,10 +31,10 @@
 import crypto from 'node:crypto'
 import { parseNum, formatLike } from './calendarNumbers.js'
 import { titleTokens, jaccard, agreeingScale } from './calendarMatch.js'
-import { officialEnabled, officialStatus, fetchOfficialActuals, specFor } from './officialActuals.js'
+import { officialEnabled, officialStatus, fetchOfficialActuals, specFor, probeOfficial } from './officialActuals.js'
 import { fedStatus, fetchFedActuals, fedKindOf } from './fedActuals.js'
 import { treasuryStatus, fetchAuctionActuals, auctionSpecFor } from './treasuryAuctions.js'
-import { mergeFeed, feedStatus } from './calendarFeed.js'
+import { mergeFeed, feedStatus, feedDebug } from './calendarFeed.js'
 
 export { parseNum, formatLike }
 
@@ -261,6 +261,7 @@ const state = {
   feed: { matched: 0 },
   auctions: { lastFetch: 0, matched: 0 },
   nextWeek: { at: 0, events: [] },
+  probe: { at: 0, running: false, data: null },
   actualByKey: new Map(),  // id → { actual, source, url, note }, so a value survives a schedule refresh
 }
 
@@ -380,7 +381,31 @@ function pullFeed(events) {
 
 const actualsEnabled = () => true
 
+// Every 6 hours, in the background, read the latest value of every official series so a wrong series ID,
+// unit or key shows up in ?debug without anyone calling a separate endpoint.
+function ensureProbe(now) {
+  const p = state.probe
+  if (!officialEnabled() || p.running || now - p.at < 6 * HOUR) return
+  p.running = true
+  p.at = now
+  probeOfficial(now)
+    .then(r => {
+      p.data = {
+        at: r.at, ok: r.items.filter(i => i.ok).length, total: r.items.length,
+        failed: r.items.filter(i => !i.ok).map(i => ({ event: i.event, provider: i.provider, series: i.series, error: i.error })),
+        latest: r.items.filter(i => i.ok).map(i => ({ event: i.event, provider: i.provider, series: i.series, period: i.latestPeriod, value: i.value, calc: i.calc })),
+      }
+    })
+    .catch(() => {})
+    .finally(() => { p.running = false })
+}
+
+export function debugSnapshot() {
+  return { feedUnmatched: feedDebug(), officialProbe: state.probe.data }
+}
+
 async function pullActuals(events) {
+  ensureProbe(Date.now())
   await pullOfficial(events)
   await pullFed(events)
   await pullAuctions(events)

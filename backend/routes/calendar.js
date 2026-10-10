@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import rateLimit from 'express-rate-limit'
 import { requireAuth } from '../middleware/auth.js'
-import { getCalendar, snapshot } from '../services/calendar.js'
+import { getCalendar, snapshot, debugSnapshot } from '../services/calendar.js'
 import { probeOfficial } from '../services/officialActuals.js'
 
 export function createCalendarRouter({ auth = requireAuth } = {}) {
@@ -15,7 +15,7 @@ export function createCalendarRouter({ auth = requireAuth } = {}) {
     try {
       const data = await getCalendar({ force: req.query.refresh === '1' })
       res.set('Cache-Control', 'no-store')
-      res.json(data)
+      res.json(req.query.debug === '1' ? { ...data, debug: debugSnapshot() } : data)   // ?debug=1 → why actuals are blank
     } catch (err) {
       console.error('[calendar]', err.message)
       res.status(502).json({ error: 'The economic calendar feed is unreachable right now. Try again in a minute.' })

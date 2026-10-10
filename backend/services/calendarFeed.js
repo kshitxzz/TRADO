@@ -23,14 +23,14 @@ import { SCALE, parseNum, formatLike, near, roundHalfAway } from './calendarNumb
 import { titleTokens, jaccard, CANDIDATE_SCALES } from './calendarMatch.js'
 
 export const SOURCE = 'MetaTrader 5 economic calendar (MetaQuotes)'
-const KEEP_MS = 72 * 3600_000
+const KEEP_MS = 9 * 86_400_000         // the EA back-fills 8 days after every start / server restart
 const MAX_ROWS = 5000
 const MAX_PER_PUSH = 400
 const TIME_TOL_MS = 2 * 60_000
 const SUSPECT_TOL_MS = 3 * 3600_000
 
 const store = new Map()                  // key → row
-const stats = { lastPushAt: 0, pushes: 0, accepted: 0, rejected: 0, matched: 0, offsetHint: null, lastReject: null }
+const stats = { lastPushAt: 0, pushes: 0, accepted: 0, rejected: 0, matched: 0, offsetHint: null, lastReject: null, unmatched: [] }
 
 // Users (Supabase user ids) whose TradoSync terminal may feed the calendar. Empty → feature off.
 export function feederIds() {
@@ -39,7 +39,7 @@ export function feederIds() {
 
 export function resetFeed() {
   store.clear()
-  Object.assign(stats, { lastPushAt: 0, pushes: 0, accepted: 0, rejected: 0, matched: 0, offsetHint: null, lastReject: null })
+  Object.assign(stats, { lastPushAt: 0, pushes: 0, accepted: 0, rejected: 0, matched: 0, offsetHint: null, lastReject: null, unmatched: [] })
 }
 
 // ── Ingest ───────────────────────────────────────────────────────────────
@@ -131,6 +131,29 @@ function plausible(ev, text) {
   return Math.abs(dom(t) - dom(anchors[0])) <= bound
 }
 
+// Why is each still-blank, already-released event not filled? (shown only with ?debug on the calendar page)
+function diagnose(open, rows) {
+  const out = []
+  for (const ev of open.filter(e => e.actual == null).sort((a, b) => b.time - a.time)) {
+    if (out.length >= 25) break
+    const near = rows.filter(r => r.currency === ev.currency && Math.abs(r.time - ev.time) <= TIME_TOL_MS)
+    let why
+    if (!near.length) {
+      const off = rows.find(r => r.currency === ev.currency && Math.abs(r.time - ev.time) <= SUSPECT_TOL_MS && feedScale(ev, r) != null && jaccard(titleTokens(ev.title), r.tokens) >= 0.34)
+      why = off ? `MT5 has it ${Math.round((off.time - ev.time) / 60_000)} min away from FF's time (clock offset)` : 'no MT5 value at this time (not in the MT5 calendar, not published yet, or older than what the EA has sent)'
+    } else if (!near.some(r => feedScale(ev, r) != null)) {
+      why = "MT5's previous value does not reproduce FF's previous"
+    } else {
+      why = 'numbers fit but the title / ambiguity / size check refused it'
+    }
+    out.push({ event: ev.title, currency: ev.currency, at: new Date(ev.time).toISOString(), ffForecast: ev.forecast, ffPrevious: ev.previous, why,
+               mt5Nearby: near.slice(0, 3).map(r => ({ name: r.name, actual: r.actual, previous: r.previous, revisedPrevious: r.revised, forecast: r.forecast })) })
+  }
+  return out
+}
+
+export const feedDebug = () => stats.unmatched
+
 const median = (a) => { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)] }
 
 export function mergeFeed(events, now = Date.now()) {
@@ -181,6 +204,7 @@ export function mergeFeed(events, now = Date.now()) {
     }
   }
   stats.offsetHint = deltas.length ? { count: deltas.length, minutes: median(deltas) } : null
+  stats.unmatched = diagnose(open, rows)
   stats.matched += matched
   return matched
 }

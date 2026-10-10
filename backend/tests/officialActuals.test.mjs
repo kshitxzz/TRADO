@@ -135,3 +135,9 @@ test('"Final Wholesale Inventories" is deliberately not mapped (the final estima
   assert.equal(spec('Final Wholesale Inventories m/m'), null)
   assert.equal(spec('Prelim UoM Consumer Sentiment'), null)
 })
+
+test('consumer credit also works if the series is reported in millions instead of billions', () => {
+  const s = spec('Consumer Credit m/m')
+  const e = ev('Consumer Credit m/m', '2026-10-07T19:00:00Z', '14.5B', '18.1B')
+  assert.equal(evaluate(s, e, rows({ '2026-08-01': 5120300, '2026-07-01': 5103900 })), '16.4B')
+})

@@ -1,7 +1,7 @@
 import test, { beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import express from 'express'
-import { ingest, mergeFeed, feedScale, feedStatus, resetFeed } from '../services/calendarFeed.js'
+import { ingest, mergeFeed, feedScale, feedStatus, feedDebug, resetFeed } from '../services/calendarFeed.js'
 import { createCalendarFeedRouter } from '../routes/calendarFeed.js'
 
 const NOW = Date.now()
@@ -21,7 +21,7 @@ test('ingest accepts good rows and rejects malformed or implausible ones', () =>
     { ...good, id: 'x2', a: 'abc' },                            // actual not numeric
     { ...good, id: 'x3', a: null },                             // no actual
     { ...good, id: 'x4', t: Math.round((NOW + 3600_000) / 1000) },   // future
-    { ...good, id: 'x5', t: Math.round((NOW - 5 * 86_400_000) / 1000) }, // too old
+    { ...good, id: 'x5', t: Math.round((NOW - 10 * 86_400_000) / 1000) }, // older than the 9-day retention
     { ...good, id: 'x6', name: '   ' },                         // no name
     'junk', null,
   ], NOW)
@@ -118,8 +118,31 @@ test('route: only an allow-listed user can feed the shared calendar', async () =
     assert.equal(feedStatus().rows, 0)
     const ok = await post({ token: 'good-token-1', values: v })
     assert.equal(ok.status, 200)
-    assert.deepEqual(await ok.json(), { accepted: 1, rejected: 0 })
+    const okBody = await ok.json()
+    assert.deepEqual({ accepted: okBody.accepted, rejected: okBody.rejected }, { accepted: 1, rejected: 0 })
+    assert.match(okBody.boot, /^[0-9a-f]{12}$/)                       // restart id the EA uses to re-send history
     assert.equal((await post({ token: 'good-token-1', values: 'x' })).status, 400)
     assert.equal(feedStatus().rows, 1)
   }, 'aaaa-1111')                                                      // ids are compared case-insensitively
+})
+
+test('an 8-day-old release is kept so the EA\'s week back-fill can fill the whole week', () => {
+  const events = [ev('ISM Services PMI', '55.1', '55.4', -7 * 1440)]
+  ingest([row('ISM Non-Manufacturing PMI', 54.8, 55.4, -7 * 1440)], NOW)
+  assert.equal(mergeFeed(events, NOW), 1)
+  assert.equal(events[0].actual, '54.8')
+})
+
+test('debug explains each blank: no MT5 value / previous differs / clock offset', () => {
+  const events = [
+    ev('Prelim UoM Consumer Sentiment', '47.5', '47.8'),
+    ev('Final Services PMI', '58.7', '58.7', -30),
+    ev('RCM/TIPP Economic Optimism', '44.5', '45.6', -50),
+  ]
+  ingest([row('Michigan Consumer Sentiment', 48.1, 47.6), row('RCM/TIPP Economic Optimism Index', 46.0, 45.6, 10)], NOW)
+  mergeFeed(events, NOW)
+  const d = Object.fromEntries(feedDebug().map(x => [x.event, x.why]))
+  assert.match(d['Prelim UoM Consumer Sentiment'], /previous value does not reproduce/)
+  assert.match(d['Final Services PMI'], /no MT5 value at this time/)
+  assert.match(d['RCM/TIPP Economic Optimism'], /60 min/)
 })

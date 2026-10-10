@@ -209,7 +209,9 @@ export default function EconomicCalendar() {
     else if (!silent) setLoading(true)
     const t0 = Date.now()
     try {
-      const res = await api.get(force ? '/calendar?refresh=1' : '/calendar')
+      // Opening the page as /calendar?debug adds a "debug" block to the response (visible in DevTools → Network).
+      const qs = [force && 'refresh=1', typeof window !== 'undefined' && /[?&]debug\b/.test(window.location.search) && 'debug=1'].filter(Boolean).join('&')
+      const res = await api.get(qs ? `/calendar?${qs}` : '/calendar')
       const t1 = Date.now()
       if (res.serverTime) clockOffset.current = res.serverTime - (t0 + t1) / 2
       setTick(Date.now())

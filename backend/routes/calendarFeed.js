@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import crypto from 'node:crypto'
 import { ingest, feederIds } from '../services/calendarFeed.js'
 
 // Mounted at /api/calendar/feed. Called by the TradoSync EA on ONE designated terminal
@@ -7,6 +8,9 @@ import { ingest, feederIds } from '../services/calendarFeed.js'
 // listed in CALENDAR_FEEDER_USER_IDS may feed the shared calendar. Nobody else can change what
 // every user sees.
 const TOKEN_TTL_MS = 60_000
+// Changes whenever this server restarts. The EA sees the change and re-sends the last 8 days, because the
+// feed is held in memory (Render's free tier restarts after idling).
+const BOOT_ID = crypto.randomBytes(6).toString('hex')
 
 async function defaultResolveUser(token) {
   const { supabase } = await import('../config/supabase.js')
@@ -39,7 +43,7 @@ export function createCalendarFeedRouter({ resolveUser = defaultResolveUser } = 
       }
       if (!Array.isArray(values)) return res.status(400).json({ error: 'values must be an array' })
 
-      res.json(ingest(values))
+      res.json({ ...ingest(values), boot: BOOT_ID })
     } catch (err) {
       console.error('[calendar/feed]', err.message)
       res.status(500).json({ error: 'Feed failed' })
