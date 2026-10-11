@@ -21,6 +21,7 @@
 // ─────────────────────────────────────────────────────────────────────────
 import { SCALE, parseNum, formatLike, near, roundHalfAway } from './calendarNumbers.js'
 import { titleTokens, jaccard, CANDIDATE_SCALES } from './calendarMatch.js'
+import { saveCache } from './calendarStore.js'
 
 export const SOURCE = 'MetaTrader 5 economic calendar (MetaQuotes)'
 const KEEP_MS = 9 * 86_400_000         // the EA back-fills 8 days after every start / server restart
@@ -86,8 +87,37 @@ export function ingest(values, now = Date.now()) {
     for (const [k] of oldest) store.delete(k)
   }
   stats.lastPushAt = now; stats.pushes++; stats.accepted += accepted; stats.rejected += rejected
+  if (accepted) persistSoon(now)
   if (rejected) stats.lastReject = `${rejected} of ${list.length} values were rejected (bad format or time)`
   return { accepted, rejected }
+}
+
+// ── Durable copy (survives a server restart) ──
+let lastSavedAt = 0
+let saving = false
+function persistSoon(now) {
+  if (saving || now - lastSavedAt < 60_000) return
+  saving = true
+  lastSavedAt = now
+  saveCache('feed', { rows: exportRows() }).catch(() => {}).finally(() => { saving = false })
+}
+
+export function exportRows() {
+  return [...store.values()].map(r => ({ key: r.key, time: r.time, currency: r.currency, name: r.name, actual: r.actual,
+                                          previous: r.previous, revised: r.revised, forecast: r.forecast, mult: r.mult }))
+}
+
+// Re-validates every row exactly like a live push would; never trusts the stored copy blindly.
+export function restoreRows(rows, now = Date.now()) {
+  let n = 0
+  for (const r of Array.isArray(rows) ? rows : []) {
+    const row = sanitizeRow({ cur: r?.currency, t: r?.time / 1000, a: r?.actual, p: r?.previous, rp: r?.revised, f: r?.forecast, m: r?.mult, name: r?.name }, now)
+    if (!row) continue
+    row.key = typeof r.key === 'string' ? r.key.slice(0, 80) : row.key
+    store.set(row.key, row)
+    n++
+  }
+  return n
 }
 
 export function feedStatus() {

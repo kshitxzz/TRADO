@@ -34,7 +34,8 @@ import { titleTokens, jaccard, agreeingScale } from './calendarMatch.js'
 import { officialEnabled, officialStatus, fetchOfficialActuals, specFor, probeOfficial } from './officialActuals.js'
 import { fedStatus, fetchFedActuals, fedKindOf } from './fedActuals.js'
 import { treasuryStatus, fetchAuctionActuals, auctionSpecFor } from './treasuryAuctions.js'
-import { mergeFeed, feedStatus, feedDebug } from './calendarFeed.js'
+import { mergeFeed, feedStatus, feedDebug, restoreRows } from './calendarFeed.js'
+import { loadCache, saveCache } from './calendarStore.js'
 
 export { parseNum, formatLike }
 
@@ -262,6 +263,9 @@ const state = {
   auctions: { lastFetch: 0, matched: 0 },
   nextWeek: { at: 0, events: [] },
   probe: { at: 0, running: false, data: null },
+  restoring: null, restored: false, restoredFromSaved: false,
+  ffFails: 0,
+  saved: { key: '', at: 0, busy: false },
   actualByKey: new Map(),  // id → { actual, source, url, note }, so a value survives a schedule refresh
 }
 
@@ -413,7 +417,43 @@ async function pullActuals(events) {
   await pullFmp(events)
 }
 
-const remember = () => { for (const e of state.events) if (e.actual != null) state.actualByKey.set(e.id, { actual: e.actual, source: e.actualSource, url: e.actualUrl, note: e.actualNote }) }
+// Keep a durable copy of the schedule + actuals (Supabase) so a restart never leaves the page empty.
+function persistSoon() {
+  const s = state.saved
+  const key = `${state.updatedAt}|${state.actualByKey.size}`
+  const now = Date.now()
+  if (!state.events.length || s.busy || key === s.key || now - s.at < 120_000) return
+  s.busy = true; s.key = key; s.at = now
+  saveCache('schedule', { events: state.events, actuals: [...state.actualByKey] }).catch(() => {}).finally(() => { s.busy = false })
+}
+
+const remember = () => {
+  for (const e of state.events) if (e.actual != null) state.actualByKey.set(e.id, { actual: e.actual, source: e.actualSource, url: e.actualUrl, note: e.actualNote })
+  persistSoon()
+}
+
+// After a restart: load the saved copy (if any). It is shown immediately and refreshed from Forex Factory in the background.
+async function restore() {
+  try {
+    const sched = await loadCache('schedule')
+    const p = sched?.payload
+    if (p && Array.isArray(p.events) && Number.isFinite(sched.updatedAt) && Date.now() - sched.updatedAt < 8 * 24 * HOUR) {
+      const ok = p.events.filter(e => e && typeof e.id === 'string' && Number.isFinite(e.time) && typeof e.title === 'string' && typeof e.currency === 'string')
+      if (ok.length) {
+        state.events = ok
+        state.updatedAt = sched.updatedAt
+        for (const [id, k] of Array.isArray(p.actuals) ? p.actuals : []) {
+          if (typeof id === 'string' && k && k.actual != null) state.actualByKey.set(id, { actual: k.actual, source: k.source ?? null, url: k.url ?? null, note: k.note ?? null })
+        }
+        state.restoredFromSaved = true
+      }
+    }
+    const feed = await loadCache('feed')
+    if (feed?.payload) restoreRows(feed.payload.rows)
+  } catch (err) {
+    console.error('[calendar] restore:', err.message)
+  }
+}
 
 async function refresh() {
   state.attemptAt = Date.now()
@@ -424,9 +464,17 @@ async function refresh() {
     state.events = events
     state.updatedAt = Date.now()
     state.lastError = null
+    state.ffFails = 0
+    state.ffBackoffUntil = 0
+    state.restoredFromSaved = false
   } catch (err) {
     state.lastError = err.status ? `Forex Factory HTTP ${err.status}` : err.message
     console.error('[calendar] schedule:', state.lastError)
+    // Back off after EVERY failure (30 s, 1 min … max 10 min; a 429 waits the full 10) so a refusal is never made
+    // worse by retrying: hammering Forex Factory is what keeps its throttle on.
+    state.ffFails++
+    const wait = err.status === 429 ? FF_BACKOFF_MS : Math.min(FF_BACKOFF_MS, 30_000 * 2 ** Math.min(state.ffFails, 5))
+    state.ffBackoffUntil = Math.max(state.ffBackoffUntil, Date.now() + wait)
     if (!state.events.length) throw err                  // nothing cached → caller reports failure
   }
   await pullActuals(state.events)
@@ -442,15 +490,26 @@ function ttlNow(now) {
 }
 
 export async function getCalendar({ force = false } = {}) {
+  if (!state.restored) {                                   // first request after a (re)start: load the saved copy
+    state.restored = true
+    state.restoring = restore()
+  }
+  if (state.restoring) await state.restoring
+
   const now = Date.now()
   const age = now - state.updatedAt
   const minAge = force ? FORCE_MIN_AGE_MS : ttlNow(now)
   const throttled = now < state.ffBackoffUntil
-  const needs = !state.events.length || (age >= minAge && now - state.attemptAt >= 30_000 && !throttled)
+  const gapOk = now - state.attemptAt >= (state.events.length ? 30_000 : 60_000)
+  // With nothing cached we still must not retry in a loop: wait out the back-off like any other refresh.
+  const needs = state.events.length ? (age >= minAge && gapOk && !throttled) : (gapOk && !throttled)
   if (needs) {
     if (!state.inflight) state.inflight = refresh().finally(() => { state.inflight = null })
     // First load must wait; later refreshes also wait briefly so the response is fresh.
     await state.inflight
+  } else if (!state.events.length) {
+    if (state.inflight) await state.inflight               // a refresh is already running — wait for it
+    if (!state.events.length) throw new Error(state.lastError || 'Forex Factory feed unavailable')   // retry not due yet
   } else if (actualsEnabled() && !state.inflight) {
     // Schedule is fresh, but a release may have just landed — let the actuals path decide.
     state.inflight = pullActuals(state.events).then(remember).finally(() => { state.inflight = null })
