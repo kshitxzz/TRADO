@@ -5,13 +5,13 @@
 import { parseNum, near } from './calendarNumbers.js'
 
 const TOKEN_ALIASES = [
-  [/s\s*&\s*p global/g, ' '], [/non[- ]?manufacturing/g, 'services'],
+  [/\buom\b|university of michigan|\bumich\b/g, 'michigan'], [/s\s*&\s*p global/g, ' '], [/non[- ]?manufacturing/g, 'services'],
   [/non[- ]?farm payrolls?/g, 'nfp'], [/consumer price index/g, 'cpi'], [/inflation rate/g, 'cpi'],
   [/producer price index/g, 'ppi'], [/\bmom\b|m\/m/g, 'mom'], [/\byoy\b|y\/y/g, 'yoy'], [/\bqoq\b|q\/q/g, 'qoq'],
   [/initial jobless claims|unemployment claims/g, 'claims'], [/&/g, ' and '],
 ]
 // Words that differ between providers without changing which release it is (periods, revision stage, publisher).
-const STOP = new Set(['the', 'of', 'and', 'rate', 'index', 'change', 'final', 'prelim', 'preliminary', 'flash', 'global',
+const STOP = new Set(['the', 'of', 'and', 'rate', 'index', 'change', 'final', 'prelim', 'preliminary', 'flash', 'global', 'prel',
   'jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'sept', 'oct', 'nov', 'dec', 'q1', 'q2', 'q3', 'q4'])
 export function titleTokens(t) {
   let s = String(t || '').toLowerCase()

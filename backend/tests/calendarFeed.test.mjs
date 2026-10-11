@@ -1,7 +1,7 @@
 import test, { beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import express from 'express'
-import { ingest, mergeFeed, feedScale, feedStatus, feedDebug, resetFeed } from '../services/calendarFeed.js'
+import { ingest, mergeFeed, feedScale, forecastScale, feedStatus, feedDebug, resetFeed } from '../services/calendarFeed.js'
 import { createCalendarFeedRouter } from '../routes/calendarFeed.js'
 
 const NOW = Date.now()
@@ -85,8 +85,8 @@ test('an implausible value is refused', () => {
 })
 
 test('a one-hour clock error is reported as an offset hint, not silently matched', () => {
-  const events = [ev('Unemployment Rate', '4.3%', '4.3%', -70)]
-  ingest([row('Unemployment Rate', 4.4, 4.3, -10)], NOW)              // the row's clock is 60 min later than FF's time
+  const events = [ev('Core CPI m/m', '0.3%', '0.3%', -70)]
+  ingest([row('Inflation Rate MoM', 0.4, 0.3, -10)], NOW)             // similar (not identical) name, 60 min later than FF's time
   assert.equal(mergeFeed(events, NOW), 0)
   assert.deepEqual(feedStatus().offsetHint, { count: 1, minutes: 60 })
 })
@@ -139,7 +139,7 @@ test('debug explains each blank: no MT5 value / previous differs / clock offset'
     ev('Final Services PMI', '58.7', '58.7', -30),
     ev('RCM/TIPP Economic Optimism', '44.5', '45.6', -50),
   ]
-  ingest([row('Michigan Consumer Sentiment', 48.1, 47.6), row('RCM/TIPP Economic Optimism Index', 46.0, 45.6, 10)], NOW)
+  ingest([row('Michigan Consumer Sentiment', 48.1, 47.6), row('RCM/TIPP Optimism Gauge', 46.0, 45.6, 10)], NOW)
   mergeFeed(events, NOW)
   const d = Object.fromEntries(feedDebug().map(x => [x.event, x.why]))
   assert.match(d['Prelim UoM Consumer Sentiment'], /previous value does not reproduce/)
@@ -177,4 +177,46 @@ test('a few minutes apart is fine when the titles clearly agree, not otherwise',
   const differ = [ev('Non-Farm Employment Change', '150K', '22K', -20)]
   ingest([row('Employment Report', 151, 22, -14)], NOW)                                // 6 min later, unrelated name
   assert.equal(mergeFeed(differ, NOW), 0)
+})
+
+test('"UoM" and "Michigan" are the same publisher; "Prel" is a revision stage', () => {
+  const events = [ev('Prelim UoM Consumer Sentiment', '47.5', '47.8')]
+  ingest([row('Michigan Consumer Sentiment Prel', 48.1, 47.8)], NOW)
+  assert.equal(mergeFeed(events, NOW), 1)
+  assert.equal(events[0].actual, '48.1')
+})
+
+test('previous differs but the forecast is reproduced and the title is near-identical → still matched', () => {
+  const events = [ev('Prelim UoM Consumer Sentiment', '47.5', '47.8')]
+  ingest([row('Michigan Consumer Sentiment', 48.1, 47.6, -10, { f: 47.5 })], NOW)
+  assert.equal(forecastScale(events[0], { forecast: 47.5 }), 1)
+  assert.equal(mergeFeed(events, NOW), 1)
+  assert.equal(events[0].actual, '48.1')
+  // same row, but a different forecast and a different previous → nothing to anchor on
+  resetFeed()
+  const other = [ev('Prelim UoM Consumer Sentiment', '47.5', '47.8')]
+  ingest([row('Michigan Consumer Sentiment', 48.1, 47.6, -10, { f: 49.0 })], NOW)
+  assert.equal(mergeFeed(other, NOW), 0)
+})
+
+test('same release listed 75 minutes apart by the two sources matches only with an (almost) identical title', () => {
+  const events = [ev('Unemployment Rate', '3.1%', '3.1%', -100, 'CHF')]
+  ingest([{ ...row('Unemployment Rate', 3.0, 3.1, -25), cur: 'CHF' }], NOW)
+  assert.equal(mergeFeed(events, NOW), 1)
+  assert.equal(events[0].actual, '3.0%')
+  resetFeed()
+  const e2 = [ev('Unemployment Rate', '3.1%', '3.1%', -100, 'CHF')]
+  ingest([{ ...row('Employment Situation', 3.0, 3.1, -25), cur: 'CHF' }], NOW)
+  assert.equal(mergeFeed(e2, NOW), 0)
+})
+
+test('debug lists the closest-titled MT5 rows first', () => {
+  const events = [ev('Prelim UoM Consumer Sentiment', '47.5', '47.8')]
+  ingest([
+    row('Michigan 5-Year Inflation Expectations', 3.5, 3.4, -10, { id: 'a' }), row('Michigan Inflation Expectations', 4.7, 4.6, -10, { id: 'b' }),
+    row('Michigan Current Conditions', 44.7, 50.9, -10, { id: 'c' }), row('Michigan Consumer Expectations', 49.1, 43.2, -10, { id: 'd' }),
+    row('Michigan Consumer Sentiment', 48.1, 47.0, -10, { id: 'e' }),
+  ], NOW)
+  mergeFeed(events, NOW)
+  assert.equal(feedDebug()[0].mt5Nearby[0].name, 'Michigan Consumer Sentiment')
 })

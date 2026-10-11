@@ -28,6 +28,7 @@ const MAX_ROWS = 5000
 const MAX_PER_PUSH = 400
 const TIME_TOL_MS = 2 * 60_000
 const WIDE_TOL_MS = 10 * 60_000          // allowed when the titles clearly agree (sources round release times differently)
+const NEAR_IDENTICAL_TOL_MS = 120 * 60_000   // only for near-identical titles (a source that lists the release in another time zone)
 const SUSPECT_TOL_MS = 3 * 3600_000
 
 const store = new Map()                  // key → row
@@ -124,6 +125,15 @@ export function feedScale(ev, r) {
   return null
 }
 
+// If FF's previous can't be reproduced (it was revised, or sources count the previous differently) but FF's
+// forecast is reproduced exactly by MT5's forecast, that is a second, independent-enough anchor — used only
+// together with a strong title match.
+export function forecastScale(ev, r) {
+  const fc = parseNum(ev.forecast)
+  if (!fc || dom(fc) === 0 || r.forecast == null) return null
+  return CANDIDATE_SCALES.find(s => reproduces(fc, r.forecast, s)) ?? null
+}
+
 function plausible(ev, text) {
   const t = parseNum(text)
   const anchors = [parseNum(ev.forecast), parseNum(ev.previous)].filter(Boolean)
@@ -146,18 +156,20 @@ function diagnose(open, rows) {
                  mt5Nearby: named.slice(0, 3).map(r => ({ name: r.name, at: new Date(r.time).toISOString(), actual: r.actual, multiplier: r.mult })) })
       continue
     }
+    const evTok = titleTokens(ev.title)
     const near = rows.filter(r => r.currency === ev.currency && Math.abs(r.time - ev.time) <= WIDE_TOL_MS)
+      .map(r => ({ r, sim: jaccard(evTok, r.tokens) })).sort((a, b) => b.sim - a.sim)    // closest titles first
     let why
     if (!near.length) {
       const off = rows.find(r => r.currency === ev.currency && Math.abs(r.time - ev.time) <= SUSPECT_TOL_MS && feedScale(ev, r) != null && jaccard(titleTokens(ev.title), r.tokens) >= 0.34)
       why = off ? `MT5 has it ${Math.round((off.time - ev.time) / 60_000)} min away from FF's time (clock offset)` : 'no MT5 value at this time (not in the MT5 calendar, not published yet, or older than what the EA has sent)'
-    } else if (!near.some(r => feedScale(ev, r) != null)) {
+    } else if (!near.some(({ r }) => feedScale(ev, r) != null)) {
       why = "MT5's previous value does not reproduce FF's previous"
     } else {
       why = 'numbers fit but the title / ambiguity / size check refused it'
     }
     out.push({ event: ev.title, currency: ev.currency, at: new Date(ev.time).toISOString(), ffForecast: ev.forecast, ffPrevious: ev.previous, why,
-               mt5Nearby: near.slice(0, 3).map(r => ({ name: r.name, actual: r.actual, previous: r.previous, revisedPrevious: r.revised, forecast: r.forecast })) })
+               mt5Nearby: near.slice(0, 8).map(({ r }) => ({ name: r.name, actual: r.actual, previous: r.previous, revisedPrevious: r.revised, forecast: r.forecast })) })
   }
   return out
 }
@@ -193,11 +205,13 @@ export function mergeFeed(events, now = Date.now()) {
     for (const r of rows) {
       if (r.used || r.currency !== ev.currency) continue
       const dt = Math.abs(r.time - ev.time)
-      if (dt > WIDE_TOL_MS) continue
-      const scale = feedScale(ev, r)
-      if (scale == null) continue
+      if (dt > NEAR_IDENTICAL_TOL_MS) continue
       const sim = jaccard(evTokens, r.tokens)
-      if (dt > TIME_TOL_MS && sim < 0.34) continue                          // a few minutes apart needs a clear title match
+      if (dt > WIDE_TOL_MS && sim < 0.8) continue                           // an hour apart needs near-identical titles
+      if (dt > TIME_TOL_MS && dt <= WIDE_TOL_MS && sim < 0.34) continue      // a few minutes apart needs a clear title match
+      let scale = feedScale(ev, r)
+      if (scale == null && sim >= 0.6) scale = forecastScale(ev, r)
+      if (scale == null) continue
       cands.push({ r, scale, sim })
     }
     if (!cands.length) continue
