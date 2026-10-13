@@ -55,7 +55,7 @@ function DropdownPortal({ open, anchorRef, onClose, children, width = 220, align
     maxHeight: pos?.maxH, overflowY: 'auto', borderRadius: 12,
     visibility: pos ? 'visible' : 'hidden', // measured off-screen first, then revealed
   }
-  return createPortal(<div ref={panelRef} style={style}>{children}</div>, document.body)
+  return createPortal(<div ref={panelRef} className="nb-sb" style={style}>{children}</div>, document.body)
 }
 
 // Template icon keys → lucide components.
@@ -195,7 +195,7 @@ export function Dropdown({ value, options, onChange, placeholder = 'Select…', 
         <ChevronDown size={14} className="flex-shrink-0 transition-transform" style={{ color: 'var(--text-muted)', transform: open ? 'rotate(180deg)' : 'none' }} />
       </button>
       <DropdownPortal open={open} anchorRef={ref} onClose={() => setOpen(false)} width={w} align="left" gap={6}>
-        <div className="p-1.5 nb-pop max-h-64 overflow-y-auto" role="listbox"
+        <div className="p-1.5 nb-pop nb-sb max-h-64 overflow-y-auto" role="listbox"
              style={{ background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 12, boxShadow: '0 16px 40px rgba(0,0,0,0.45)' }}>
           {options.map(o => (
             <button key={String(o.value)} role="option" aria-selected={o.value === value}

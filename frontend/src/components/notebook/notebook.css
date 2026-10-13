@@ -78,9 +78,41 @@ html.light .nb-accent-text { color: var(--accent-purple-deep); }
   background: var(--nb-tile); border-radius: 10px;
 }
 
-/* Scroll areas -------------------------------------------------------- */
-.nb-scroll { overflow-y: auto; overflow-x: hidden; scrollbar-width: thin; }
-.nb-hscroll { overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; }
+/* Scroll areas ------------------------------------------------------- */
+/* Themed scrollbars. `color-scheme` makes the browser draw its native
+   scrollbar in the matching theme, and `scrollbar-color` / the -webkit rules
+   give it a slim, low-contrast thumb on a transparent track — so it follows
+   dark / light mode instead of showing the default white bar. `.nb-sb` is for
+   scrollers inside portaled menus, which live outside `.nb-root`. */
+.nb-scroll { overflow-y: auto; overflow-x: hidden; }
+.nb-hscroll { overflow-x: auto; overflow-y: hidden; }
+
+.nb-scroll, .nb-hscroll, .nb-sb, textarea.nb-field, .nb-rich-edit, .nb-rich table {
+  color-scheme: dark;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.20) transparent;
+}
+html.light .nb-scroll, html.light .nb-hscroll, html.light .nb-sb,
+html.light textarea.nb-field, html.light .nb-rich-edit, html.light .nb-rich table {
+  color-scheme: light;
+  scrollbar-color: rgba(0, 0, 0, 0.28) transparent;
+}
+
+/* WebKit fallback (older Safari) */
+.nb-scroll::-webkit-scrollbar, .nb-hscroll::-webkit-scrollbar, .nb-sb::-webkit-scrollbar,
+textarea.nb-field::-webkit-scrollbar, .nb-rich-edit::-webkit-scrollbar, .nb-rich table::-webkit-scrollbar { width: 8px; height: 8px; }
+.nb-scroll::-webkit-scrollbar-track, .nb-hscroll::-webkit-scrollbar-track, .nb-sb::-webkit-scrollbar-track,
+textarea.nb-field::-webkit-scrollbar-track, .nb-rich-edit::-webkit-scrollbar-track, .nb-rich table::-webkit-scrollbar-track { background: transparent; }
+.nb-scroll::-webkit-scrollbar-thumb, .nb-hscroll::-webkit-scrollbar-thumb, .nb-sb::-webkit-scrollbar-thumb,
+textarea.nb-field::-webkit-scrollbar-thumb, .nb-rich-edit::-webkit-scrollbar-thumb, .nb-rich table::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.20); border-radius: 8px;
+}
+html.light .nb-scroll::-webkit-scrollbar-thumb, html.light .nb-hscroll::-webkit-scrollbar-thumb, html.light .nb-sb::-webkit-scrollbar-thumb,
+html.light textarea.nb-field::-webkit-scrollbar-thumb, html.light .nb-rich-edit::-webkit-scrollbar-thumb, html.light .nb-rich table::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.28);
+}
+.nb-scroll::-webkit-scrollbar-thumb:hover, .nb-hscroll::-webkit-scrollbar-thumb:hover, .nb-sb::-webkit-scrollbar-thumb:hover { background: rgba(139, 92, 246, 0.6); }
+.nb-scroll::-webkit-scrollbar-corner, .nb-hscroll::-webkit-scrollbar-corner, .nb-sb::-webkit-scrollbar-corner { background: transparent; }
 
 /* Rich text ----------------------------------------------------------- */
 .nb-rich { font-size: 14px; line-height: 1.65; color: var(--text-primary); word-break: break-word; }

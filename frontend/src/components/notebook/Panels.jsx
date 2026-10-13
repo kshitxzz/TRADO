@@ -143,7 +143,7 @@ export function NoteMenu({ note, folders, onPin, onDuplicate, onMove, onToggleSt
           <>
             <MenuDivider />
             <MenuLabel>Move to</MenuLabel>
-            <div className="max-h-40 overflow-y-auto">
+            <div className="max-h-40 overflow-y-auto nb-sb">
               {folders.map(f => (
                 <MenuItem key={f.id} icon={FolderInput} active={f.id === note.folder_id}
                           onClick={stop(() => f.id !== note.folder_id && onMove(f.id))}
