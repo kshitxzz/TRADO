@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { ArrowRight, BarChart2, Zap, Shield, TrendingUp, CheckCircle, ChevronRight, Trophy, LineChart } from 'lucide-react'
+import { ArrowRight, BarChart2, Zap, Shield, TrendingUp, CheckCircle, ChevronRight, LineChart } from 'lucide-react'
 import Logo from '../components/ui/Logo'
 import AnimatedCounter from '../components/landing/AnimatedCounter'
 import PlatformShowcase from '../components/landing/PlatformShowcase'
@@ -32,7 +32,6 @@ const GLYPHS = [
 const MORE_FEATURES = [
   { icon: BarChart2,  title: 'Advanced Reports',       desc: 'Deep-dive breakdowns by symbol, strategy, and time — every angle of your performance, exportable.', to: '/analytics/advanced-reports' },
   { icon: TrendingUp, title: 'Progress Tracker',       desc: 'Weekly goals, streaks, and a leaderboard to keep you accountable and see how you stack up.', to: '/progress' },
-  { icon: Trophy,     title: 'Share Cards',            desc: 'Turn your stats into a clean, professional card you can post or send — no screenshots needed.', to: '/share-cards' },
   { icon: LineChart,  title: 'Calendar Heatmap',       desc: 'A day-by-day view of your trading — spot your best days and your worst habits at a glance.', to: '/analytics/day-view' },
   { icon: Shield,     title: 'Multi-Broker Accounts',  desc: 'Connect more than one MT5 account and switch between them without losing your history.', to: '/accounts' },
   { icon: Zap,        title: 'Live P&L Ticking',       desc: 'Open positions update in real time, right down to the digit — no refresh, no delay.', to: '/dashboard' },

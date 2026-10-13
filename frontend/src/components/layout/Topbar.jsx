@@ -31,7 +31,6 @@ const TITLES = {
   '/tools':                     'Trading Tools',
   '/tools/position-size-calculator': 'Position Size Calculator',
   '/tools/market-hours':         'Forex Market Hours',
-  '/share-cards':                'Share Cards',
   '/accounts':                  'Broker Hub',
   '/settings':                  'Settings',
   '/pricing':                   'Pricing',

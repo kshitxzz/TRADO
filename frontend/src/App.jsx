@@ -23,7 +23,6 @@ import TradoAI       from './pages/TradoAI'
 import TradoAI2      from './pages/TradoAI2'
 import TradeDNA       from './pages/TradeDNA'
 import Progress      from './pages/Progress'
-import ShareCards    from './pages/ShareCards'
 import Accounts      from './pages/Accounts'
 import Settings      from './pages/Settings'
 import Pricing       from './pages/Pricing'
@@ -109,7 +108,6 @@ export default function App() {
         <Route path="/trade-dna"  element={<PrivateRoute><TradeDNA /></PrivateRoute>} />
         <Route path="/progress"   element={<PrivateRoute><Progress /></PrivateRoute>} />
         <Route path="/leaderboard" element={<Navigate to="/progress" replace />} />
-        <Route path="/share-cards"element={<PrivateRoute><ShareCards /></PrivateRoute>} />
         <Route path="/accounts"   element={<PrivateRoute><Accounts /></PrivateRoute>} />
         <Route path="/broker-hub" element={<Navigate to="/accounts" replace />} />
         <Route path="/settings"   element={<PrivateRoute><Settings /></PrivateRoute>} />

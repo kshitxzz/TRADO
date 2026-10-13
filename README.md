@@ -92,7 +92,6 @@ trado/
 │   │   │   ├── BrokerHub.jsx    # Broker connection + gold tracker
 │   │   │   ├── Settings.jsx     # Profile, notifications, billing
 │   │   │   ├── Progress.jsx     # Goals + streak tracker
-│   │   │   ├── ShareCards.jsx   # Shareable performance cards
 │   │   │   ├── Pricing.jsx      # Public pricing page
 │   │   │   └── analytics/
 │   │   │       ├── Performance.jsx  # P&L by symbol/session/strategy

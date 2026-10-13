@@ -3,7 +3,7 @@ import { NavLink, useNavigate, useLocation } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   LayoutDashboard, TrendingUp, BookOpen, Sparkles, Target,
-  Trophy, Share2, Wallet, Settings, LogOut, ChevronLeft,
+  Trophy, Wallet, Settings, LogOut, ChevronLeft,
   ChevronRight, BarChart2, ChevronDown, ChevronUp, X,
   BarChart3, Download, FileText, CalendarDays, CalendarClock, Clock, Play, Brain, Wrench, Newspaper, NotebookPen,
 } from 'lucide-react'
@@ -32,7 +32,6 @@ const NAV_MAIN = [
   { label: 'News',             icon: Newspaper,   path: '/news' },
   { label: 'Tools',            icon: Wrench,      path: '/tools' },
   { label: 'Growth Roadmap',   icon: Target,      path: '/progress' },
-  { label: 'Share Cards',      icon: Share2,      path: '/share-cards' },
 ]
 
 const NAV_BOTTOM = [

@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Search, LayoutDashboard, TrendingUp, BookOpen, Wallet, BarChart3, Download,
-  FileText, CalendarDays, Clock, Play, Sparkles, Brain, Target, Share2,
+  FileText, CalendarDays, Clock, Play, Sparkles, Brain, Target,
   Settings, CreditCard, ArrowRight, Plus, PenLine, RefreshCw, ArrowUp, ArrowDown, CornerDownLeft,
   Wrench, Calculator, Newspaper, CalendarClock, NotebookPen,
 } from 'lucide-react'
@@ -56,7 +56,6 @@ function useCommandGroups(navigate, onClose) {
         section: 'Growth',
         items: [
           { id: 'growth-roadmap', label: 'Growth Roadmap', desc: 'Track XP, milestones, and rank progress', icon: Target,  run: go('/progress') },
-          { id: 'share-cards',    label: 'Share Cards',    desc: 'Create shareable trade performance cards', icon: Share2, run: go('/share-cards') },
         ],
       },
       {

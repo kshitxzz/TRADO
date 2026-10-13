@@ -2,7 +2,7 @@ import { useMemo, useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Activity, Wallet, TrendingUp, Flame, Trophy,
-  RefreshCw, Plug, Sparkles, Plus, Share2,
+  RefreshCw, Plug, Sparkles, Plus,
 } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { LineChart, Line, BarChart, Bar, Cell, XAxis, YAxis, CartesianGrid, ReferenceLine, Tooltip, ResponsiveContainer } from 'recharts'
@@ -54,7 +54,7 @@ function IconBadge({ icon: Icon, color, bg, onClick, title }) {
 // the pulsing "LIVE" badge for cards actively streaming from an open
 // position. Omit `rawValue`/`format` and pass a pre-formatted `value`
 // string for static cards.
-function BigCard({ label, value, rawValue, format, valueColor, sub, icon: Icon, iconColor, iconBg, onShare, showLiveDot, children }) {
+function BigCard({ label, value, rawValue, format, valueColor, sub, icon: Icon, iconColor, iconBg, showLiveDot, children }) {
   return (
     <div className="stat-tile p-6">
       <div className="flex items-start justify-between mb-4">
@@ -69,7 +69,6 @@ function BigCard({ label, value, rawValue, format, valueColor, sub, icon: Icon, 
           )}
         </span>
         <div className="flex items-center gap-2 flex-shrink-0">
-          {onShare && <IconBadge icon={Share2} onClick={onShare} title="Share this stat" />}
           {Icon && <IconBadge icon={Icon} color={iconColor} bg={iconBg} />}
         </div>
       </div>
@@ -321,7 +320,6 @@ export default function Dashboard() {
               : new Date().toLocaleDateString('en-US', { weekday:'long', month:'short', day:'numeric' })
           }
           icon={Activity} iconColor="#22C55E" iconBg="rgba(34,197,94,0.12)"
-          onShare={() => navigate('/share-cards')}
         >
           {today.openCount > 0 && (
             <div className="flex items-center gap-1.5 mt-2">
@@ -390,7 +388,6 @@ export default function Dashboard() {
           <div className="flex items-center justify-between mb-3">
             <span className="text-sm" style={{ color: 'var(--text-muted)' }}>{monthName}</span>
             <div className="flex items-center gap-2 flex-shrink-0">
-              <IconBadge icon={Share2} onClick={() => navigate('/share-cards')} title="Share this stat" />
               <TrendingUp size={15} style={{ color: pnlColor(monthStats.pnl) }} />
             </div>
           </div>
