@@ -5,7 +5,7 @@ import {
   Search, LayoutDashboard, TrendingUp, BookOpen, Wallet, BarChart3, Download,
   FileText, CalendarDays, Clock, Play, Sparkles, Brain, Target, Share2,
   Settings, CreditCard, ArrowRight, Plus, PenLine, RefreshCw, ArrowUp, ArrowDown, CornerDownLeft,
-  Wrench, Calculator, Newspaper, CalendarClock,
+  Wrench, Calculator, Newspaper, CalendarClock, NotebookPen,
 } from 'lucide-react'
 
 // ── Command list ──────────────────────────────────────────────────────────────
@@ -33,6 +33,7 @@ function useCommandGroups(navigate, onClose) {
           { id: 'dashboard', label: 'Dashboard', desc: 'View your trading overview and stats',  icon: LayoutDashboard, run: go('/dashboard') },
           { id: 'trades',    label: 'Trades',    desc: 'View and manage all your trades',        icon: TrendingUp,      run: go('/trades') },
           { id: 'journal',   label: 'Journal',   desc: 'Write and review your trade journal entries', icon: BookOpen,    run: go('/journal') },
+          { id: 'notebook',  label: 'Notebook',  desc: 'Notes, templates and trading ideas',       icon: NotebookPen, run: go('/notebook') },
           { id: 'news',      label: 'News',      desc: 'Market news matched to your symbols', icon: Newspaper, run: go('/news') },
           { id: 'calendar',  label: 'Economic Calendar', desc: 'Upcoming releases, forecasts and impact', icon: CalendarClock, run: go('/economic-calendar') },
           { id: 'accounts',  label: 'Broker Hub',  desc: 'Manage broker connections and account settings', icon: Wallet,   run: go('/accounts') },

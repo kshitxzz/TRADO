@@ -3,7 +3,7 @@ import { motion } from 'framer-motion'
 import Sidebar from './Sidebar'
 import Topbar  from './Topbar'
 
-export default function PageWrapper({ children, onSync, syncing, bgColor }) {
+export default function PageWrapper({ children, onSync, syncing, bgColor, flush = false }) {
   // Sidebar and Topbar are siblings, not parent/child, so the "is the mobile
   // nav drawer open" state has to live here and get passed to both — Topbar
   // owns the hamburger button that opens it, Sidebar owns the drawer itself.
@@ -20,13 +20,16 @@ export default function PageWrapper({ children, onSync, syncing, bgColor }) {
             title) makes this whole region horizontally scrollable, not
             just clipped. Topbar + page content both live in here, which is
             why that bug showed up as the *entire* page shifting sideways. */}
-        <main className="flex-1 overflow-y-auto overflow-x-hidden">
+        {/* `flush`: edge-to-edge page (e.g. Notebook) — no padding, and the
+            page fills the space under the Topbar and manages its own scrolling
+            instead of the whole region scrolling. */}
+        <main className={flush ? 'flex-1 flex flex-col overflow-hidden' : 'flex-1 overflow-y-auto overflow-x-hidden'}>
           <Topbar onSync={onSync} syncing={syncing} onMobileMenuClick={() => setMobileNavOpen(true)} />
           <motion.div
             initial={{ opacity: 0, y: 6 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.25 }}
-            className="p-3 sm:p-4 md:p-6"
+            className={flush ? 'flex-1 min-h-0 flex flex-col' : 'p-3 sm:p-4 md:p-6'}
           >
             {children}
           </motion.div>

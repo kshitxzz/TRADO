@@ -23,6 +23,7 @@ const TITLES = {
   '/analytics/trade-replay':    'Trade Replay',
   '/trades':                    'Trades',
   '/journal':                   'Journal',
+  '/notebook':                  'Notebook',
   '/trado-ai':                  'Trado AI',
   '/trado-ai-2':                'Trado AI 2.0',
   '/progress':                  'Progress Tracker',

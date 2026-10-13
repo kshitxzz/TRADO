@@ -18,6 +18,7 @@ import ResetPassword from './pages/ResetPassword'
 import Dashboard     from './pages/Dashboard'
 import Trades        from './pages/Trades'
 import Journal       from './pages/Journal'
+import Notebook      from './pages/Notebook'
 import TradoAI       from './pages/TradoAI'
 import TradoAI2      from './pages/TradoAI2'
 import TradeDNA       from './pages/TradeDNA'
@@ -102,6 +103,7 @@ export default function App() {
         <Route path="/dashboard"  element={<PrivateRoute><Dashboard /></PrivateRoute>} />
         <Route path="/trades"     element={<PrivateRoute><Trades /></PrivateRoute>} />
         <Route path="/journal"    element={<PrivateRoute><Journal /></PrivateRoute>} />
+        <Route path="/notebook"   element={<PrivateRoute><Notebook /></PrivateRoute>} />
         <Route path="/trado-ai"   element={<PrivateRoute><TradoAI /></PrivateRoute>} />
         <Route path="/trado-ai-2" element={<PrivateRoute><TradoAI2 /></PrivateRoute>} />
         <Route path="/trade-dna"  element={<PrivateRoute><TradeDNA /></PrivateRoute>} />
