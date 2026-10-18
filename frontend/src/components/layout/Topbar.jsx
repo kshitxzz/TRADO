@@ -39,6 +39,7 @@ const TITLES = {
 
 function pageTitle(pathname) {
   if (TITLES[pathname]) return TITLES[pathname]
+  if (pathname.startsWith('/backtesting')) return 'Backtesting'
   const seg = pathname.split('/').filter(Boolean).pop() || 'trado'
   return seg.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
 }

@@ -19,6 +19,8 @@ import Dashboard     from './pages/Dashboard'
 import Trades        from './pages/Trades'
 import Journal       from './pages/Journal'
 import Notebook      from './pages/Notebook'
+import Backtesting   from './pages/backtesting/Backtesting'
+import BacktestSession from './pages/backtesting/BacktestSession'
 import TradoAI       from './pages/TradoAI'
 import TradoAI2      from './pages/TradoAI2'
 import TradeDNA       from './pages/TradeDNA'
@@ -38,6 +40,8 @@ import DayView       from './pages/analytics/DayView'
 import Sessions      from './pages/analytics/Sessions'
 // Lazy: pulls in the charting library only when Trade Replay is opened.
 const TradeReplay = lazy(() => import('./pages/analytics/TradeReplay'))
+// Lazy: the backtest workspace carries the charting library and the drawing tools.
+const BacktestWorkspace = lazy(() => import('./pages/backtesting/BacktestWorkspace'))
 import NotFound      from './pages/NotFound'
 import TermsOfService from './pages/legal/TermsOfService'
 import PrivacyPolicy  from './pages/legal/PrivacyPolicy'
@@ -103,6 +107,9 @@ export default function App() {
         <Route path="/trades"     element={<PrivateRoute><Trades /></PrivateRoute>} />
         <Route path="/journal"    element={<PrivateRoute><Journal /></PrivateRoute>} />
         <Route path="/notebook"   element={<PrivateRoute><Notebook /></PrivateRoute>} />
+        <Route path="/backtesting" element={<PrivateRoute><Backtesting /></PrivateRoute>} />
+        <Route path="/backtesting/:id" element={<PrivateRoute><BacktestSession /></PrivateRoute>} />
+        <Route path="/backtesting/:id/chart" element={<PrivateRoute><Suspense fallback={null}><BacktestWorkspace /></Suspense></PrivateRoute>} />
         <Route path="/trado-ai"   element={<PrivateRoute><TradoAI /></PrivateRoute>} />
         <Route path="/trado-ai-2" element={<PrivateRoute><TradoAI2 /></PrivateRoute>} />
         <Route path="/trade-dna"  element={<PrivateRoute><TradeDNA /></PrivateRoute>} />
