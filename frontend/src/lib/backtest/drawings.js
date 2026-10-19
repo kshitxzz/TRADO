@@ -48,7 +48,14 @@ export const TOOL_MENUS = [
   ] },
 ]
 
-export const TIMEFRAME_KEYS = ['1m', '5m', '15m', '30m', '1h', '4h', '1d']
+// Visibility is by interval TYPE, so it works for any custom timeframe (7m, 90m, 3D …).
+export const TF_CATEGORIES = [
+  { id: 'm', label: 'Minutes' }, { id: 'h', label: 'Hours' }, { id: 'd', label: 'Days' },
+  { id: 'w', label: 'Weeks' }, { id: 'M', label: 'Months' },
+]
+export const tfCategoryOf = (key) => String(key || '').slice(-1)
+/** Does this drawing show on the given timeframe? (`tfs` may also hold exact keys from older saves.) */
+export const visibleOnTf = (d, tfKey) => !d.tfs || d.tfs.includes(tfKey) || d.tfs.includes(tfCategoryOf(tfKey))
 
 // ── Palette (grays + 6 hues × 10 lightness steps, TradingView-style) ─────
 const hsl = (h, s, l) => {

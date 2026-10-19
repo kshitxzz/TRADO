@@ -1,13 +1,13 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import {
-  createChart, CandlestickSeries, LineSeries, ColorType, CrosshairMode, LineStyle,
+  createChart, CandlestickSeries, LineSeries, HistogramSeries, ColorType, CrosshairMode, LineStyle,
 } from 'lightweight-charts'
 import { Loader2 } from 'lucide-react'
 import { useTheme } from '../../hooks/useTheme'
 import { useTimeFormat } from '../../hooks/useTimeFormat'
 import { fmtAxisTick, fmtCrosshairTime } from '../../lib/replayUtils'
 import { barsAt, partialBar, tfSecs as tfSecsOf } from '../../lib/backtest/data'
-import { createRunner } from '../../lib/backtest/indicators'
+import { createRunner, defOf } from '../../lib/backtest/indicators'
 import { makeProjector } from '../../lib/backtest/projector'
 
 export const CANDLE_UP = '#26B570'
@@ -137,53 +137,52 @@ const BacktestChart = forwardRef(function BacktestChart(
     seriesRef.current?.applyOptions({ priceLineVisible: settings?.priceLine !== false, lastValueVisible: settings?.priceLine !== false })
   }, [settings?.priceLine, ready])
 
-  // ── indicators: add / remove / restyle ─────────────────────────────────
+  // ── indicators: rebuilt whenever the list changes (panes are assigned in order) ──
   useEffect(() => {
     const chart = chartRef.current
     if (!chart || !ready) return
     const map = indRef.current
-    const wanted = new Set(indicators.map(i => i.id))
+    for (const entry of map.values()) Object.values(entry.series).forEach(sr => { try { chart.removeSeries(sr) } catch { /* already gone */ } })
+    map.clear()
 
-    for (const [id, entry] of map) {
-      if (!wanted.has(id)) {
-        Object.values(entry.series).forEach(s => { try { chart.removeSeries(s) } catch { /* already gone */ } })
-        map.delete(id)
-      }
-    }
+    let pane = 0
     for (const ind of indicators) {
-      const sig = `${ind.type}:${JSON.stringify(ind.params)}`
-      let entry = map.get(ind.id)
-      if (entry && entry.sig !== sig) {     // params changed → rebuild
-        Object.values(entry.series).forEach(s => { try { chart.removeSeries(s) } catch { /* noop */ } })
-        map.delete(ind.id); entry = null
-      }
-      const sub = ind.type === 'rsi'
-      const opts = (color, w = 1.5) => ({
-        color, lineWidth: w, priceLineVisible: false, lastValueVisible: sub, crosshairMarkerVisible: false,
-        visible: ind.visible !== false,
-      })
-      if (!entry) {
-        const series = {}
-        if (ind.type === 'bb') {
-          series.upper = chart.addSeries(LineSeries, opts(ind.color, 1))
-          series.middle = chart.addSeries(LineSeries, { ...opts(ind.color, 1), lineStyle: LineStyle.Dashed })
-          series.lower = chart.addSeries(LineSeries, opts(ind.color, 1))
-        } else if (sub) {
-          series.line = chart.addSeries(LineSeries, opts(ind.color), 1)
-          series.line.createPriceLine({ price: 70, color: 'rgba(244,63,94,0.5)', lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false })
-          series.line.createPriceLine({ price: 30, color: 'rgba(34,197,94,0.5)', lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false })
+      const def = defOf(ind.type)
+      if (!def) continue
+      const sub = def.pane === 'sub'
+      const paneIdx = sub ? ++pane : 0
+      const visible = ind.visible !== false
+      const series = {}
+
+      def.outputs.forEach((o) => {
+        const color = o.color || ind.color
+        const common = { priceLineVisible: false, lastValueVisible: sub, crosshairMarkerVisible: false, visible }
+        if (o.kind === 'hist') {
+          series[o.key] = chart.addSeries(HistogramSeries, { ...common, color, base: 0, priceFormat: def.type === 'volume' ? { type: 'volume' } : undefined }, paneIdx)
+        } else if (o.kind === 'dots') {
+          series[o.key] = chart.addSeries(LineSeries, { ...common, color, lineVisible: false, pointMarkersVisible: true, pointMarkersRadius: 2 }, paneIdx)
         } else {
-          series.line = chart.addSeries(LineSeries, opts(ind.color, 1.5))
+          series[o.key] = chart.addSeries(LineSeries, { ...common, color, lineWidth: o.width || 1.5, lineStyle: o.dashed ? LineStyle.Dashed : LineStyle.Solid }, paneIdx)
         }
-        entry = { runner: createRunner(ind), series, sig }
-        map.set(ind.id, entry)
-        // seed from the bars already on screen
-        const out = entry.runner.full(barsRef.current)
-        for (const k of Object.keys(series)) series[k].setData(out[k] || [])
-      } else {
-        Object.values(entry.series).forEach(s => s.applyOptions({ color: ind.color, visible: ind.visible !== false }))
+      })
+
+      if (sub) {
+        const first = series[def.outputs[0].key]
+        if (def.range) first.applyOptions({ autoscaleInfoProvider: () => ({ priceRange: { minValue: def.range[0], maxValue: def.range[1] } }) })
+        for (const l of def.levels || []) first.createPriceLine({ price: l.value, color: l.color, lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false })
       }
+
+      const runner = createRunner(ind)
+      map.set(ind.id, { runner, series })
+      const out = runner.full(barsRef.current)
+      for (const k of Object.keys(series)) series[k].setData(out[k] || [])
     }
+
+    // price pane takes the room; oscillator panes stay compact
+    try {
+      const panes = chart.panes()
+      panes.forEach((pn, i) => pn.setStretchFactor(i === 0 ? Math.max(3, (panes.length - 1) * 1.5) : 1))
+    } catch { /* older API */ }
   }, [indicators, ready])
 
   useEffect(() => {

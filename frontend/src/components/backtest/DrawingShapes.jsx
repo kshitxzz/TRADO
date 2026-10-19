@@ -1,4 +1,5 @@
 import { DASHES, FIB_LEVELS, lineToBounds, measureInfo, positionInfo, fmtDur } from '../../lib/backtest/drawings'
+import { EMOJI_FONT } from '../../lib/backtest/emojiData'
 
 const HIT = 11                      // invisible stroke width used for click targets
 const fmt = (n, d) => Number(n).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d })
@@ -251,7 +252,7 @@ export function renderDrawing(d, ctx) {
     }
     case 'emoji':
       return {
-        el: <text x={a.x} y={a.y} fontSize={(s.fontSize || 13) * 2.1} textAnchor="middle" dominantBaseline="central" style={{ pointerEvents: 'all', cursor: 'pointer' }}>{d.emoji || '🚀'}</text>,
+        el: <text x={a.x} y={a.y} fontSize={(s.fontSize || 13) * 2.1} fontFamily={EMOJI_FONT} textAnchor="middle" dominantBaseline="central" style={{ pointerEvents: 'all', cursor: 'pointer' }}>{d.emoji || '🚀'}</text>,
         handles: [{ x: a.x, y: a.y, idx: 0 }],
       }
 

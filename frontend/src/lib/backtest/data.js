@@ -12,20 +12,81 @@
 import { loadCandles } from '../loadCandles'
 import { normaliseSymbol, resolveBinanceSymbol, resolveBinanceForex } from '../binanceDirect'
 
-export const TIMEFRAMES = [
-  { key: '1m',  label: '1m',  secs: 60 },
-  { key: '5m',  label: '5m',  secs: 300 },
-  { key: '15m', label: '15m', secs: 900 },
-  { key: '30m', label: '30m', secs: 1800 },
-  { key: '1h',  label: '1h',  secs: 3600 },
-  { key: '4h',  label: '4h',  secs: 14400 },
-  { key: '1d',  label: 'D',   secs: 86400 },
+// ── Timeframes ───────────────────────────────────────────────────────────
+// A timeframe key is "<n><unit>": 7m, 90m, 4h, 1d, 1w, 1M … any whole number.
+const UNIT_SECS = { m: 60, h: 3600, d: 86400, w: 604800, M: 2592000 }   // M = nominal 30 days (axis spacing only)
+export const TF_UNITS = [
+  { unit: 'm', label: 'minutes' }, { unit: 'h', label: 'hours' }, { unit: 'd', label: 'days' },
+  { unit: 'w', label: 'weeks' },   { unit: 'M', label: 'months' },
 ]
-export const tfSecs = (key) => (TIMEFRAMES.find(t => t.key === key) || TIMEFRAMES[2]).secs
-export const tfLabel = (key) => (TIMEFRAMES.find(t => t.key === key) || TIMEFRAMES[2]).label
+
+export function parseTf(key) {
+  const m = /^(\d{1,4})([mhdwM])$/.exec(String(key || ''))
+  if (!m || +m[1] < 1) return { n: 15, unit: 'm', secs: 900, valid: false }
+  return { n: +m[1], unit: m[2], secs: +m[1] * UNIT_SECS[m[2]], valid: true }
+}
+export const isValidTf = (key) => parseTf(key).valid
+export const tfKey = (n, unit) => `${n}${unit}`
+export const tfSecs = (key) => parseTf(key).secs
+export const tfUnit = (key) => parseTf(key).unit
+
+/** 1m 5m 90m 4h D 3D W M — the label shown on the chart toolbar. */
+export function tfLabel(key) {
+  const { n, unit } = parseTf(key)
+  if (unit === 'd') return n === 1 ? 'D' : `${n}D`
+  if (unit === 'w') return n === 1 ? 'W' : `${n}W`
+  if (unit === 'M') return n === 1 ? 'M' : `${n}M`
+  return `${n}${unit}`
+}
+
+/** Spoken name for menus: "5 minutes", "1 hour", "1 day". */
+export function tfName(key) {
+  const { n, unit } = parseTf(key)
+  const word = { m: 'minute', h: 'hour', d: 'day', w: 'week', M: 'month' }[unit]
+  return `${n} ${word}${n === 1 ? '' : 's'}`
+}
+
+/** Ready-made intervals shown in the timeframe menu. */
+export const TF_PRESETS = [
+  { title: 'Minutes', keys: ['1m', '2m', '3m', '5m', '10m', '15m', '30m', '45m'] },
+  { title: 'Hours',   keys: ['1h', '2h', '3h', '4h', '6h', '8h', '12h'] },
+  { title: 'Days',    keys: ['1d', '2d', '3d'] },
+  { title: 'Weeks & months', keys: ['1w', '2w', '1M'] },
+]
+export const DEFAULT_FAVORITE_TFS = ['1m', '5m', '15m', '1h', '4h', '1d', '1w']
+
+/** Start of the bar containing `t` (unix seconds, UTC). Weeks start Monday; months on the 1st. */
+export function bucketStart(t, key) {
+  const { n, unit, secs } = parseTf(key)
+  if (unit === 'w') { const off = 4 * 86400; return Math.floor((t - off) / secs) * secs + off }   // 1970-01-05 was a Monday
+  if (unit === 'M') {
+    const d = new Date(t * 1000)
+    const idx = d.getUTCFullYear() * 12 + d.getUTCMonth()
+    const b = Math.floor(idx / n) * n
+    return Date.UTC(Math.floor(b / 12), b % 12, 1) / 1000
+  }
+  return Math.floor(t / secs) * secs
+}
 
 /** Finest timeframes a session can be loaded at (what the data feeds serve natively). */
 export const BASE_TFS = ['1m', '5m', '15m', '1h']
+
+/**
+ * Which loaded candle size can build `tf` exactly?
+ *  • calendar intervals (days/weeks/months) work from any base;
+ *  • minute/hour intervals need a base that divides them evenly.
+ * Returns the current base when it already works, else the COARSEST base that does
+ * (least data), or null if the interval is finer than any feed (e.g. under a minute).
+ */
+export function baseFor(tf, currentBase) {
+  const t = parseTf(tf)
+  if (!t.valid) return null
+  const cur = tfSecs(currentBase)
+  if ('dwM'.includes(t.unit)) return currentBase
+  if (t.secs >= cur && t.secs % cur === 0) return currentBase
+  const fits = [...BASE_TFS].reverse().find(b => tfSecs(b) <= t.secs && t.secs % tfSecs(b) === 0)
+  return fits || null
+}
 
 // History shown to the left of the start date, per base timeframe.
 const WARMUP_SECS = { '1m': 2 * 86400, '5m': 10 * 86400, '15m': 30 * 86400, '1h': 180 * 86400 }
@@ -87,7 +148,7 @@ export function buildTfIndex(base, tf) {
   let cur = null
   for (let j = 0; j < base.length; j++) {
     const c = base[j]
-    const t = floorTo(c.time, step)
+    const t = bucketStart(c.time, tf)
     if (!cur || cur.time !== t) {
       cur = { time: t, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume || 0 }
       bars.push(cur); starts.push(j)

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { TOOLS, makeDrawing, defaultPosition, movePoints, movePositionPoint } from '../../lib/backtest/drawings'
+import { TOOLS, makeDrawing, defaultPosition, movePoints, movePositionPoint, visibleOnTf } from '../../lib/backtest/drawings'
 import { renderDrawing } from './DrawingShapes'
 import { fmtUsd } from '../../lib/backtest/stats'
 
@@ -232,7 +232,7 @@ export default function DrawingOverlay({
   const rendered = useMemo(() => {
     if (hideAll || !proj) return []
     return drawings
-      .filter(d => d.visible !== false && (!d.tfs || d.tfs.includes(tfKey)))
+      .filter(d => d.visible !== false && visibleOnTf(d, tfKey))
       .map(d => ({ d, r: renderDrawing(d, ctx) }))
       .filter(x => x.r)
   }, [drawings, ctx, hideAll, tfKey, proj])

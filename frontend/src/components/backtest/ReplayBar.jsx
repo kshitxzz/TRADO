@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
+import Popover from './Popover'
 import { Play, Pause, SkipForward, SkipBack, CalendarClock } from 'lucide-react'
 import { formatShortDateTime } from '../../hooks/useTimeFormat'
 
@@ -18,6 +19,7 @@ export default function ReplayBar({
 }) {
   const [jumpOpen, setJumpOpen] = useState(false)
   const [val, setVal] = useState('')
+  const jumpRef = useRef(null)
 
   return (
     <div className="flex-shrink-0" style={{ background: 'var(--bg-card)', borderTop: '1px solid var(--border-subtle)' }}>
@@ -34,18 +36,17 @@ export default function ReplayBar({
         </IconBtn>
         <IconBtn title="Next bar (Shift+→)" onClick={onNext} disabled={atEnd}><SkipForward size={15} /></IconBtn>
 
-        <div className="relative">
+        <div ref={jumpRef}>
           <IconBtn title="Jump to a date" onClick={() => setJumpOpen(o => !o)} active={jumpOpen} disabled={atEnd}><CalendarClock size={15} /></IconBtn>
-          {jumpOpen && (
-            <div className="absolute bottom-full left-0 mb-2 z-50 p-2.5 rounded-lg flex items-center gap-2"
-                 style={{ background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', boxShadow: '0 12px 40px rgba(0,0,0,0.5)' }}>
-              <input type="datetime-local" value={val} min={minDate} max={maxDate} onChange={(e) => setVal(e.target.value)}
-                     className="rounded-md px-2 py-1.5 text-[12.5px] outline-none" style={{ background: 'var(--bg-primary)', border: '1px solid var(--border-subtle)', color: 'var(--text-primary)' }} />
-              <button onClick={() => { if (val) { onJump(val); setJumpOpen(false) } }} disabled={!val}
-                      className="btn-primary px-3 py-1.5 rounded-md text-[12px] font-semibold text-white disabled:opacity-40">Go</button>
-            </div>
-          )}
         </div>
+        <Popover anchorRef={jumpRef} open={jumpOpen} onClose={() => setJumpOpen(false)} placement="top">
+          <div className="p-2.5 flex items-center gap-2">
+            <input type="datetime-local" value={val} min={minDate} max={maxDate} onChange={(e) => setVal(e.target.value)}
+                   className="rounded-md px-2 py-1.5 text-[12.5px] outline-none" style={{ background: 'var(--bg-primary)', border: '1px solid var(--border-subtle)', color: 'var(--text-primary)' }} />
+            <button onClick={() => { if (val) { onJump(val); setJumpOpen(false) } }} disabled={!val}
+                    className="btn-primary px-3 py-1.5 rounded-md text-[12px] font-semibold text-white disabled:opacity-40">Go</button>
+          </div>
+        </Popover>
 
         <div className="flex-1 text-center">
           <span className="text-[12.5px] font-semibold tabular-nums" style={{ color: 'var(--text-primary)' }}>{clock || '—'}</span>

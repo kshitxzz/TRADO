@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
+import Popover from './Popover'
 import { LayoutTemplate, ChevronDown, Save, Pencil, Trash2, Check, X, Plus } from 'lucide-react'
 
 export default function LayoutMenu({ layouts, activeId, onSave, onUpdate, onLoad, onRename, onDelete }) {
@@ -10,12 +11,7 @@ export default function LayoutMenu({ layouts, activeId, onSave, onUpdate, onLoad
   const ref = useRef(null)
   const active = layouts.find(l => l.id === activeId)
 
-  useEffect(() => {
-    if (!open) return
-    const h = (e) => { if (ref.current && !ref.current.contains(e.target)) { setOpen(false); setNaming(false); setRenaming(null) } }
-    window.addEventListener('pointerdown', h)
-    return () => window.removeEventListener('pointerdown', h)
-  }, [open])
+  const close = () => { setOpen(false); setNaming(false); setRenaming(null) }
 
   const submitNew = () => {
     const n = name.trim()
@@ -33,11 +29,10 @@ export default function LayoutMenu({ layouts, activeId, onSave, onUpdate, onLoad
         <ChevronDown size={12} />
       </button>
 
-      {open && (
-        <div className="absolute right-0 top-full mt-1.5 z-50 w-[270px] rounded-xl py-1.5"
-             style={{ background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', boxShadow: '0 16px 50px rgba(0,0,0,0.55)' }}>
+      <Popover anchorRef={ref} open={open} onClose={close} align="right" style={{ width: 270 }}>
+        <div className="py-1.5">
           {active && (
-            <button onClick={() => { onUpdate(active); setOpen(false) }} className="w-full flex items-center gap-2.5 px-3 py-2 text-[12.5px] text-left hover:bg-white/5" style={{ color: 'var(--text-primary)' }}>
+            <button onClick={() => { onUpdate(active); close() }} className="w-full flex items-center gap-2.5 px-3 py-2 text-[12.5px] text-left hover:bg-white/5" style={{ color: 'var(--text-primary)' }}>
               <Save size={14} style={{ color: 'var(--accent-purple-light)' }} /> Save changes to “{active.name}”
             </button>
           )}
@@ -70,7 +65,7 @@ export default function LayoutMenu({ layouts, activeId, onSave, onUpdate, onLoad
                   </div>
                 ) : (
                   <>
-                    <button onClick={() => { onLoad(l); setOpen(false) }} className="flex-1 min-w-0 text-left px-2 py-2 rounded-md text-[12.5px] hover:bg-white/5 truncate"
+                    <button onClick={() => { onLoad(l); close() }} className="flex-1 min-w-0 text-left px-2 py-2 rounded-md text-[12.5px] hover:bg-white/5 truncate"
                             style={{ color: l.id === activeId ? 'var(--accent-purple-light)' : 'var(--text-primary)' }}>{l.name}</button>
                     <button onClick={() => { setRenaming(l.id); setRenameVal(l.name) }} className="p-1.5 rounded hover:bg-white/10 opacity-0 group-hover:opacity-100" style={{ color: 'var(--text-muted)' }} title="Rename"><Pencil size={13} /></button>
                     <button onClick={() => onDelete(l)} className="p-1.5 rounded hover:bg-white/10 opacity-0 group-hover:opacity-100" title="Delete"><Trash2 size={13} style={{ color: 'var(--negative-red)' }} /></button>
@@ -80,7 +75,7 @@ export default function LayoutMenu({ layouts, activeId, onSave, onUpdate, onLoad
             ))}
           </div>
         </div>
-      )}
+      </Popover>
     </div>
   )
 }

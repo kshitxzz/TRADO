@@ -15,6 +15,9 @@ import LayoutMenu from '../../components/backtest/LayoutMenu'
 import OrderPanel from '../../components/backtest/OrderPanel'
 import PositionsPanel from '../../components/backtest/PositionsPanel'
 import ReplayBar from '../../components/backtest/ReplayBar'
+import TimeframeMenu from '../../components/backtest/TimeframeMenu'
+import IndicatorLegend from '../../components/backtest/IndicatorLegend'
+import Popover from '../../components/backtest/Popover'
 import { useAuth } from '../../hooks/useAuth'
 import { formatShortDateTime } from '../../hooks/useTimeFormat'
 import * as api from '../../lib/backtest/api'
@@ -22,11 +25,24 @@ import * as E from '../../lib/backtest/engine'
 import { getSpec, priceDigits, marginUsd } from '../../lib/backtest/specs'
 import { computeStats, fmtUsd } from '../../lib/backtest/stats'
 import {
-  TIMEFRAMES, tfSecs as tfSecsOf, loadSessionData, buildTfIndex, candlesToNextBar, firstIndexAtOrAfter,
+  tfSecs as tfSecsOf, tfLabel, isValidTf, baseFor, DEFAULT_FAVORITE_TFS, loadSessionData, buildTfIndex, candlesToNextBar, firstIndexAtOrAfter,
 } from '../../lib/backtest/data'
+import { DEFAULT_RECENT_EMOJI } from '../../lib/backtest/emojiData'
 import { TOOLS, cloneDrawing } from '../../lib/backtest/drawings'
 
 const BASE_TICK_MS = 400
+
+/** useState that survives reloads (preferences only — never anything about trades). */
+function useStored(key, initial) {
+  const [v, setV] = useState(() => {
+    try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : initial } catch { return initial }
+  })
+  const set = useCallback((next) => {
+    setV(next)
+    try { localStorage.setItem(key, JSON.stringify(next)) } catch { /* private mode */ }
+  }, [key])
+  return [v, set]
+}
 const clr = (n) => (n > 0 ? 'var(--positive-green)' : n < 0 ? 'var(--negative-red)' : 'var(--text-primary)')
 const isTyping = () => ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)
 
@@ -69,12 +85,17 @@ export default function BacktestWorkspace() {
   const [stay, setStay] = useState(false)
   const [lockAll, setLockAll] = useState(false)
   const [hideAll, setHideAll] = useState(false)
-  const [emoji, setEmoji] = useState('🚀')
+  const [emoji, setEmoji] = useStored('trado_bt_emoji', '🚀')
+  const [recentEmoji, setRecentEmoji] = useStored('trado_bt_recent_emoji', DEFAULT_RECENT_EMOJI)
+  const [favTfs, setFavTfs] = useStored('trado_bt_fav_tfs', DEFAULT_FAVORITE_TFS)
+  const [customTfs, setCustomTfs] = useStored('trado_bt_custom_tfs', [])
+  const [reload, setReload] = useState(null)               // { tf, pct } while finer candles load for a new timeframe
   const [indicators, setIndicators] = useState([])
   const [showIndicators, setShowIndicators] = useState(false)
   const [settingsFor, setSettingsFor] = useState(null)
   const [chartSettings, setChartSettings] = useState({ grid: true, priceLine: true })
   const [showChartSettings, setShowChartSettings] = useState(false)
+  const settingsRef = useRef(null)
   const [ticket, setTicket] = useState(null)
   const [layouts, setLayouts] = useState([])
   const [activeLayoutId, setActiveLayoutId] = useState(null)
@@ -98,6 +119,7 @@ export default function BacktestWorkspace() {
   const spec = useMemo(() => getSpec(session?.symbol || ''), [session?.symbol])
   const base = data?.base
   const baseSecs = data?.baseSecs || 900
+  const baseTf = data?.baseTf || session?.base_tf || '15m'
   const spread = Number(session?.spread) || 0
 
   const endCount = useMemo(() => {
@@ -115,7 +137,7 @@ export default function BacktestWorkspace() {
   latest.current = {
     cursor_time: candle ? now : null,
     state: { positions: engine?.positions || [], orders: engine?.orders || [] },
-    drawings, indicators, chart_tf: tf,
+    drawings, indicators, chart_tf: tf, base_tf: baseTf,
     status: atEnd && base ? 'completed' : 'active',
   }
 
@@ -179,9 +201,9 @@ export default function BacktestWorkspace() {
         idxCache.current = new Map()
         engineRef.current = st; countRef.current = initial
         history.current = { past: [], future: [], committed: row.drawings || [] }
-        setSession(row); setData(d); setEngine(st); setCount(initial)
+        setSession(row); setData({ ...d, baseTf: row.base_tf }); setEngine(st); setCount(initial)
         setDrawings(row.drawings || []); setIndicators(row.indicators || [])
-        setTf(row.chart_tf && tfSecsOf(row.chart_tf) >= step ? row.chart_tf : row.base_tf)
+        setTf(isValidTf(row.chart_tf) && tfSecsOf(row.chart_tf) >= step && (row.chart_tf.slice(-1) !== 'm' && row.chart_tf.slice(-1) !== 'h' || tfSecsOf(row.chart_tf) % step === 0) ? row.chart_tf : row.base_tf)
         setPhase('ready')
 
         const lastBar = d.base[d.base.length - 1]
@@ -207,7 +229,6 @@ export default function BacktestWorkspace() {
   }, [base, tf])
   const view = useMemo(() => (base && idx ? { base, idx, count } : null), [base, idx, count])
   const tfSecs = tfSecsOf(tf)
-  const tfList = TIMEFRAMES.filter(t => t.secs >= baseSecs)
 
   // ── trading helpers ────────────────────────────────────────────────────
   const commit = useCallback((next) => { engineRef.current = next; setEngine(next); schedule() }, [schedule])
@@ -305,6 +326,7 @@ export default function BacktestWorkspace() {
 
   const confirmTicket = () => {
     if (!ticket || !candle) return
+    if (!(ticket.lots > 0)) { toast.error('Enter a volume first.'); return }
     const o = { side: ticket.side, lots: ticket.lots, sl: ticket.sl, tp: ticket.tp }
     const r = ticket.orderType === 'market'
       ? E.openMarket(engineRef.current, spec, o, candle, now)
@@ -403,7 +425,43 @@ export default function BacktestWorkspace() {
     if (window.confirm('Remove all drawings from this chart?')) { changeDrawings([], true); setSelectedId(null) }
   }
 
-  const changeTf = (k) => { setTf(k); schedule() }
+  /**
+   * Switch the chart timeframe. Higher / equal timeframes are built from the loaded candles instantly.
+   * A finer one (or one that doesn't divide evenly) loads finer candles once, then continues from the same moment.
+   */
+  const changeTf = async (k) => {
+    if (!isValidTf(k) || k === tf) return
+    const need = baseFor(k, baseTf)
+    if (!need) { toast.error('That interval can’t be built from the available data.'); return }
+    if (need === baseTf) { setTf(k); schedule(); return }
+
+    setPlaying(false); setSelecting(false)
+    setReload({ tf: k, pct: 0 })
+    try {
+      const startSec = Math.floor(new Date(session.start_at).getTime() / 1000)
+      const endSec = Math.floor(new Date(session.end_at).getTime() / 1000)
+      const d = await loadSessionData({ symbol: session.symbol, baseTf: need, startSec, endSec, onProgress: (p) => setReload({ tf: k, pct: Math.round((p.loaded / Math.max(1, p.total)) * 100) }) })
+      const clockNow = base[countRef.current - 1].time + baseSecs                       // the market moment we are at
+      const idx2 = firstIndexAtOrAfter(d.base, d.baseSecs, clockNow + 1)
+      if (idx2 < 40) throw new Error(`Not enough ${tfLabel(need)} history before this point for ${session.symbol}.`)
+      idxCache.current = new Map()
+      countRef.current = idx2
+      setData({ ...d, baseTf: need })
+      setCount(idx2)
+      setTf(k)
+      setSession(sess => ({ ...sess, base_tf: need }))
+      schedule()
+      toast.success(`Now replaying with ${tfLabel(need)} candles for the ${tfLabel(k)} chart.`)
+    } catch (e) {
+      toast.error(e.message || 'Could not load finer candles for that timeframe.')
+    } finally {
+      setReload(null)
+    }
+  }
+  const pickEmoji = (e) => {
+    setEmoji(e)
+    setRecentEmoji([e, ...recentEmoji.filter(x => x !== e)].slice(0, 18))
+  }
   const changeIndicators = (list) => { setIndicators(list); schedule() }
 
   // ── layouts ────────────────────────────────────────────────────────────
@@ -508,56 +566,61 @@ export default function BacktestWorkspace() {
   const loadingMsg = phase === 'loading'
     ? (progress ? `Loading ${session?.symbol || ''} ${session?.base_tf || ''} candles… ${Math.round((progress.loaded / Math.max(1, progress.total)) * 100)}%` : 'Opening session…')
     : null
+  const reloadMsg = reload ? `Loading finer candles for the ${tfLabel(reload.tf)} chart… ${reload.pct}%` : null
 
   return (
     <PageWrapper flush>
       <div ref={rootRef} className="flex-1 min-h-0 flex flex-col" style={{ background: 'var(--bg-primary)' }}>
-        {/* ── top bar ── */}
-        <div className="flex-shrink-0 flex items-center gap-1 px-2 h-11 overflow-x-auto" style={{ background: 'var(--bg-card)', borderBottom: '1px solid var(--border-subtle)' }}>
-          <TopBtn title="Back to session overview" onClick={() => navigate(`/backtesting/${id}`)}><ArrowLeft size={16} /></TopBtn>
-          {session && (
-            <div className="flex items-center gap-2 px-2 mr-1">
-              <PairIcon symbol={session.symbol} size={20} />
-              <div className="leading-tight">
-                <p className="text-[13px] font-semibold whitespace-nowrap" style={{ color: 'var(--text-primary)' }}>{session.symbol}</p>
-                <p className="text-[10.5px] whitespace-nowrap max-w-[150px] truncate" style={{ color: 'var(--text-muted)' }}>{session.name}</p>
+        {/* ── top bar ──
+             No overflow on this row's right side and every dropdown renders through <Popover> (a portal),
+             so nothing can be clipped and no scrollbar can appear when a menu opens. */}
+        <div className="flex-shrink-0 flex items-center gap-1 px-2 h-11" style={{ background: 'var(--bg-card)', borderBottom: '1px solid var(--border-subtle)' }}>
+          <div className="flex items-center gap-1 min-w-0 flex-1 overflow-x-auto [&::-webkit-scrollbar]:hidden" style={{ scrollbarWidth: 'none' }}>
+            <TopBtn title="Back to session overview" onClick={() => navigate(`/backtesting/${id}`)}><ArrowLeft size={16} /></TopBtn>
+            {session && (
+              <div className="flex items-center gap-2 px-2 mr-1 flex-shrink-0">
+                <PairIcon symbol={session.symbol} size={20} />
+                <div className="leading-tight">
+                  <p className="text-[13px] font-semibold whitespace-nowrap" style={{ color: 'var(--text-primary)' }}>{session.symbol}</p>
+                  <p className="text-[10.5px] whitespace-nowrap max-w-[150px] truncate" style={{ color: 'var(--text-muted)' }}>{session.name}</p>
+                </div>
               </div>
-            </div>
-          )}
-          <div className="w-px h-5 mx-1" style={{ background: 'var(--border-subtle)' }} />
-          {tfList.map(t => (
-            <TopBtn key={t.key} active={tf === t.key} onClick={() => changeTf(t.key)}>{t.label}</TopBtn>
-          ))}
-          <div className="w-px h-5 mx-1" style={{ background: 'var(--border-subtle)' }} />
-          <TopBtn onClick={() => setShowIndicators(true)} active={indicators.length > 0}><Activity size={15} /> Indicators{indicators.length ? ` (${indicators.length})` : ''}</TopBtn>
-          <TopBtn title="Undo (Ctrl+Z)" onClick={undo} disabled={!history.current.past.length}><Undo2 size={15} /></TopBtn>
-          <TopBtn title="Redo (Ctrl+Y)" onClick={redo} disabled={!history.current.future.length}><Redo2 size={15} /></TopBtn>
-
-          <div className="flex-1 min-w-4" />
-
-          <div className="hidden lg:flex items-center gap-4 px-3 text-[12px] whitespace-nowrap">
-            <span style={{ color: 'var(--text-muted)' }}>Balance <b className="tabular-nums" style={{ color: 'var(--text-primary)' }}>{fmtUsd(acct.balance)}</b></span>
-            <span style={{ color: 'var(--text-muted)' }}>Equity <b className="tabular-nums" style={{ color: 'var(--text-primary)' }}>{fmtUsd(acct.equity)}</b></span>
-            <span style={{ color: 'var(--text-muted)' }}>P&L <b className="tabular-nums" style={{ color: clr(acct.equity - (Number(session?.start_balance) || 0)) }}>{fmtUsd(acct.equity - (Number(session?.start_balance) || 0), { sign: true })}</b></span>
+            )}
+            <div className="w-px h-5 mx-1 flex-shrink-0" style={{ background: 'var(--border-subtle)' }} />
+            <TimeframeMenu value={tf} onChange={changeTf} baseTf={baseTf} favorites={favTfs} onFavorites={setFavTfs} recentCustom={customTfs} onRecentCustom={setCustomTfs} />
+            <div className="w-px h-5 mx-1 flex-shrink-0" style={{ background: 'var(--border-subtle)' }} />
+            <TopBtn onClick={() => setShowIndicators(true)} active={indicators.length > 0}><Activity size={15} /> Indicators{indicators.length ? ` (${indicators.length})` : ''}</TopBtn>
+            <TopBtn title="Undo (Ctrl+Z)" onClick={undo} disabled={!history.current.past.length}><Undo2 size={15} /></TopBtn>
+            <TopBtn title="Redo (Ctrl+Y)" onClick={redo} disabled={!history.current.future.length}><Redo2 size={15} /></TopBtn>
           </div>
 
-          <LayoutMenu layouts={layouts} activeId={activeLayoutId} onSave={saveLayoutAs} onUpdate={updateLayout} onLoad={loadLayout} onRename={renameLayout} onDelete={deleteLayout} />
-          <div className="relative">
-            <TopBtn title="Chart settings" onClick={() => setShowChartSettings(s => !s)} active={showChartSettings}><Settings size={15} /></TopBtn>
-            {showChartSettings && (
-              <div className="absolute right-0 top-full mt-1.5 z-50 w-[210px] rounded-xl p-2" style={{ background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', boxShadow: '0 16px 50px rgba(0,0,0,0.55)' }}>
+          <div className="flex items-center gap-1 flex-shrink-0">
+            <div className="hidden lg:flex items-center gap-4 px-3 text-[12px] whitespace-nowrap">
+              <span style={{ color: 'var(--text-muted)' }}>Balance <b className="tabular-nums" style={{ color: 'var(--text-primary)' }}>{fmtUsd(acct.balance)}</b></span>
+              <span style={{ color: 'var(--text-muted)' }}>Equity <b className="tabular-nums" style={{ color: 'var(--text-primary)' }}>{fmtUsd(acct.equity)}</b></span>
+              <span style={{ color: 'var(--text-muted)' }}>P&L <b className="tabular-nums" style={{ color: clr(acct.equity - (Number(session?.start_balance) || 0)) }}>{fmtUsd(acct.equity - (Number(session?.start_balance) || 0), { sign: true })}</b></span>
+            </div>
+
+            <LayoutMenu layouts={layouts} activeId={activeLayoutId} onSave={saveLayoutAs} onUpdate={updateLayout} onLoad={loadLayout} onRename={renameLayout} onDelete={deleteLayout} />
+
+            <div ref={settingsRef}>
+              <TopBtn title="Chart settings" onClick={() => setShowChartSettings(v => !v)} active={showChartSettings}><Settings size={15} /></TopBtn>
+            </div>
+            <Popover anchorRef={settingsRef} open={showChartSettings} onClose={() => setShowChartSettings(false)} align="right" style={{ width: 220 }}>
+              <div className="p-2">
                 {[['grid', 'Grid lines'], ['priceLine', 'Last price line']].map(([k, label]) => (
                   <label key={k} className="flex items-center justify-between px-2 py-2 text-[12.5px] cursor-pointer rounded-md hover:bg-white/5" style={{ color: 'var(--text-primary)' }}>
                     {label}
-                    <input type="checkbox" className="accent-[#8B5CF6]" checked={chartSettings[k] !== false} onChange={(e) => { setChartSettings(s => ({ ...s, [k]: e.target.checked })) }} />
+                    <input type="checkbox" className="accent-[#8B5CF6]" checked={chartSettings[k] !== false} onChange={(e) => setChartSettings(v => ({ ...v, [k]: e.target.checked }))} />
                   </label>
                 ))}
                 <button onClick={() => { chartRef.current?.fit(); setShowChartSettings(false) }} className="w-full text-left px-2 py-2 text-[12.5px] rounded-md hover:bg-white/5" style={{ color: 'var(--text-primary)' }}>Reset chart view</button>
               </div>
-            )}
+            </Popover>
+
+            <TopBtn title="Save a screenshot" onClick={screenshot}><Camera size={15} /></TopBtn>
+            <TopBtn title="Fullscreen" onClick={toggleFullscreen}>{fullscreen ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</TopBtn>
           </div>
-          <TopBtn title="Save a screenshot" onClick={screenshot}><Camera size={15} /></TopBtn>
-          <TopBtn title="Fullscreen" onClick={toggleFullscreen}>{fullscreen ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</TopBtn>
         </div>
 
         {/* ── body ── */}
@@ -565,11 +628,11 @@ export default function BacktestWorkspace() {
           <DrawingToolbar tool={tool} onTool={(t) => { setTool(t); setSelecting(false); if (t !== 'cursor') setSelectedId(null) }}
                           magnet={magnet} onMagnet={() => setMagnet(m => !m)} stay={stay} onStay={() => setStay(s => !s)}
                           lockAll={lockAll} onLock={() => setLockAll(l => !l)} hideAll={hideAll} onHide={() => setHideAll(h => !h)}
-                          onClear={clearAll} emoji={emoji} onEmoji={setEmoji} hasDrawings={drawings.length > 0} />
+                          onClear={clearAll} emoji={emoji} onEmoji={pickEmoji} recentEmoji={recentEmoji} hasDrawings={drawings.length > 0} />
 
           <div className="flex-1 min-w-0 flex flex-col">
             <div ref={boxRef} className="flex-1 min-h-0 relative" onPointerDown={onBoxPointerDown} style={{ cursor: selecting ? 'crosshair' : undefined }}>
-              <BacktestChart ref={chartRef} view={view} tf={tf} digits={digits} indicators={indicators} settings={chartSettings} loading={loadingMsg} extraPrices={extraPrices}>
+              <BacktestChart ref={chartRef} view={view} tf={tf} digits={digits} indicators={indicators} settings={chartSettings} loading={loadingMsg || reloadMsg} extraPrices={extraPrices}>
                 {(capi) => (
                   <DrawingOverlay api={capi} getPane={() => chartRef.current?.pane() || { w: 0, h: 0 }} tfSecs={tfSecs} tfKey={tf} digits={digits}
                                   drawings={drawings} onDrawingsChange={changeDrawings} selectedId={selectedId} onSelect={setSelectedId}
@@ -579,6 +642,10 @@ export default function BacktestWorkspace() {
                                   svgRef={svgRef} forwardWheelTo={forwardWheel} />
                 )}
               </BacktestChart>
+
+              <IndicatorLegend indicators={indicators} onSettings={() => setShowIndicators(true)}
+                               onToggle={(iid) => changeIndicators(indicators.map(i => (i.id === iid ? { ...i, visible: i.visible === false } : i)))}
+                               onRemove={(iid) => changeIndicators(indicators.filter(i => i.id !== iid))} />
 
               {tool === 'cursor' && selected && !hideAll && (
                 <DrawingStyleBar drawing={selected} onChange={updateDrawing} onDelete={deleteSelected} onDuplicate={duplicateSelected} onSettings={() => setSettingsFor(selected)} />

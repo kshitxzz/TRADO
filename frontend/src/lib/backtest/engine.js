@@ -73,8 +73,8 @@ const numOrNull = (v) => (v === '' || v == null || !Number.isFinite(Number(v)) |
 // ── Orders ───────────────────────────────────────────────────────────────
 /** @returns {{ state, position?, error? }} */
 export function openMarket(state, spec, { side, lots, sl, tp }, candle, now) {
+  if (!(Number(lots) > 0)) return { state, error: 'Enter a volume.' }
   const vol = normaliseLots(spec, lots)
-  if (!(vol > 0)) return { state, error: 'Enter a volume.' }
   const entry = side === 'buy' ? askOf(candle, state.spread) : bidOf(candle)
   const slv = numOrNull(sl), tpv = numOrNull(tp)
   const bad = checkLevels(side, entry, slv, tpv)
@@ -91,6 +91,7 @@ export function openMarket(state, spec, { side, lots, sl, tp }, candle, now) {
 }
 
 export function placePending(state, spec, { side, type, price, lots, sl, tp }, candle, now) {
+  if (!(Number(lots) > 0)) return { state, error: 'Enter a volume.' }
   const vol = normaliseLots(spec, lots)
   const px = numOrNull(price)
   if (px == null) return { state, error: 'Enter an entry price.' }

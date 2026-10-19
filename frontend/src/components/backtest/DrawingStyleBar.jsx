@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Lock, Unlock, Trash2, Copy, Settings2, X } from 'lucide-react'
-import { PALETTE, TIMEFRAME_KEYS, TOOLS } from '../../lib/backtest/drawings'
-import { tfLabel } from '../../lib/backtest/data'
+import { PALETTE, TF_CATEGORIES, TOOLS } from '../../lib/backtest/drawings'
 
 const FILL_TYPES = new Set(['rect', 'ellipse', 'triangle', 'channel', 'long', 'short', 'fib', 'measure', 'priceRange', 'dateRange'])
 const TEXT_TYPES = new Set(['rect', 'text'])
@@ -67,6 +66,14 @@ export default function DrawingStyleBar({ drawing, onChange, onDelete, onDuplica
          onPointerDown={(e) => e.stopPropagation()}>
       <span className="px-2 text-[11px] font-semibold" style={{ color: 'var(--text-muted)' }}>{TOOLS[drawing.type]?.label}</span>
       <div className="w-px h-5 mx-0.5" style={{ background: 'var(--border-subtle)' }} />
+
+      {isEmoji && (
+        <div className="flex items-center gap-0.5 px-1">
+          {[['S', 8], ['M', 13], ['L', 20], ['XL', 30]].map(([label, size]) => (
+            <Btn key={label} title={`${label} size`} active={s.fontSize === size} onClick={() => set({ fontSize: size })}><span className="text-[11px] font-semibold">{label}</span></Btn>
+          ))}
+        </div>
+      )}
 
       {!isEmoji && (
         <div className="relative">
@@ -159,7 +166,7 @@ export function DrawingSettingsDialog({ drawing, digits, onApply, onClose }) {
   const tabs = ['style', ...(TEXT_TYPES.has(d.type) ? ['text'] : []), 'coordinates', 'visibility']
   const field = 'w-full rounded-md px-2.5 py-1.5 text-[12.5px] outline-none'
   const fieldStyle = { background: 'var(--bg-primary)', border: '1px solid var(--border-subtle)', color: 'var(--text-primary)' }
-  const tfs = d.tfs || TIMEFRAME_KEYS
+  const tfs = d.tfs && d.tfs.every(k => TF_CATEGORIES.some(c => c.id === k)) ? d.tfs : TF_CATEGORIES.map(c => c.id)
 
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.55)' }} onPointerDown={onClose}>
@@ -226,17 +233,20 @@ export function DrawingSettingsDialog({ drawing, digits, onApply, onClose }) {
           ))}
 
           {tab === 'visibility' && (
-            <div className="grid grid-cols-2 gap-2">
-              {TIMEFRAME_KEYS.map(k => (
-                <label key={k} className="flex items-center gap-2 text-[12.5px] cursor-pointer" style={{ color: 'var(--text-secondary)' }}>
-                  <input type="checkbox" checked={tfs.includes(k)} className="accent-[#8B5CF6]"
-                         onChange={(e) => {
-                           const next = e.target.checked ? [...new Set([...tfs, k])] : tfs.filter(x => x !== k)
-                           setD(x => ({ ...x, tfs: next.length === TIMEFRAME_KEYS.length ? undefined : next }))
-                         }} />
-                  Show on {tfLabel(k)}
-                </label>
-              ))}
+            <div>
+              <p className="text-[12px] mb-2.5" style={{ color: 'var(--text-muted)' }}>Show this drawing on these kinds of timeframe:</p>
+              <div className="grid grid-cols-2 gap-2">
+                {TF_CATEGORIES.map(c => (
+                  <label key={c.id} className="flex items-center gap-2 text-[12.5px] cursor-pointer" style={{ color: 'var(--text-secondary)' }}>
+                    <input type="checkbox" checked={tfs.includes(c.id)} className="accent-[#8B5CF6]"
+                           onChange={(e) => {
+                             const next = e.target.checked ? [...new Set([...tfs, c.id])] : tfs.filter(x => x !== c.id)
+                             setD(x => ({ ...x, tfs: next.length === TF_CATEGORIES.length ? undefined : next }))
+                           }} />
+                    {c.label}
+                  </label>
+                ))}
+              </div>
             </div>
           )}
         </div>
