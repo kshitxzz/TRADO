@@ -22,7 +22,7 @@ export const TOOLS = {
   cross:     { label: 'Cross line',         points: 1, kind: 'line',     key: 'C' },
   channel:   { label: 'Parallel channel',   points: 3, kind: 'channel' },
   fib:       { label: 'Fib retracement',    points: 2, kind: 'fib' },
-  rect:      { label: 'Rectangle',          points: 2, kind: 'shape',    key: 'R' },
+  rect:      { label: 'Rectangle',          points: 2, kind: 'shape',    key: 'Shift+R' },
   ellipse:   { label: 'Ellipse',            points: 2, kind: 'shape' },
   triangle:  { label: 'Triangle',           points: 3, kind: 'shape' },
   long:      { label: 'Long position',      points: 1, kind: 'position' },
@@ -33,6 +33,7 @@ export const TOOLS = {
   brush:     { label: 'Brush',              points: 'free', kind: 'brush' },
   text:      { label: 'Text',               points: 1, kind: 'text' },
   emoji:     { label: 'Emoji',              points: 1, kind: 'emoji' },
+  alert:     { label: 'Alert',              points: 1, kind: 'alert' },   // created from the right-click menu, not a toolbar tool
 }
 
 // Toolbar structure (left rail). `tools` = fly-out menu; `solo` = a single button.

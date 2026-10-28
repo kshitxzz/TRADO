@@ -76,10 +76,19 @@ export function makeProjector({ chart, series, getBars, getTfSecs }) {
     return { time: snap.time, price }
   }
 
+  /** x of the bar that CONTAINS `time` (never a fractional position, which the chart library can't place). */
+  const barX = (time) => {
+    const bars = getBars(), n = bars.length
+    if (!n) return null
+    let lo = 0, hi = n - 1, ans = 0
+    while (lo <= hi) { const mid = (lo + hi) >> 1; if (bars[mid].time <= time) { ans = mid; lo = mid + 1 } else hi = mid - 1 }
+    return ts().logicalToCoordinate(ans)
+  }
+
   const barCountBetween = (t0, t1) => {
     const a = timeToLogical(t0), b = timeToLogical(t1)
     return a == null || b == null ? null : b - a
   }
 
-  return { timeToLogical, logicalToTime, timeToX, xToTime, snapX, priceToY, yToPrice, toPx, toMarket, barCountBetween }
+  return { timeToLogical, logicalToTime, timeToX, barX, xToTime, snapX, priceToY, yToPrice, toPx, toMarket, barCountBetween }
 }

@@ -6,10 +6,17 @@ import { fmtUsd } from '../../lib/backtest/stats'
 const SL_COLOR = '#F43F5E', TP_COLOR = '#3B82F6', BUY = '#22C55E', SELL = '#F43F5E'
 const fmtP = (n, d) => Number(n).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d, useGrouping: false })
 
-/** A clickable / draggable tag sitting on a trade line, right-aligned in the pane. */
-function TradeChip({ right, y, text, color, onClose, onDragStart, cursor = 'ns-resize', textColor = '#fff', title }) {
-  const w = text.length * 6.9 + 18 + (onClose ? 24 : 0), h = 22
-  const x = right - w
+/** Where a chip sits: left / center / right in the pane. Shared so extra buttons can line up beside it. */
+function chipBox(text, closable, align, paneW) {
+  const w = text.length * 6.9 + 18 + (closable ? 24 : 0)
+  const x = align === 'left' ? 10 : align === 'center' ? (paneW - w) / 2 : paneW - 10 - w
+  return { x, w, right: x + w }
+}
+
+/** A clickable / draggable tag sitting on a trade line. */
+function TradeChip({ paneW, align = 'right', y, text, color, onClose, onDragStart, cursor = 'ns-resize', textColor = '#fff', title }) {
+  const { x, w, right } = chipBox(text, !!onClose, align, paneW)
+  const h = 22
   return (
     <g>
       <g style={{ pointerEvents: 'all', cursor }} onPointerDown={onDragStart}>
@@ -27,22 +34,37 @@ function TradeChip({ right, y, text, color, onClose, onDragStart, cursor = 'ns-r
   )
 }
 
-const MiniBtn = ({ x, y, label, color, onClick }) => (
+/** A small read-only price tag at the right edge (previous day close, high / low, bid / ask). */
+function LevelTag({ paneW, y, text, color }) {
+  const w = text.length * 6.6 + 14
+  return (
+    <g style={{ pointerEvents: 'none' }}>
+      <rect x={paneW - w - 4} y={y - 9} width={w} height={18} rx={3} fill={color} />
+      <text x={paneW - w / 2 - 4} y={y} textAnchor="middle" dominantBaseline="central" fontSize={10.5} fontWeight={700} fill="#fff">{text}</text>
+    </g>
+  )
+}
+
+const MiniBtn = ({ x, y, label, color, onClick, title }) => (
   <g style={{ pointerEvents: 'all', cursor: 'pointer' }} onPointerDown={(e) => { e.stopPropagation(); onClick() }}>
+    <title>{title}</title>
     <rect x={x} y={y - 9} width={label.length * 6.6 + 12} height={18} rx={4} fill="rgba(17,17,22,0.9)" stroke={color} strokeWidth={1} />
     <text x={x + (label.length * 6.6 + 12) / 2} y={y} textAnchor="middle" dominantBaseline="central" fontSize={10.5} fontWeight={700} fill={color}>{label}</text>
   </g>
 )
+const btnW = (label) => label.length * 6.6 + 12
 
 export default function DrawingOverlay({
   api, getPane, tfSecs, tfKey, digits,
   drawings, onDrawingsChange, selectedId, onSelect,
   tool, onToolChange, stayInDrawing, magnet, lockAll, hideAll, emoji,
   onZoom, trading, ticket, onTicketChange, svgRef, forwardWheelTo,
+  cs, levels, tzFmt, spec, lockedTime, onPlus, onCrosshair, pnlText,
 }) {
   const proj = api.projector
   const pane = getPane()
-  const w = pane.w, h = pane.h
+  const w = pane.w, h = pane.h, paneX = pane.x || 0
+  const tr = cs.trading
 
   const [draft, setDraftState] = useState(null)
   const draftRef = useRef(null)
@@ -52,6 +74,8 @@ export default function DrawingOverlay({
   const [tradeDrag, setTradeDrag] = useState(null)          // { id, key, price }
   const [editing, setEditing] = useState(null)              // drawing id being text-edited
   const dragRef = useRef(null)
+  const [plusPt, setPlusPt] = useState(null)
+  const overPlus = useRef(false)
   const latest = useRef(drawings)
   const drawingsRef = useRef(drawings)
   drawingsRef.current = drawings
@@ -63,13 +87,30 @@ export default function DrawingOverlay({
     px: (pt) => proj?.toPx(pt) ?? null,
     w, h, tfSecs, digits,
     barsBetween: (a, b) => proj?.barCountBetween(a, b) ?? 0,
+    alertColor: cs.alerts.color,
+    onRemove: (id) => onDrawingsChange(drawingsRef.current.filter(x => x.id !== id), true),
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [proj, api.version, w, h, tfSecs, digits])
+  }), [proj, api.version, w, h, tfSecs, digits, cs.alerts.color])
 
   const local = (e) => {
     const r = svgRef.current.getBoundingClientRect()
     return { x: e.clientX - r.left, y: e.clientY - r.top }
   }
+
+  // the "+" follows the crosshair (throttled to one update per frame)
+  useEffect(() => {
+    if (!onCrosshair) return
+    let raf = 0, pending = null
+    const off = onCrosshair((info) => {
+      pending = info
+      if (raf) return
+      raf = requestAnimationFrame(() => {
+        raf = 0
+        if (!pending?.point) { if (!overPlus.current) setPlusPt(null) } else setPlusPt({ x: pending.point.x, y: pending.point.y })
+      })
+    })
+    return () => { off(); if (raf) cancelAnimationFrame(raf) }
+  }, [onCrosshair])
 
   // ── Escape cancels a half-drawn shape ──────────────────────────────────
   useEffect(() => {
@@ -179,7 +220,9 @@ export default function DrawingOverlay({
     const m = proj.toMarket(local(e), { magnet: magnet && g.kind === 'handle' })
     if (!m) return
     let pts
-    if (g.kind === 'move') {
+    if (g.kind === 'move' && g.type === 'alert') {
+      pts = g.orig.map(p => ({ time: p.time, price: p.price + (m.price - g.m0.price) }))
+    } else if (g.kind === 'move') {
       pts = movePoints(g.orig, m.time - g.m0.time, m.price - g.m0.price)
     } else {
       const { type, idx, orig } = g
@@ -232,7 +275,7 @@ export default function DrawingOverlay({
   const rendered = useMemo(() => {
     if (hideAll || !proj) return []
     return drawings
-      .filter(d => d.visible !== false && visibleOnTf(d, tfKey))
+      .filter(d => d.visible !== false && visibleOnTf(d, tfKey) && (d.type !== 'alert' || (cs.alerts.lines && (!cs.alerts.onlyActive || d.active !== false))))
       .map(d => ({ d, r: renderDrawing(d, ctx) }))
       .filter(x => x.r)
   }, [drawings, ctx, hideAll, tfKey, proj])
@@ -249,55 +292,69 @@ export default function DrawingOverlay({
   const interactive = !drawingTool && !lockAll
 
   // trade lines -----------------------------------------------------------
-  const rightEdge = w - 10
-  const positionLines = (trading?.positions || []).map((pos) => {
+  const align = tr.alignment
+  const showTrades = tr.positionsAndOrders
+  const entryX = (t) => (tr.extendedLines ? 0 : Math.max(0, Math.min(w, proj?.barX(t - 1) ?? 0)))
+
+  const positionLines = !showTrades ? null : (trading?.positions || []).map((pos) => {
     const yE = yOf(pos.entry); if (yE == null) return null
     const col = pos.side === 'buy' ? BUY : SELL
+    const x0 = entryX(pos.openedAt)
     const dragSl = tradeDrag?.id === pos.id && tradeDrag.key === 'sl' ? tradeDrag.price : pos.sl
     const dragTp = tradeDrag?.id === pos.id && tradeDrag.key === 'tp' ? tradeDrag.price : pos.tp
     const ySl = dragSl != null ? yOf(dragSl) : null, yTp = dragTp != null ? yOf(dragTp) : null
     const pnl = trading.pnlOf(pos)
-    const label = `${pos.side === 'buy' ? 'Buy' : 'Sell'} ${pos.lots}   ${fmtUsd(pnl, { sign: true })}`
-    const labelW = label.length * 6.9 + 18 + 24
+    const showPnl = tr.pnl.on && tr.pnl.positionsOn
+    const label = `${pos.side === 'buy' ? 'Buy' : 'Sell'} ${pos.lots}${showPnl ? `   ${pnlText(tr.pnl.positions, pnl, pos, trading.markPrice(pos))}` : ''}`
+    const box = chipBox(label, true, align, w)
+    const bracket = (price) => (tr.pnl.on && tr.pnl.bracketsOn ? `   ${pnlText(tr.pnl.brackets, trading.projectPnl(pos, price), pos, price)}` : '')
+    const reverseLabel = 'Reverse'
     return (
-      <g key={pos.id}>
-        <line x1={0} y1={yE} x2={w} y2={yE} stroke={col} strokeWidth={1} strokeDasharray="5 4" opacity={0.85} style={{ pointerEvents: 'none' }} />
+      <g key={pos.id} className="bt-trade">
+        <line x1={x0} y1={yE} x2={w} y2={yE} stroke={col} strokeWidth={1} strokeDasharray="5 4" opacity={0.85} style={{ pointerEvents: 'none' }} />
         {ySl != null && <>
-          <line x1={0} y1={ySl} x2={w} y2={ySl} stroke={SL_COLOR} strokeWidth={1} strokeDasharray="3 4" style={{ pointerEvents: 'none' }} />
-          <line x1={0} y1={ySl} x2={w} y2={ySl} stroke="transparent" strokeWidth={10} style={{ pointerEvents: 'stroke', cursor: 'ns-resize' }} onPointerDown={(e) => beginTradeDrag(e, pos.id, 'sl', 'pos')} />
-          <TradeChip right={rightEdge} y={ySl} color={SL_COLOR} text={`SL ${fmtP(dragSl, digits)}   ${fmtUsd(trading.projectPnl(pos, dragSl), { sign: true })}`}
+          <line x1={x0} y1={ySl} x2={w} y2={ySl} stroke={SL_COLOR} strokeWidth={1} strokeDasharray="3 4" style={{ pointerEvents: 'none' }} />
+          <line x1={x0} y1={ySl} x2={w} y2={ySl} stroke="transparent" strokeWidth={10} style={{ pointerEvents: 'stroke', cursor: 'ns-resize' }} onPointerDown={(e) => beginTradeDrag(e, pos.id, 'sl', 'pos')} />
+          <TradeChip paneW={w} align={align} y={ySl} color={SL_COLOR} text={`SL ${fmtP(dragSl, digits)}${bracket(dragSl)}`}
                      onDragStart={(e) => beginTradeDrag(e, pos.id, 'sl', 'pos')} onClose={() => trading.onModifyPosition(pos.id, { sl: null })} title="Drag to move the stop loss" />
         </>}
         {yTp != null && <>
-          <line x1={0} y1={yTp} x2={w} y2={yTp} stroke={TP_COLOR} strokeWidth={1} strokeDasharray="3 4" style={{ pointerEvents: 'none' }} />
-          <line x1={0} y1={yTp} x2={w} y2={yTp} stroke="transparent" strokeWidth={10} style={{ pointerEvents: 'stroke', cursor: 'ns-resize' }} onPointerDown={(e) => beginTradeDrag(e, pos.id, 'tp', 'pos')} />
-          <TradeChip right={rightEdge} y={yTp} color={TP_COLOR} text={`TP ${fmtP(dragTp, digits)}   ${fmtUsd(trading.projectPnl(pos, dragTp), { sign: true })}`}
+          <line x1={x0} y1={yTp} x2={w} y2={yTp} stroke={TP_COLOR} strokeWidth={1} strokeDasharray="3 4" style={{ pointerEvents: 'none' }} />
+          <line x1={x0} y1={yTp} x2={w} y2={yTp} stroke="transparent" strokeWidth={10} style={{ pointerEvents: 'stroke', cursor: 'ns-resize' }} onPointerDown={(e) => beginTradeDrag(e, pos.id, 'tp', 'pos')} />
+          <TradeChip paneW={w} align={align} y={yTp} color={TP_COLOR} text={`TP ${fmtP(dragTp, digits)}${bracket(dragTp)}`}
                      onDragStart={(e) => beginTradeDrag(e, pos.id, 'tp', 'pos')} onClose={() => trading.onModifyPosition(pos.id, { tp: null })} title="Drag to move the take profit" />
         </>}
-        <TradeChip right={rightEdge} y={yE} color={col} text={label} cursor="default" onClose={() => trading.onClosePosition(pos.id)} title="Close this position" />
-        {pos.sl == null && <MiniBtn x={rightEdge - labelW - 46} y={yE} label="+SL" color={SL_COLOR} onClick={() => trading.onQuickLevel(pos.id, 'sl')} />}
-        {pos.tp == null && <MiniBtn x={rightEdge - labelW - (pos.sl == null ? 92 : 46)} y={yE} label="+TP" color={TP_COLOR} onClick={() => trading.onQuickLevel(pos.id, 'tp')} />}
+        <TradeChip paneW={w} align={align} y={yE} color={col} text={label} cursor="default" onClose={() => trading.onClosePosition(pos.id)} title="Close this position" />
+        {(() => {
+          let cursorX = box.x
+          const out = []
+          if (tr.reverseButton) { cursorX -= btnW(reverseLabel) + 6; out.push(<MiniBtn key="rev" x={cursorX} y={yE} label={reverseLabel} color="#F59E0B" title="Close this position and open the opposite one" onClick={() => trading.onReverse(pos.id)} />) }
+          if (pos.sl == null) { cursorX -= btnW('+SL') + 6; out.push(<MiniBtn key="sl" x={cursorX} y={yE} label="+SL" color={SL_COLOR} onClick={() => trading.onQuickLevel(pos.id, 'sl')} />) }
+          if (pos.tp == null) { cursorX -= btnW('+TP') + 6; out.push(<MiniBtn key="tp" x={cursorX} y={yE} label="+TP" color={TP_COLOR} onClick={() => trading.onQuickLevel(pos.id, 'tp')} />) }
+          return out
+        })()}
       </g>
     )
   })
 
-  const orderLines = (trading?.orders || []).map((o) => {
+  const orderLines = !showTrades ? null : (trading?.orders || []).map((o) => {
     const price = tradeDrag?.id === o.id && tradeDrag.key === 'price' ? tradeDrag.price : o.price
     const y = yOf(price); if (y == null) return null
     const col = o.side === 'buy' ? BUY : SELL
+    const x0 = entryX(o.createdAt)
     return (
-      <g key={o.id}>
-        <line x1={0} y1={y} x2={w} y2={y} stroke={col} strokeWidth={1} strokeDasharray="2 5" style={{ pointerEvents: 'none' }} />
-        <line x1={0} y1={y} x2={w} y2={y} stroke="transparent" strokeWidth={10} style={{ pointerEvents: 'stroke', cursor: 'ns-resize' }} onPointerDown={(e) => beginTradeDrag(e, o.id, 'price', 'order')} />
-        <TradeChip right={rightEdge} y={y} color={col} text={`${o.side === 'buy' ? 'Buy' : 'Sell'} ${o.type} ${o.lots}  @ ${fmtP(price, digits)}`}
+      <g key={o.id} className="bt-trade">
+        <line x1={x0} y1={y} x2={w} y2={y} stroke={col} strokeWidth={1} strokeDasharray="2 5" style={{ pointerEvents: 'none' }} />
+        <line x1={x0} y1={y} x2={w} y2={y} stroke="transparent" strokeWidth={10} style={{ pointerEvents: 'stroke', cursor: 'ns-resize' }} onPointerDown={(e) => beginTradeDrag(e, o.id, 'price', 'order')} />
+        <TradeChip paneW={w} align={align} y={y} color={col} text={`${o.side === 'buy' ? 'Buy' : 'Sell'} ${o.type} ${o.lots}  @ ${fmtP(price, digits)}`}
                    onDragStart={(e) => beginTradeDrag(e, o.id, 'price', 'order')} onClose={() => trading.onCancelOrder(o.id)} title="Drag to move · ✕ to cancel" />
-        {o.sl != null && yOf(o.sl) != null && <line x1={0} y1={yOf(o.sl)} x2={w} y2={yOf(o.sl)} stroke={SL_COLOR} strokeWidth={1} strokeDasharray="2 6" opacity={0.6} style={{ pointerEvents: 'none' }} />}
-        {o.tp != null && yOf(o.tp) != null && <line x1={0} y1={yOf(o.tp)} x2={w} y2={yOf(o.tp)} stroke={TP_COLOR} strokeWidth={1} strokeDasharray="2 6" opacity={0.6} style={{ pointerEvents: 'none' }} />}
+        {o.sl != null && yOf(o.sl) != null && <line x1={x0} y1={yOf(o.sl)} x2={w} y2={yOf(o.sl)} stroke={SL_COLOR} strokeWidth={1} strokeDasharray="2 6" opacity={0.6} style={{ pointerEvents: 'none' }} />}
+        {o.tp != null && yOf(o.tp) != null && <line x1={x0} y1={yOf(o.tp)} x2={w} y2={yOf(o.tp)} stroke={TP_COLOR} strokeWidth={1} strokeDasharray="2 6" opacity={0.6} style={{ pointerEvents: 'none' }} />}
       </g>
     )
   })
 
-  const ticketLines = ticket && (() => {
+  const ticketLines = ticket && tr.projectOrder && (() => {
     const entry = ticket.entry
     const yE = yOf(entry); if (yE == null) return null
     const lines = ['sl', 'tp'].map((key) => {
@@ -310,7 +367,7 @@ export default function DrawingOverlay({
         <g key={key}>
           <line x1={0} y1={y} x2={w} y2={y} stroke={col} strokeWidth={1.2} strokeDasharray="6 4" style={{ pointerEvents: 'none' }} />
           <line x1={0} y1={y} x2={w} y2={y} stroke="transparent" strokeWidth={10} style={{ pointerEvents: 'stroke', cursor: 'ns-resize' }} onPointerDown={(e) => beginTradeDrag(e, 'ticket', key, 'ticket')} />
-          <TradeChip right={rightEdge} y={y} color={col} text={`${key.toUpperCase()} ${fmtP(price, digits)}   ${fmtUsd(pnl, { sign: true })}`}
+          <TradeChip paneW={w} align={align} y={y} color={col} text={`${key.toUpperCase()} ${fmtP(price, digits)}   ${fmtUsd(pnl, { sign: true })}`}
                      onDragStart={(e) => beginTradeDrag(e, 'ticket', key, 'ticket')} title="Drag to adjust" />
         </g>
       )
@@ -318,11 +375,83 @@ export default function DrawingOverlay({
     return (
       <g>
         <line x1={0} y1={yE} x2={w} y2={yE} stroke={ticket.side === 'buy' ? BUY : SELL} strokeWidth={1} strokeDasharray="1 4" style={{ pointerEvents: 'none' }} />
-        <TradeChip right={rightEdge} y={yE} color={ticket.side === 'buy' ? BUY : SELL} cursor="default" text={`${ticket.side === 'buy' ? 'Buy' : 'Sell'} ${ticket.lots} @ ${fmtP(entry, digits)}`} />
+        <TradeChip paneW={w} align={align} y={yE} color={ticket.side === 'buy' ? BUY : SELL} cursor="default" text={`${ticket.side === 'buy' ? 'Buy' : 'Sell'} ${ticket.lots || '—'} @ ${fmtP(entry, digits)}`} />
         {lines}
       </g>
     )
   })()
+
+  // chart lines from the Scales settings ------------------------------------
+  const SCS = cs.scales
+  const hlLines = (() => {
+    if (!proj || !levels) return null
+    const out = []
+    const line = (key, price, color, style, text, mode) => {
+      const y = price == null ? null : yOf(price)
+      if (y == null || y < -2 || y > h + 2) return
+      out.push(
+        <g key={key} style={{ pointerEvents: 'none' }}>
+          <line x1={0} y1={y} x2={w} y2={y} stroke={color} strokeWidth={1} strokeDasharray={style === 'dashed' ? '6 4' : style === 'dotted' ? '2 3' : undefined} opacity={0.9} />
+          {mode === 'line-label' && <LevelTag paneW={w} y={y} text={text} color={color} />}
+        </g>,
+      )
+    }
+    if (SCS.prevDayClose !== 'hidden' && levels.pdc != null) line('pdc', levels.pdc, SCS.prevDayColor, SCS.prevDayStyle, `PDC ${fmtP(levels.pdc, digits)}`, SCS.prevDayClose)
+    if (SCS.highLow !== 'hidden') {
+      const t0 = proj.xToTime(0), t1 = proj.xToTime(w)
+      const vis = t0 == null || t1 == null ? [] : api.getBars().filter(b => b.time >= t0 - tfSecs && b.time <= t1)
+      if (vis.length) {
+        const hi = Math.max(...vis.map(b => b.high)), lo = Math.min(...vis.map(b => b.low))
+        line('hi', hi, SCS.highColor, 'dashed', `H ${fmtP(hi, digits)}`, SCS.highLow)
+        line('lo', lo, SCS.lowColor, 'dashed', `L ${fmtP(lo, digits)}`, SCS.highLow)
+      }
+    }
+    if (SCS.bidAsk !== 'hidden' && levels.bid != null) {
+      line('bid', levels.bid, SCS.bidColor, 'solid', `Bid ${fmtP(levels.bid, digits)}`, SCS.bidAsk)
+      line('ask', levels.ask, SCS.askColor, 'solid', `Ask ${fmtP(levels.ask, digits)}`, SCS.bidAsk)
+    }
+    return out
+  })()
+
+  const countdown = (() => {
+    if (!SCS.countdown || !proj || levels?.lastClose == null || levels.countdownSecs == null) return null
+    const y = yOf(levels.lastClose); if (y == null || y < 0 || y > h) return null
+    const s = Math.max(0, Math.floor(levels.countdownSecs))
+    const text = s >= 86400 ? `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h` : s >= 3600 ? `${Math.floor(s / 3600)}:${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}` : `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
+    return <LevelTag paneW={w} y={y + 15} text={text} color="rgba(55,60,72,0.95)" />
+  })()
+
+  // day separators + the locked vertical cursor line ---------------------------
+  const separators = (() => {
+    if (!cs.events.daySeparators || !proj || tfSecs >= 86400) return null
+    const bars = api.getBars()
+    const out = []
+    let lastKey = null
+    for (let i = 0; i < bars.length; i++) {
+      const k = tzFmt.dayKey(bars[i].time)
+      if (lastKey != null && k !== lastKey) {
+        const x = proj.timeToX(bars[i].time)
+        if (x != null && x >= 0 && x <= w) out.push(<line key={bars[i].time} x1={x} y1={0} x2={x} y2={h} stroke={cs.events.separatorColor || 'rgba(255,255,255,0.14)'} strokeWidth={1} strokeDasharray="2 4" style={{ pointerEvents: 'none' }} />)
+      }
+      lastKey = k
+    }
+    return out
+  })()
+  const lockedX = lockedTime != null && proj ? proj.timeToX(lockedTime) : null
+
+  // the "+" that follows the cursor on the price scale -------------------------
+  const plus = SCS.plusButton && plusPt && !drawingTool && proj && plusPt.y >= 0 && plusPt.y <= h ? (() => {
+    const price = proj.yToPrice(plusPt.y)
+    if (price == null) return null
+    return (
+      <g style={{ pointerEvents: 'all', cursor: 'pointer' }} onPointerEnter={() => { overPlus.current = true }} onPointerLeave={() => { overPlus.current = false; setPlusPt(null) }}
+         onPointerDown={(e) => { e.stopPropagation(); e.preventDefault(); onPlus(e.clientX, e.clientY, price) }}>
+        <title>Add alert or order at {fmtP(price, digits)}</title>
+        <rect x={w - 30} y={plusPt.y - 11} width={22} height={22} rx={5} fill="rgba(23,21,29,0.95)" stroke="rgba(255,255,255,0.25)" />
+        <path d={`M${w - 19},${plusPt.y - 5} v10 M${w - 24},${plusPt.y} h10`} stroke="#E5E7EB" strokeWidth={1.8} strokeLinecap="round" />
+      </g>
+    )
+  })() : null
 
   // crosshair while a drawing tool is active ------------------------------
   const crosshair = drawingTool && hover && !zoomBox && (() => {
@@ -348,11 +477,11 @@ export default function DrawingOverlay({
   if (!w || !h) return null
 
   return (
-    <svg ref={svgRef} className="bt-overlay absolute left-0 top-0 z-10" width={w} height={h}
-         style={{ pointerEvents: 'none', overflow: 'hidden', cursor: drawingTool ? 'crosshair' : undefined }}>
+    <svg ref={svgRef} className="bt-overlay absolute top-0 z-10" width={w} height={h}
+         style={{ left: paneX, pointerEvents: 'none', overflow: 'hidden', cursor: drawingTool ? 'crosshair' : undefined }}>
       {/* drawings */}
       {rendered.map(({ d, r }) => (
-        <g key={d.id} style={{ pointerEvents: interactive ? 'auto' : 'none', cursor: d.locked ? 'default' : 'move' }}
+        <g key={d.id} data-draw-id={d.id} style={{ pointerEvents: interactive ? 'auto' : 'none', cursor: d.locked ? 'default' : 'move' }}
            opacity={selectedId === d.id ? 1 : 0.96}
            onPointerDown={(e) => beginDrag(e, d, 'move')}
            onDoubleClick={() => d.type === 'text' && setEditing(d.id)}>
@@ -371,9 +500,14 @@ export default function DrawingOverlay({
       ))}
 
       {/* trading */}
+      {separators}
+      {hlLines}
+      {lockedX != null && <g style={{ pointerEvents: 'none' }}><line x1={lockedX} y1={0} x2={lockedX} y2={h} stroke="#8B5CF6" strokeWidth={1} strokeDasharray="4 3" /></g>}
       {positionLines}
       {orderLines}
       {ticketLines}
+      {countdown}
+      {plus}
 
       {crosshair}
 

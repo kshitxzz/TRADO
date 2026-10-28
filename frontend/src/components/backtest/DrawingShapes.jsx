@@ -72,6 +72,27 @@ export function renderDrawing(d, ctx) {
         handles: [{ x: a.x, y: a.y, idx: 0 }],
       }
     }
+    case 'alert': {
+      const col = d.active === false ? '#6B7280' : (ctx.alertColor || '#E11D48')
+      const text = `${d.active === false ? 'Triggered' : 'Alert'} ${fmt(d.points[0].price, digits)}`
+      const cw = text.length * 6.7 + 56
+      return {
+        el: (<>
+          <line x1={0} y1={a.y} x2={w} y2={a.y} stroke={col} strokeWidth={1.4} strokeDasharray="8 5" style={{ pointerEvents: 'none' }} />
+          <line x1={0} y1={a.y} x2={w} y2={a.y} stroke="transparent" strokeWidth={HIT} style={{ pointerEvents: 'stroke', cursor: 'ns-resize' }} />
+          <g>
+            <rect x={8} y={a.y - 11} width={cw} height={22} rx={5} fill={col} style={{ pointerEvents: 'all', cursor: 'ns-resize' }} />
+            <path d={`M20,${a.y + 4} h8 l-1,-1.5 v-3.5 a3,3 0 0 0 -6,0 v3.5 z M22.6,${a.y + 5.2} h2.8`} fill="#fff" stroke="#fff" strokeWidth={0.8} style={{ pointerEvents: 'none' }} />
+            <text x={36} y={a.y} dominantBaseline="central" fontSize={11.5} fontWeight={700} fill="#fff" style={{ pointerEvents: 'none' }}>{text}</text>
+            <g style={{ pointerEvents: 'all', cursor: 'pointer' }} onPointerDown={(e) => { e.stopPropagation(); ctx.onRemove(d.id) }}>
+              <rect x={8 + cw - 22} y={a.y - 8} width={18} height={16} rx={3} fill="rgba(0,0,0,0.28)" />
+              <path d={`M${8 + cw - 16},${a.y - 3} l6,6 M${8 + cw - 10},${a.y - 3} l-6,6`} stroke="#fff" strokeWidth={1.6} strokeLinecap="round" />
+            </g>
+          </g>
+        </>),
+        handles: [],
+      }
+    }
     case 'hray':
       return { el: <Line a={a} b={{ x: w, y: a.y }} d={d} />, handles: [{ x: a.x, y: a.y, idx: 0 }] }
     case 'vline':

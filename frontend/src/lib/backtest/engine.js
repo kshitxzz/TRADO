@@ -139,7 +139,7 @@ function closeAt(state, spec, pos, exit, now, reason) {
   const pnl = round(pnlUsd(spec, pos.lots, diff, exit), 2)
   const trade = {
     id: pos.id, side: pos.side, lots: pos.lots, entry: pos.entry, exit: round(exit),
-    sl: pos.sl, tp: pos.tp, openedAt: pos.openedAt, closedAt: now, pnl, reason,
+    sl: pos.sl, tp: pos.tp, openedAt: pos.openedAt, closedAt: now, pnl, reason, fromOrder: pos.fromOrder,
   }
   return {
     trade,
@@ -200,7 +200,7 @@ export function processCandle(state, spec, candle, now) {
     const need = marginUsd(spec, o.lots, fill, s.leverage)
     s = { ...s, orders: s.orders.filter(x => x.id !== o.id) }
     if (need > acc.freeMargin) { events.push({ type: 'rejected', order: o, reason: 'margin' }); continue }
-    const position = { id: o.id, side: o.side, lots: o.lots, entry: round(fill), sl: o.sl, tp: o.tp, openedAt: now }
+    const position = { id: o.id, side: o.side, lots: o.lots, entry: round(fill), sl: o.sl, tp: o.tp, openedAt: now, fromOrder: { type: o.type, price: o.price, createdAt: o.createdAt } }
     s = { ...s, positions: [...s.positions, position] }
     justFilled.add(position.id)
     events.push({ type: 'filled', position, from: 'pending' })
@@ -246,3 +246,55 @@ export function projectPnl(spec, { side, lots, entry }, price) {
   const diff = side === 'buy' ? price - entry : entry - price
   return pnlUsd(spec, lots, diff, price)
 }
+
+// ── Rewind ───────────────────────────────────────────────────────────────
+/**
+ * Put the account back to how it was at market time `T` (the clock = close of the last revealed candle).
+ *   • closed trades that closed at/before T stay closed;
+ *   • trades that were open at T and closed later re-open (with the SL/TP they closed with);
+ *   • trades opened after T are removed — they never happened yet;
+ *   • a pending order that was already placed at T and filled later is restored as pending;
+ *   • the balance is recomputed from the trades that remain.
+ * Replaying forward from there re-simulates the same candles.
+ *
+ * @returns {{ state, removedKeys:string[], summary:{ reopened, undone, cancelledPositions, ordersRemoved, ordersRestored, pnlRemoved } }}
+ */
+export function rewindState(state, T) {
+  const keepClosed = [], reopened = [], undone = []
+  const restoredOrders = []
+  const restore = (x) => {
+    if (x.fromOrder && x.fromOrder.createdAt <= T) {
+      restoredOrders.push({ id: x.id, side: x.side, type: x.fromOrder.type, price: x.fromOrder.price, lots: x.lots, sl: x.sl, tp: x.tp, createdAt: x.fromOrder.createdAt })
+    }
+  }
+
+  for (const t of state.closed) {
+    if (t.closedAt <= T) keepClosed.push(t)
+    else if (t.openedAt <= T) reopened.push({ id: t.id, side: t.side, lots: t.lots, entry: t.entry, sl: t.sl, tp: t.tp, openedAt: t.openedAt, fromOrder: t.fromOrder })
+    else { undone.push(t); restore(t) }
+  }
+
+  const stillOpen = state.positions.filter(p => p.openedAt <= T)
+  const cancelled = state.positions.filter(p => p.openedAt > T)
+  cancelled.forEach(restore)
+
+  const orders = state.orders.filter(o => o.createdAt <= T)
+  const ordersRemoved = state.orders.length - orders.length
+
+  const balance = round(state.startBalance + keepClosed.reduce((s, t) => s + (Number(t.pnl) || 0), 0), 2)
+  const removedClosed = state.closed.filter(t => t.closedAt > T)
+
+  return {
+    state: { ...state, balance, closed: keepClosed, positions: [...stillOpen, ...reopened], orders: [...orders, ...restoredOrders] },
+    removedKeys: removedClosed.map(t => t.id),
+    summary: {
+      reopened: reopened.length, undone: undone.length, cancelledPositions: cancelled.length,
+      ordersRemoved, ordersRestored: restoredOrders.length,
+      pnlRemoved: round(removedClosed.reduce((s, t) => s + (Number(t.pnl) || 0), 0), 2),
+    },
+  }
+}
+
+/** True when rewinding to T would change anything about the account (so the user should confirm). */
+export const rewindAffectsAccount = (summary) =>
+  summary.reopened + summary.undone + summary.cancelledPositions + summary.ordersRemoved > 0

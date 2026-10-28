@@ -97,6 +97,13 @@ export async function updateTradeNotes(dbId, notes) {
   if (!data?.length) fail(null, 'Note was not saved.')
 }
 
+/** Remove specific closed trades (used when the replay is rewound past them). */
+export async function deleteTradesByKeys(sessionId, keys) {
+  if (!keys.length) return
+  const { error } = await supabase.from('backtest_trades').delete().eq('session_id', sessionId).in('trade_key', keys)
+  if (error) fail(error, 'Could not undo the rewound trades')
+}
+
 export async function deleteTrades(sessionId) {
   const { error } = await supabase.from('backtest_trades').delete().eq('session_id', sessionId)
   if (error) fail(error, 'Could not reset trades')

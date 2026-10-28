@@ -6,7 +6,6 @@ import { formatShortDateTime } from '../../hooks/useTimeFormat'
 const fp = (n, d) => (n == null ? '—' : Number(n).toFixed(d))
 const REASON = { tp: 'Take profit', sl: 'Stop loss', manual: 'Manual', stopout: 'Stop-out' }
 const clr = (n) => (n > 0 ? 'var(--positive-green)' : n < 0 ? 'var(--negative-red)' : 'var(--text-primary)')
-const when = (s) => formatShortDateTime(s * 1000)
 
 function Table({ cols, rows, empty }) {
   if (!rows.length) return <p className="px-4 py-5 text-[12.5px]" style={{ color: 'var(--text-muted)' }}>{empty}</p>
@@ -25,8 +24,9 @@ const Td = ({ children, style }) => <td className="px-4 py-1.5 tabular-nums" sty
 const Side = ({ side }) => <span className="font-semibold" style={{ color: side === 'buy' ? '#22C55E' : '#F43F5E' }}>{side === 'buy' ? 'Buy' : 'Sell'}</span>
 
 export default function PositionsPanel({
-  positions, orders, closed, digits, pnlOf, onClose, onCloseAll, onCancelOrder, floating,
+  positions, orders, closed, digits, pnlOf, onClose, onCloseAll, onCancelOrder, floating, fmtTime,
 }) {
+  const when = (s) => (fmtTime ? fmtTime(s) : formatShortDateTime(s * 1000))
   const [tab, setTab] = useState('positions')
   const [open, setOpen] = useState(true)
   const hist = [...closed].reverse()

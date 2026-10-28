@@ -3,6 +3,7 @@ import { useNavigate, useParams, Link } from 'react-router-dom'
 import toast from 'react-hot-toast'
 import {
   ArrowLeft, Undo2, Redo2, Camera, Maximize2, Minimize2, Settings, Activity, RotateCcw, AlertTriangle,
+  Copy, ClipboardPaste, BellPlus, TrendingUp, TrendingDown, PlusSquare, Table, ListTree, Lock, Unlock, Trash2, Layers, Crosshair,
 } from 'lucide-react'
 import PageWrapper from '../../components/layout/PageWrapper'
 import PairIcon from '../../components/ui/PairIcon'
@@ -16,10 +17,14 @@ import OrderPanel from '../../components/backtest/OrderPanel'
 import PositionsPanel from '../../components/backtest/PositionsPanel'
 import ReplayBar from '../../components/backtest/ReplayBar'
 import TimeframeMenu from '../../components/backtest/TimeframeMenu'
-import IndicatorLegend from '../../components/backtest/IndicatorLegend'
-import Popover from '../../components/backtest/Popover'
+import StatusLine, { isMarketOpen } from '../../components/backtest/StatusLine'
+import ChartSettingsDialog from '../../components/backtest/ChartSettingsDialog'
+import ChartContextMenu from '../../components/backtest/ChartContextMenu'
+import TableView from '../../components/backtest/TableView'
+import ObjectTree from '../../components/backtest/ObjectTree'
 import { useAuth } from '../../hooks/useAuth'
-import { formatShortDateTime } from '../../hooks/useTimeFormat'
+import { formatShortDateTime, useTimeFormat } from '../../hooks/useTimeFormat'
+import { useTheme } from '../../hooks/useTheme'
 import * as api from '../../lib/backtest/api'
 import * as E from '../../lib/backtest/engine'
 import { getSpec, priceDigits, marginUsd } from '../../lib/backtest/specs'
@@ -28,7 +33,10 @@ import {
   tfSecs as tfSecsOf, tfLabel, isValidTf, baseFor, DEFAULT_FAVORITE_TFS, loadSessionData, buildTfIndex, candlesToNextBar, firstIndexAtOrAfter,
 } from '../../lib/backtest/data'
 import { DEFAULT_RECENT_EMOJI } from '../../lib/backtest/emojiData'
-import { TOOLS, cloneDrawing } from '../../lib/backtest/drawings'
+import { mergeSettings, clone, symbolDescription } from '../../lib/backtest/chartSettings'
+import { makeTimeFormatter } from '../../lib/backtest/timefmt'
+import { playSound } from '../../lib/backtest/sound'
+import { TOOLS, cloneDrawing, makeDrawing } from '../../lib/backtest/drawings'
 
 const BASE_TICK_MS = 400
 
@@ -53,6 +61,53 @@ function TopBtn({ title, onClick, children, active, disabled }) {
             style={{ color: active ? 'var(--accent-purple-light)' : 'var(--text-secondary)', background: active ? 'rgba(139,92,246,0.15)' : undefined }}>
       {children}
     </button>
+  )
+}
+
+/** Confirms a backward jump that would undo trades. */
+function RewindConfirm({ clock, summary: u, onCancel, onConfirm }) {
+  const lines = []
+  const n = (c, w) => `${c} ${w}${c === 1 ? '' : 's'}`
+  if (u.reopened) lines.push(`${n(u.reopened, 'trade')} that ${u.reopened === 1 ? 'was' : 'were'} open at that moment will be re-opened.`)
+  if (u.undone) lines.push(`${n(u.undone, 'trade')} opened after that moment will be removed from the session.`)
+  if (u.cancelledPositions) lines.push(`${n(u.cancelledPositions, 'open position')} opened after that moment will be cancelled.`)
+  if (u.ordersRemoved) lines.push(`${n(u.ordersRemoved, 'pending order')} placed after that moment will be removed.`)
+  if (u.ordersRestored) lines.push(`${n(u.ordersRestored, 'pending order')} will be pending again.`)
+  if (u.pnlRemoved) lines.push(`Their profit and loss (${fmtUsd(u.pnlRemoved, { sign: true })}) is removed from your balance.`)
+  return (
+    <div className="fixed inset-0 z-[110] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.6)' }} onPointerDown={onCancel}>
+      <div className="w-full max-w-[440px] rounded-2xl p-6" style={{ background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', boxShadow: '0 30px 100px rgba(0,0,0,0.7)' }} onPointerDown={(e) => e.stopPropagation()}>
+        <h3 className="text-[17px] font-bold mb-1" style={{ color: 'var(--text-primary)' }}>Go back to {clock}?</h3>
+        <p className="text-[13px] mb-3" style={{ color: 'var(--text-muted)' }}>Your account will be restored to how it was at that moment:</p>
+        <ul className="space-y-1.5 mb-5">
+          {lines.map(l => <li key={l} className="text-[13px] flex gap-2" style={{ color: 'var(--text-secondary)' }}><span style={{ color: 'var(--accent-purple-light)' }}>•</span>{l}</li>)}
+        </ul>
+        <p className="text-[12px] mb-5" style={{ color: 'var(--text-muted)' }}>Replaying forward from there plays the same candles again — you can trade them differently.</p>
+        <div className="flex justify-end gap-2.5">
+          <button type="button" onClick={onCancel} className="px-4 py-2 rounded-lg text-[13px] font-semibold hover:bg-white/5" style={{ color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)' }}>Cancel</button>
+          <button type="button" onClick={onConfirm} className="btn-primary px-5 py-2 rounded-lg text-[13px] font-semibold text-white">Go back</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** A one-field name prompt. */
+function NameDialog({ title, placeholder, onSubmit, onClose }) {
+  const [v, setV] = useState('')
+  const go = () => { const n = v.trim(); if (n) { onSubmit(n); onClose() } }
+  return (
+    <div className="fixed inset-0 z-[110] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.6)' }} onPointerDown={onClose}>
+      <div className="w-full max-w-[380px] rounded-2xl p-5" style={{ background: 'var(--bg-card)', border: '1px solid var(--border-subtle)' }} onPointerDown={(e) => e.stopPropagation()}>
+        <h3 className="text-[15px] font-bold mb-3" style={{ color: 'var(--text-primary)' }}>{title}</h3>
+        <input autoFocus value={v} onChange={(e) => setV(e.target.value)} maxLength={40} placeholder={placeholder} onKeyDown={(e) => { if (e.key === 'Enter') go(); if (e.key === 'Escape') onClose(); e.stopPropagation() }}
+               className="w-full h-10 rounded-lg px-3 text-[13px] outline-none mb-4" style={{ border: '1px solid var(--border-subtle)', background: 'var(--bg-primary)', color: 'var(--text-primary)' }} />
+        <div className="flex justify-end gap-2.5">
+          <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-[13px] font-semibold hover:bg-white/5" style={{ color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)' }}>Cancel</button>
+          <button type="button" onClick={go} className="btn-primary px-5 py-2 rounded-lg text-[13px] font-semibold text-white">Save</button>
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -93,9 +148,23 @@ export default function BacktestWorkspace() {
   const [indicators, setIndicators] = useState([])
   const [showIndicators, setShowIndicators] = useState(false)
   const [settingsFor, setSettingsFor] = useState(null)
-  const [chartSettings, setChartSettings] = useState({ grid: true, priceLine: true })
-  const [showChartSettings, setShowChartSettings] = useState(false)
-  const settingsRef = useRef(null)
+  // chart settings (the Settings dialog) — saved per browser; `preview` shows unsaved edits while the dialog is open
+  const [savedSettings, setSavedSettings] = useStored('trado_bt_settings', null)
+  const settings = useMemo(() => mergeSettings(savedSettings), [savedSettings])
+  const [preview, setPreview] = useState(null)
+  const cs = preview || settings
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsTemplates, setSettingsTemplates] = useStored('trado_bt_settings_templates', [])
+  const [chartTemplates, setChartTemplates] = useStored('trado_bt_chart_templates', [])
+  const [scaleMode, setScaleMode] = useState({ auto: true, log: false, pct: false })
+  const [ctx, setCtx] = useState(null)                     // right-click menu { x, y, price, time, drawingId, mini }
+  const [tableOpen, setTableOpen] = useState(false)
+  const [treeOpen, setTreeOpen] = useState(false)
+  const [lockedTime, setLockedTime] = useState(null)
+  const [rewindAsk, setRewindAsk] = useState(null)         // { T, result } while waiting for the user to confirm a rewind
+  const [nameDialog, setNameDialog] = useState(null)
+  const { isDark } = useTheme()
+  const { timeFormat } = useTimeFormat()
   const [ticket, setTicket] = useState(null)
   const [layouts, setLayouts] = useState([])
   const [activeLayoutId, setActiveLayoutId] = useState(null)
@@ -115,6 +184,14 @@ export default function BacktestWorkspace() {
   const timer = useRef(null)
   const spent = useRef(0)
   const latest = useRef({})
+  const orderRef = useRef(null)
+  const clipRef = useRef(null)
+  const pointerRef = useRef({ time: null, price: null })
+  const csRef = useRef(cs)
+  const drawingsLive = useRef([])
+  const changeDrawingsRef = useRef(() => {})
+  csRef.current = cs
+  drawingsLive.current = drawings
 
   const spec = useMemo(() => getSpec(session?.symbol || ''), [session?.symbol])
   const base = data?.base
@@ -127,10 +204,17 @@ export default function BacktestWorkspace() {
     return Math.min(base.length, firstIndexAtOrAfter(base, baseSecs, Math.floor(new Date(session.end_at).getTime() / 1000) + baseSecs))
   }, [base, baseSecs, session])
 
+  const initialCount = useMemo(
+    () => (base && session ? firstIndexAtOrAfter(base, baseSecs, Math.floor(new Date(session.start_at).getTime() / 1000) + baseSecs) : 0),
+    [base, baseSecs, session])
   const candle = base && count > 0 ? base[count - 1] : null
   const now = candle ? candle.time + baseSecs : 0
   const atEnd = !!base && count >= endCount
-  const digits = priceDigits(spec, candle?.close)
+  const baseDigits = priceDigits(spec, candle?.close)
+  const digits = cs.symbol.precision === 'default' ? baseDigits : cs.symbol.precision
+  const tzFmt = useMemo(() => makeTimeFormatter({ scales: cs.scales, timezone: cs.symbol.timezone, appHour12: timeFormat !== '24h' }),
+    [cs.scales, cs.symbol.timezone, timeFormat])
+  const description = symbolDescription(session?.symbol || '')
   const quote = candle ? { bid: candle.close, ask: candle.close + spread } : { bid: 0, ask: 0 }
 
   // ── persistence ────────────────────────────────────────────────────────
@@ -238,6 +322,17 @@ export default function BacktestWorkspace() {
     api.saveTrades(user.id, id, trades).catch(() => toast.error('A closed trade could not be synced — it will retry on the next save.'))
   }, [id, user])
 
+  // notifications honour "Show only rejection notifications"; sounds honour "Execution sound"
+  const tn = useMemo(() => ({
+    success: (m, o) => { if (!csRef.current.trading.onlyRejections) toast.success(m, o) },
+    result: (positive, m) => { if (!csRef.current.trading.onlyRejections) (positive ? toast.success : toast.error)(m) },
+  }), [])
+  const execSound = useCallback(() => { const sd = csRef.current.trading.sound; if (sd.on) playSound(sd.kind, sd.volume) }, [])
+  const alertToast = useCallback((m) => {
+    toast(m, { icon: '🔔', duration: csRef.current.alerts.autoHideToasts ? 5000 : Infinity })
+    execSound()
+  }, [execSound])
+
   const announce = useCallback((events) => {
     const closed = []
     for (const ev of events) {
@@ -245,15 +340,16 @@ export default function BacktestWorkspace() {
         closed.push(ev.trade)
         const t = ev.trade
         const label = t.reason === 'tp' ? 'Take profit hit' : t.reason === 'sl' ? 'Stop loss hit' : t.reason === 'stopout' ? 'Stop-out' : 'Closed'
-        ;(t.pnl >= 0 ? toast.success : toast.error)(`${label}: ${t.side === 'buy' ? 'Buy' : 'Sell'} ${t.lots} · ${fmtUsd(t.pnl, { sign: true })}`)
+        tn.result(t.pnl >= 0, `${label}: ${t.side === 'buy' ? 'Buy' : 'Sell'} ${t.lots} · ${fmtUsd(t.pnl, { sign: true })}`)
       } else if (ev.type === 'filled') {
-        toast.success(`${ev.position.side === 'buy' ? 'Buy' : 'Sell'} order filled @ ${ev.position.entry}`)
+        tn.success(`${ev.position.side === 'buy' ? 'Buy' : 'Sell'} order filled @ ${ev.position.entry}`)
       } else if (ev.type === 'rejected') {
         toast.error('A pending order was cancelled — not enough margin.')
       }
     }
     persistTrades(closed)
-  }, [persistTrades])
+    if (events.some(e => e.type === 'closed' || e.type === 'filled')) execSound()
+  }, [persistTrades, tn, execSound])
 
   /** Step the replay forward n base candles, running every one through the engine. */
   const advance = useCallback((n) => {
@@ -274,9 +370,23 @@ export default function BacktestWorkspace() {
     setCount(target); setEngine(s)
     schedule()
     if (events.length) announce(events)
+
+    // price alerts fire when a revealed candle touches their level
+    const live = drawingsLive.current.filter(d => d.type === 'alert' && d.active !== false)
+    if (live.length) {
+      const hit = new Map()
+      for (let i = cur; i < target; i++) {
+        const c = base[i]
+        for (const a of live) if (!hit.has(a.id) && c.low <= a.points[0].price && a.points[0].price <= c.high) hit.set(a.id, c.time + baseSecs)
+      }
+      if (hit.size) {
+        changeDrawingsRef.current(drawingsLive.current.map(d => (hit.has(d.id) ? { ...d, active: false, triggeredAt: hit.get(d.id) } : d)), true)
+        for (const id of hit.keys()) { const a = live.find(x => x.id === id); alertToast(`Alert: ${session.symbol} reached ${a.points[0].price.toFixed(digits)}`) }
+      }
+    }
     if (target >= endCount) { setPlaying(false); toast('You reached the end of the session range.', { icon: '🏁' }) }
     return target - cur
-  }, [base, endCount, spec, baseSecs, schedule, announce])
+  }, [base, endCount, spec, baseSecs, schedule, announce, alertToast, session?.symbol, digits])
 
   const next = useCallback(() => {
     if (!idx) return
@@ -290,24 +400,62 @@ export default function BacktestWorkspace() {
     return () => clearInterval(t)
   }, [playing, speed, advance])
 
-  const jumpToTime = useCallback((tSecs, { silent } = {}) => {
-    const target = Math.min(endCount, firstIndexAtOrAfter(base, baseSecs, Math.floor(tSecs) + 1))
-    if (target <= countRef.current) { if (!silent) toast.error('Pick a later time — a replay only moves forward.'); return }
+  /** Put the replay clock back to market time T: re-open / undo trades, restore the balance, move the cursor. */
+  const applyRewind = useCallback((T, result) => {
     setPlaying(false)
-    advance(target - countRef.current)
-  }, [base, baseSecs, endCount, advance])
+    const target = Math.max(initialCount, firstIndexAtOrAfter(base, baseSecs, T + 1))
+    engineRef.current = result.state
+    countRef.current = target
+    setEngine(result.state); setCount(target)
+    // alerts that fired after T are armed again
+    const dr = drawingsLive.current
+    if (dr.some(d => d.type === 'alert' && d.active === false && d.triggeredAt > T)) {
+      changeDrawingsRef.current(dr.map(d => (d.type === 'alert' && d.active === false && d.triggeredAt > T ? { ...d, active: true, triggeredAt: null } : d)), true)
+    }
+    schedule()
+    if (result.removedKeys.length) api.deleteTradesByKeys(id, result.removedKeys).catch(() => toast.error('Could not remove the undone trades from your saved session.'))
+    const u = result.summary
+    if (E.rewindAffectsAccount(u)) toast.success('Went back in time — your account was restored to that moment.')
+  }, [initialCount, base, baseSecs, schedule, id])
 
-  // select-bar: the next click on the chart jumps to the end of that bar
+  /** Jump the replay to market time T — forward replays candle by candle, backward rewinds (asking first if it changes trades). */
+  const seekTo = useCallback((T) => {
+    if (!base || !countRef.current) return
+    const clockNow = base[countRef.current - 1].time + baseSecs
+    const minClock = base[Math.max(0, initialCount - 1)].time + baseSecs
+    setPlaying(false)
+    if (T > clockNow) {
+      const target = Math.min(endCount, firstIndexAtOrAfter(base, baseSecs, Math.floor(T) + 1))
+      if (target > countRef.current) advance(target - countRef.current)
+      return
+    }
+    if (T === clockNow) return
+    let target = T
+    if (T < minClock) { toast('That’s before the session start — going back to the start.', { icon: 'ℹ️' }); target = minClock }
+    if (target >= clockNow) return
+    const result = E.rewindState(engineRef.current, target)
+    if (E.rewindAffectsAccount(result.summary)) setRewindAsk({ T: target, result })
+    else applyRewind(target, result)
+  }, [base, baseSecs, initialCount, endCount, advance, applyRewind])
+
+  // select-bar: the next click on the chart jumps to the end of that bar (forward or back)
   const onBoxPointerDown = (e) => {
     if (!selecting) { if (tool === 'cursor') setSelectedId(null); return }
     const proj = chartRef.current?.projector()
     const rect = boxRef.current?.getBoundingClientRect()
     if (!proj || !rect) return
-    const t = proj.xToTime(e.clientX - rect.left)
+    const t = proj.xToTime(e.clientX - rect.left - (chartRef.current?.pane().x || 0))
     setSelecting(false)
     if (t == null) return
-    jumpToTime(Math.floor(t / tfSecs) * tfSecs + tfSecs - 1)
+    seekTo(Math.floor(t / tfSecs) * tfSecs + tfSecs)
   }
+
+  // chart crosshair feed for the status line, the "+" button and the keyboard shortcuts
+  const crossHook = useCallback((cb) => chartRef.current?.onCrosshair(cb) ?? (() => {}), [])
+  useEffect(() => {
+    if (phase !== 'ready') return
+    return chartRef.current?.onCrosshair((info) => { if (info.price != null) pointerRef.current = { time: info.time, price: info.price } })
+  }, [phase])
 
   const pnlOf = useCallback((pos) => (candle ? E.positionPnl(spec, pos, candle, spread) : 0), [candle, spec, spread])
   const projectPnl = useCallback((pos, price) => E.projectPnl(spec, pos, price), [spec])
@@ -324,19 +472,32 @@ export default function BacktestWorkspace() {
     return side === 'buy' ? { sl: r(entry - d), tp: r(entry + d * 2) } : { sl: r(entry + d), tp: r(entry - d * 2) }
   }
 
-  const confirmTicket = () => {
-    if (!ticket || !candle) return
-    if (!(ticket.lots > 0)) { toast.error('Enter a volume first.'); return }
-    const o = { side: ticket.side, lots: ticket.lots, sl: ticket.sl, tp: ticket.tp }
-    const r = ticket.orderType === 'market'
-      ? E.openMarket(engineRef.current, spec, o, candle, now)
-      : E.placePending(engineRef.current, spec, { ...o, type: ticket.orderType, price: ticket.price }, candle, now)
-    if (r.error) { toast.error(r.error); return }
+  /** Place an order. Used by the order ticket, the chart's Buy/Sell buttons and the right-click menu. */
+  const placeOrder = (o) => {
+    if (!candle) return false
+    if (!(o.lots > 0)) { toast.error('Enter a volume first.'); return false }
+    const base0 = { side: o.side, lots: o.lots, sl: o.sl ?? null, tp: o.tp ?? null }
+    const r = o.orderType === 'market' || !o.orderType
+      ? E.openMarket(engineRef.current, spec, base0, candle, now)
+      : E.placePending(engineRef.current, spec, { ...base0, type: o.orderType, price: o.price }, candle, now)
+    if (r.error) { toast.error(r.error); return false }
     commit(r.state)
-    toast.success(ticket.orderType === 'market'
-      ? `${ticket.side === 'buy' ? 'Bought' : 'Sold'} ${r.position.lots} @ ${r.position.entry}`
-      : `${ticket.orderType} order placed @ ${r.order.price}`)
-    setTicket(null)
+    tn.success(o.orderType === 'market' || !o.orderType
+      ? `${o.side === 'buy' ? 'Bought' : 'Sold'} ${r.position.lots} @ ${r.position.entry}`
+      : `${o.orderType} order placed @ ${r.order.price}`)
+    execSound()
+    return true
+  }
+  const confirmTicket = () => { if (ticket && placeOrder(ticket)) setTicket(null) }
+
+  /** One-click trading executes at once when a volume is typed; otherwise (or when off) it opens the ticket. */
+  const quickTrade = (side, { orderType, price } = {}) => {
+    const lots = orderRef.current?.getLots()
+    const type = orderType || 'market'
+    if (cs.trading.oneClick && lots) { placeOrder({ side, lots, orderType: type, price }); return }
+    if (!orderRef.current) return
+    if (!lots && cs.trading.oneClick) toast('Type a volume in the order panel first.', { icon: 'ℹ️' })
+    orderRef.current.startTicket(side, { orderType, price })
   }
 
   const modifyPosition = (pid, patch) => {
@@ -368,6 +529,30 @@ export default function BacktestWorkspace() {
     announce(r.trades.map(trade => ({ type: 'closed', trade })))
   }
   const cancelOrder = (oid) => commit(E.cancelOrder(engineRef.current, oid))
+  /** Close a position at market and open the opposite one of the same size. */
+  const reversePosition = (pid) => {
+    if (!candle) return
+    const pos = engineRef.current.positions.find(p => p.id === pid)
+    if (!pos) return
+    const closed = E.closePosition(engineRef.current, spec, pid, candle, now, 'manual')
+    const opened = E.openMarket(closed.state, spec, { side: pos.side === 'buy' ? 'sell' : 'buy', lots: pos.lots }, candle, now)
+    if (opened.error) { toast.error(`Couldn’t reverse: ${opened.error}`); return }
+    commit(opened.state)
+    if (closed.trade) announce([{ type: 'closed', trade: closed.trade }])
+    execSound()
+  }
+  const markPrice = (pos) => (candle ? (pos.side === 'buy' ? candle.close : candle.close + spread) : pos.entry)
+  /** Profit text in the unit chosen in Settings → Trading → Profit and loss value. */
+  const pnlText = (mode, usd, pos, price) => {
+    if (mode === 'pips') {
+      const diff = (pos.side === 'buy' ? 1 : -1) * (price - pos.entry)
+      const unit = spec.kind === 'forex' ? 'pips' : 'pts'
+      const v = diff / spec.pipSize
+      return `${v >= 0 ? '+' : ''}${v.toFixed(1)} ${unit}`
+    }
+    if (mode === 'percent') { const v = (usd / (Number(session?.start_balance) || 1)) * 100; return `${v >= 0 ? '+' : ''}${v.toFixed(2)}%` }
+    return fmtUsd(usd, { sign: true })
+  }
 
   // levels the chart must keep in view: open positions, pending orders and the order ticket
   const extraPrices = useMemo(() => {
@@ -383,7 +568,7 @@ export default function BacktestWorkspace() {
     positions: engine?.positions || [], orders: engine?.orders || [], pnlOf, projectPnl,
     projectTicketPnl: (t, price) => E.projectPnl(spec, { side: t.side, lots: t.lots, entry: t.orderType === 'market' ? t.entry : t.price }, price),
     onModifyPosition: modifyPosition, onModifyOrder: modifyOrder, onClosePosition: closePosition,
-    onCancelOrder: cancelOrder, onQuickLevel: quickLevel,
+    onCancelOrder: cancelOrder, onQuickLevel: quickLevel, onReverse: reversePosition, markPrice,
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [engine, pnlOf, projectPnl, spec, candle, digits])
 
@@ -396,6 +581,8 @@ export default function BacktestWorkspace() {
     h.past = [...h.past.slice(-49), h.committed]; h.future = []; h.committed = nextList
     schedule(); bump(n => n + 1)
   }, [schedule])
+
+  changeDrawingsRef.current = changeDrawings
 
   const undo = () => {
     const h = history.current
@@ -465,7 +652,122 @@ export default function BacktestWorkspace() {
   const changeIndicators = (list) => { setIndicators(list); schedule() }
 
   // ── layouts ────────────────────────────────────────────────────────────
-  const layoutData = () => ({ tf, drawings, indicators, settings: chartSettings })
+  // ── chart extras: levels, execution marks ───────────────────────────────
+  const dayKeyNow = candle ? tzFmt.dayKey(now - 1) : 0
+  const pdc = useMemo(() => {                       // close of the last candle of the previous day (in the chosen timezone)
+    if (!base || !countRef.current) return null
+    const k = tzFmt.dayKey(base[countRef.current - 1].time)
+    for (let i = countRef.current - 1; i >= 0; i--) if (tzFmt.dayKey(base[i].time) !== k) return base[i].close
+    return null
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [base, dayKeyNow, tzFmt])
+  const barEnd = idx && count ? (idx.bars[idx.bucketOf[count - 1] + 1]?.time ?? idx.bars[idx.bucketOf[count - 1]].time + tfSecs) : null
+  const levels = candle ? { pdc, bid: quote.bid, ask: quote.ask, lastClose: candle.close, countdownSecs: barEnd != null ? barEnd - now : null } : null
+  const marks = useMemo(() => {
+    const out = []
+    const label = (side, kind, lots, price, pnl) => (kind === 'entry' ? `${side === 'buy' ? 'Buy' : 'Sell'} ${lots} @ ${price}` : `Close ${pnl >= 0 ? '+' : ''}${pnl}`)
+    for (const t of engine?.closed || []) {
+      out.push({ time: t.openedAt, side: t.side, kind: 'entry', text: label(t.side, 'entry', t.lots, t.entry) })
+      out.push({ time: t.closedAt, side: t.side, kind: 'exit', pnl: t.pnl, text: label(t.side, 'exit', t.lots, t.exit, t.pnl) })
+    }
+    for (const p of engine?.positions || []) out.push({ time: p.openedAt, side: p.side, kind: 'entry', text: label(p.side, 'entry', p.lots, p.entry) })
+    return out
+  }, [engine?.closed, engine?.positions])
+
+  // ── right-click menu actions ────────────────────────────────────────────
+  const fmtPx = (n) => Number(n).toFixed(digits)
+  const copyPrice = async (price) => {
+    try { await navigator.clipboard.writeText(fmtPx(price)); toast.success(`Copied ${fmtPx(price)}`) } catch { toast.error('Couldn’t copy — the browser blocked clipboard access.') }
+  }
+  const addAlert = (price) => {
+    if (!candle || price == null) return
+    const d = makeDrawing('alert', [{ time: now, price: Number(fmtPx(price)) }], { active: true })
+    changeDrawings([...drawings, d], true)
+    toast.success(`Alert set at ${fmtPx(price)}`, { duration: 2500 })
+  }
+  const copyDrawing = () => { if (selected) { clipRef.current = JSON.parse(JSON.stringify(selected)); toast.success('Drawing copied', { duration: 1500 }) } }
+  const pasteDrawing = (at) => {
+    const src = clipRef.current
+    if (!src) return
+    const p0 = src.points[0]
+    const copy = cloneDrawing(src, at?.time != null ? at.time - p0.time : tfSecs * 3, at?.price != null ? at.price - p0.price : 0)
+    changeDrawings([...drawings, copy], true); setSelectedId(copy.id)
+  }
+  const orderKind = (side, price) => (side === 'buy' ? (price < quote.ask ? 'limit' : 'stop') : (price > quote.bid ? 'limit' : 'stop'))
+  const tradeAt = (side, price) => quickTrade(side, { orderType: orderKind(side, price), price: Number(fmtPx(price)) })
+  const addOrderAt = (price) => { const side = price < quote.ask ? 'buy' : 'sell'; tradeAt(side, price) }
+
+  const saveChartTemplate = (name) => {
+    setChartTemplates([...chartTemplates.filter(t => t.name !== name), { name, settings: cs, indicators }])
+    toast.success(`Chart template “${name}” saved`)
+  }
+  const applyChartTemplate = (t) => {
+    setSavedSettings(mergeSettings(t.settings)); changeIndicators((t.indicators || []).map(i => ({ ...i })))
+    toast.success(`Applied “${t.name}”`, { duration: 1800 })
+  }
+
+  const buildMenu = (m) => {
+    const lots = orderRef.current?.getLots()
+    const lot = lots ? `${lots} ` : ''
+    const buyType = orderKind('buy', m.price), sellType = orderKind('sell', m.price)
+    const trade = [
+      { label: `Add alert on ${session.symbol} at ${fmtPx(m.price)}`, shortcut: 'Alt + A', icon: BellPlus, onClick: () => addAlert(m.price) },
+      { label: `Buy ${lot}${session.symbol} @ ${fmtPx(m.price)} ${buyType}`, shortcut: 'Alt + Shift + B', icon: TrendingUp, onClick: () => tradeAt('buy', m.price) },
+      { label: `Sell ${lot}${session.symbol} @ ${fmtPx(m.price)} ${sellType}`, shortcut: 'Alt + Shift + S', icon: TrendingDown, onClick: () => tradeAt('sell', m.price) },
+      { label: `Add order on ${session.symbol} at ${fmtPx(m.price)}…`, shortcut: 'Shift + T', icon: PlusSquare, onClick: () => addOrderAt(m.price) },
+    ]
+    if (m.mini) return trade
+    const nDraw = drawings.filter(d => d.type !== 'alert').length
+    const items = []
+    if (m.drawingId) {
+      items.push(
+        { label: 'Settings…', icon: Settings, onClick: () => setSettingsFor(drawings.find(d => d.id === m.drawingId)) },
+        { label: 'Clone', icon: Copy, onClick: duplicateSelected },
+        { label: 'Copy', shortcut: 'Ctrl + C', icon: Copy, onClick: copyDrawing },
+        { label: 'Remove', icon: Trash2, danger: true, onClick: deleteSelected },
+        { type: 'sep' },
+      )
+    }
+    items.push(
+      { label: 'Reset chart view', shortcut: 'Alt + R', icon: RotateCcw, onClick: () => chartRef.current?.fit() },
+      { type: 'sep' },
+      { label: `Copy price ${fmtPx(m.price)}`, onClick: () => copyPrice(m.price) },
+      { label: 'Paste', shortcut: 'Ctrl + V', disabled: !clipRef.current, onClick: () => pasteDrawing(m) },
+      { type: 'sep' }, ...trade, { type: 'sep' },
+      { label: lockedTime != null ? 'Unlock vertical cursor line' : 'Lock vertical cursor line by time', icon: lockedTime != null ? Unlock : Lock, onClick: () => setLockedTime(lockedTime != null ? null : m.time) },
+      { type: 'sep' },
+      { label: 'Table view', icon: Table, onClick: () => setTableOpen(true) },
+      { label: 'Object tree', icon: ListTree, onClick: () => setTreeOpen(true) },
+      {
+        label: 'Chart template', icon: Layers,
+        children: [
+          { label: 'Save chart template…', onClick: () => setNameDialog({ title: 'Save chart template', placeholder: 'Template name', onSubmit: saveChartTemplate }) },
+          ...(chartTemplates.length ? [{ type: 'sep' }, ...chartTemplates.map(t => ({ label: t.name, onClick: () => applyChartTemplate(t) })), { type: 'sep' }, { label: 'Delete all templates', danger: true, onClick: () => setChartTemplates([]) }] : []),
+        ],
+      },
+      { type: 'sep' },
+    )
+    if (nDraw) items.push({ label: `Remove ${nDraw} drawing${nDraw === 1 ? '' : 's'}`, onClick: clearAll })
+    if (indicators.length) items.push({ label: `Remove ${indicators.length} indicator${indicators.length === 1 ? '' : 's'}`, onClick: () => changeIndicators([]) })
+    if (nDraw || indicators.length) items.push({ type: 'sep' })
+    items.push({ label: 'Settings…', icon: Settings, onClick: () => setSettingsOpen(true) })
+    return items
+  }
+
+  const onContextMenu = (e) => {
+    e.preventDefault()
+    const proj = chartRef.current?.projector(), rect = svgRef.current?.getBoundingClientRect() || boxRef.current?.getBoundingClientRect()
+    if (!proj || !rect || !candle) { setCtx(null); return }
+    const x = e.clientX - rect.left, y = e.clientY - rect.top
+    const m = proj.toMarket({ x, y }, {})
+    const price = m?.price ?? candle.close
+    const dEl = e.target.closest?.('[data-draw-id]')
+    const drawingId = dEl?.getAttribute('data-draw-id') || null
+    if (drawingId) setSelectedId(drawingId)
+    setCtx({ x: e.clientX, y: e.clientY, price, time: m?.time ?? now, drawingId })
+  }
+
+  const layoutData = () => ({ tf, drawings, indicators, settings })
   const saveLayoutAs = async (name) => {
     try {
       const row = await api.saveLayout(user.id, name, layoutData())
@@ -478,7 +780,7 @@ export default function BacktestWorkspace() {
     const d = l.data || {}
     if (d.tf && tfSecsOf(d.tf) >= baseSecs) setTf(d.tf)
     changeDrawings(d.drawings || [], true); setSelectedId(null)
-    setIndicators(d.indicators || []); if (d.settings) setChartSettings(d.settings)
+    setIndicators(d.indicators || []); if (d.settings) setSavedSettings(mergeSettings(d.settings))
     setActiveLayoutId(l.id); schedule()
   }
   const renameLayout = async (lid, name) => {
@@ -490,7 +792,10 @@ export default function BacktestWorkspace() {
 
   // ── screenshot / fullscreen ────────────────────────────────────────────
   const screenshot = async () => {
+    const hide = cs.trading.snapshots ? [] : [...(svgRef.current?.querySelectorAll('.bt-trade') || [])]
+    hide.forEach(el => { el.style.display = 'none' })
     const canvas = await chartRef.current?.screenshot(svgRef.current)
+    hide.forEach(el => { el.style.display = '' })
     if (!canvas) return
     canvas.toBlob((blob) => {
       if (!blob) return
@@ -527,21 +832,30 @@ export default function BacktestWorkspace() {
       if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return }
       if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === 'y') { e.preventDefault(); redo(); return }
       if (k === 'Delete' || k === 'Backspace') { if (selected && !selected.locked) { e.preventDefault(); deleteSelected() } return }
-      if (k === 'Escape') { setTool('cursor'); setSelectedId(null); setSelecting(false); setTicket(null); setShowChartSettings(false); return }
+      if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === 'c') { if (selected) { e.preventDefault(); copyDrawing() } return }
+      if ((e.ctrlKey || e.metaKey) && k.toLowerCase() === 'v') { if (clipRef.current) { e.preventDefault(); pasteDrawing(pointerRef.current) } return }
+      if (k === 'Escape') { setTool('cursor'); setSelectedId(null); setSelecting(false); setTicket(null); setCtx(null); return }
       if (e.altKey) {
-        const hit = Object.entries(TOOLS).find(([, t]) => t.key && t.key.toLowerCase() === (e.code || '').replace('Key', '').toLowerCase())
+        const code = (e.code || '').replace('Key', '')
+        const px = pointerRef.current.price
+        if (!e.shiftKey && code === 'R') { e.preventDefault(); chartRef.current?.fit(); return }
+        if (!e.shiftKey && code === 'A') { e.preventDefault(); addAlert(px ?? candle?.close); return }
+        if (e.shiftKey && code === 'B') { e.preventDefault(); tradeAt('buy', px ?? candle?.close); return }
+        if (e.shiftKey && code === 'S') { e.preventDefault(); tradeAt('sell', px ?? candle?.close); return }
+        const combo = `${e.shiftKey ? 'shift+' : ''}${code}`.toLowerCase()
+        const hit = Object.entries(TOOLS).find(([, t]) => t.key && t.key.toLowerCase() === combo)
         if (hit) { e.preventDefault(); setTool(hit[0]) }
       }
+      if (e.shiftKey && !e.altKey && !e.ctrlKey && k.toLowerCase() === 't') { e.preventDefault(); addOrderAt(pointerRef.current.price ?? candle?.close); return }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   })
 
   // ── render ─────────────────────────────────────────────────────────────
-  const clock = candle ? formatShortDateTime(now * 1000) : ''
+  const clock = candle ? tzFmt.clock(now) : ''
   const startSec = session ? Math.floor(new Date(session.start_at).getTime() / 1000) : 0
   const endSec = session ? Math.floor(new Date(session.end_at).getTime() / 1000) : 0
-  const initialCount = base ? firstIndexAtOrAfter(base, baseSecs, startSec + baseSecs) : 0
   const prog = endCount > initialCount ? (count - initialCount) / (endCount - initialCount) : 0
   const toInput = (s) => { const d = new Date(s * 1000), p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}` }
 
@@ -603,20 +917,7 @@ export default function BacktestWorkspace() {
 
             <LayoutMenu layouts={layouts} activeId={activeLayoutId} onSave={saveLayoutAs} onUpdate={updateLayout} onLoad={loadLayout} onRename={renameLayout} onDelete={deleteLayout} />
 
-            <div ref={settingsRef}>
-              <TopBtn title="Chart settings" onClick={() => setShowChartSettings(v => !v)} active={showChartSettings}><Settings size={15} /></TopBtn>
-            </div>
-            <Popover anchorRef={settingsRef} open={showChartSettings} onClose={() => setShowChartSettings(false)} align="right" style={{ width: 220 }}>
-              <div className="p-2">
-                {[['grid', 'Grid lines'], ['priceLine', 'Last price line']].map(([k, label]) => (
-                  <label key={k} className="flex items-center justify-between px-2 py-2 text-[12.5px] cursor-pointer rounded-md hover:bg-white/5" style={{ color: 'var(--text-primary)' }}>
-                    {label}
-                    <input type="checkbox" className="accent-[#8B5CF6]" checked={chartSettings[k] !== false} onChange={(e) => setChartSettings(v => ({ ...v, [k]: e.target.checked }))} />
-                  </label>
-                ))}
-                <button onClick={() => { chartRef.current?.fit(); setShowChartSettings(false) }} className="w-full text-left px-2 py-2 text-[12.5px] rounded-md hover:bg-white/5" style={{ color: 'var(--text-primary)' }}>Reset chart view</button>
-              </div>
-            </Popover>
+            <TopBtn title="Settings" onClick={() => setSettingsOpen(true)} active={settingsOpen}><Settings size={15} /></TopBtn>
 
             <TopBtn title="Save a screenshot" onClick={screenshot}><Camera size={15} /></TopBtn>
             <TopBtn title="Fullscreen" onClick={toggleFullscreen}>{fullscreen ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</TopBtn>
@@ -631,21 +932,36 @@ export default function BacktestWorkspace() {
                           onClear={clearAll} emoji={emoji} onEmoji={pickEmoji} recentEmoji={recentEmoji} hasDrawings={drawings.length > 0} />
 
           <div className="flex-1 min-w-0 flex flex-col">
-            <div ref={boxRef} className="flex-1 min-h-0 relative" onPointerDown={onBoxPointerDown} style={{ cursor: selecting ? 'crosshair' : undefined }}>
-              <BacktestChart ref={chartRef} view={view} tf={tf} digits={digits} indicators={indicators} settings={chartSettings} loading={loadingMsg || reloadMsg} extraPrices={extraPrices}>
-                {(capi) => (
-                  <DrawingOverlay api={capi} getPane={() => chartRef.current?.pane() || { w: 0, h: 0 }} tfSecs={tfSecs} tfKey={tf} digits={digits}
+            <div ref={boxRef} className="flex-1 min-h-0 relative" onPointerDown={onBoxPointerDown} onContextMenu={onContextMenu} style={{ cursor: selecting ? 'crosshair' : undefined }}>
+              <BacktestChart ref={chartRef} view={view} tf={tf} tfName={tfLabel(tf)} digits={digits} indicators={indicators} cs={cs} tzFmt={tzFmt}
+                             symbol={session?.symbol || ''} description={description} scaleMode={scaleMode} onScaleMode={setScaleMode} marks={marks}
+                             loading={loadingMsg || reloadMsg} extraPrices={extraPrices} onClosePane={(ids) => changeIndicators(indicators.filter(i => !ids.includes(i.id)))}>
+                {(capi) => (<>
+                  <DrawingOverlay api={capi} getPane={() => chartRef.current?.pane() || { w: 0, h: 0, x: 0 }} tfSecs={tfSecs} tfKey={tf} digits={digits}
                                   drawings={drawings} onDrawingsChange={changeDrawings} selectedId={selectedId} onSelect={setSelectedId}
                                   tool={tool} onToolChange={setTool} stayInDrawing={stay} magnet={magnet} lockAll={lockAll} hideAll={hideAll} emoji={emoji}
                                   onZoom={(r) => chartRef.current?.zoomTo(r)} trading={trading}
                                   ticket={ticket} onTicketChange={(p) => setTicket(t => (t ? { ...t, ...p } : t))}
-                                  svgRef={svgRef} forwardWheelTo={forwardWheel} />
-                )}
+                                  svgRef={svgRef} forwardWheelTo={forwardWheel}
+                                  cs={cs} levels={levels} tzFmt={tzFmt} spec={spec} lockedTime={lockedTime} pnlText={pnlText}
+                                  onCrosshair={crossHook} onPlus={(x, y, price) => setCtx({ x, y, price, time: now, mini: true })} />
+                  <StatusLine cs={cs} symbol={session?.symbol || ''} description={description} tfLabel={tfLabel(tf)} spec={spec} digits={digits}
+                              getBars={capi.getBars} version={capi.version} onCrosshair={crossHook} quote={candle ? quote : null}
+                              marketOpen={candle ? isMarketOpen(spec, now) : true} clockSecs={now} pdc={pdc}
+                              onSell={() => quickTrade('sell')} onBuy={() => quickTrade('buy')}
+                              indicators={indicators} indicatorValues={() => chartRef.current?.indicatorValues()} onSettings={() => setShowIndicators(true)}
+                              onToggle={(iid) => changeIndicators(indicators.map(i => (i.id === iid ? { ...i, visible: i.visible === false } : i)))}
+                              onRemove={(iid) => changeIndicators(indicators.filter(i => i.id !== iid))} />
+                </>)}
               </BacktestChart>
 
-              <IndicatorLegend indicators={indicators} onSettings={() => setShowIndicators(true)}
-                               onToggle={(iid) => changeIndicators(indicators.map(i => (i.id === iid ? { ...i, visible: i.visible === false } : i)))}
-                               onRemove={(iid) => changeIndicators(indicators.filter(i => i.id !== iid))} />
+              {tableOpen && <TableView getBars={() => chartRef.current?.bars() || []} version={count} tzFmt={tzFmt} digits={digits} tfSecs={tfSecs} symbol={session?.symbol || ''} tfLabel={tfLabel(tf)} onClose={() => setTableOpen(false)} />}
+              {treeOpen && (
+                <ObjectTree drawings={drawings} indicators={indicators} selectedId={selectedId} digits={digits} onSelect={setSelectedId}
+                            onChangeDrawing={updateDrawing} onDeleteDrawing={(did) => { changeDrawings(drawings.filter(d => d.id !== did), true); if (selectedId === did) setSelectedId(null) }}
+                            onToggleIndicator={(iid) => changeIndicators(indicators.map(i => (i.id === iid ? { ...i, visible: i.visible === false } : i)))}
+                            onRemoveIndicator={(iid) => changeIndicators(indicators.filter(i => i.id !== iid))} onIndicatorSettings={() => setShowIndicators(true)} onClose={() => setTreeOpen(false)} />
+              )}
 
               {tool === 'cursor' && selected && !hideAll && (
                 <DrawingStyleBar drawing={selected} onChange={updateDrawing} onDelete={deleteSelected} onDuplicate={duplicateSelected} onSettings={() => setSettingsFor(selected)} />
@@ -654,7 +970,7 @@ export default function BacktestWorkspace() {
               {selecting && (
                 <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 px-3.5 py-2 rounded-lg text-[12.5px] font-medium"
                      style={{ background: 'rgba(139,92,246,0.95)', color: '#fff', boxShadow: '0 8px 30px rgba(0,0,0,0.4)' }}>
-                  Click a candle to jump forward to it · Esc to cancel
+                  Click any candle to jump to it — forward or back · Esc to cancel
                 </div>
               )}
               {tool !== 'cursor' && tool !== 'zoom' && (
@@ -666,15 +982,15 @@ export default function BacktestWorkspace() {
 
             <ReplayBar clock={clock} playing={playing} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onNext={() => { setPlaying(false); next() }}
                        speed={speed} onSpeed={setSpeed} selecting={selecting} onSelectBar={() => setSelecting(s => !s)}
-                       onJump={(v) => jumpToTime(new Date(v).getTime() / 1000)} progress={prog} atEnd={atEnd}
+                       onJump={(v) => seekTo(new Date(v).getTime() / 1000)} progress={prog} atEnd={atEnd}
                        minDate={candle ? toInput(now) : undefined} maxDate={endSec ? toInput(endSec) : undefined} />
 
-            <PositionsPanel positions={engine?.positions || []} orders={engine?.orders || []} closed={engine?.closed || []} digits={digits}
+            <PositionsPanel fmtTime={tzFmt.dateTime} positions={engine?.positions || []} orders={engine?.orders || []} closed={engine?.closed || []} digits={digits}
                             pnlOf={pnlOf} onClose={closePosition} onCloseAll={closeAllPositions} onCancelOrder={cancelOrder} floating={acct.floating} />
           </div>
 
           <div className="hidden md:block flex-shrink-0">
-            <OrderPanel symbol={session?.symbol || ''} spec={spec} digits={digits} quote={quote} ready={!!candle && phase === 'ready'}
+            <OrderPanel ref={orderRef} symbol={session?.symbol || ''} spec={spec} digits={digits} quote={quote} ready={!!candle && phase === 'ready'}
                         ticket={ticket} onTicket={setTicket} suggest={suggest} projectTicketPnl={trading.projectTicketPnl}
                         ticketMargin={(t) => marginUsd(spec, t.lots, t.entry || candle?.close || 0, session?.leverage || 100)}
                         onConfirm={confirmTicket} stats={stats} account={acct} openCount={engine?.positions?.length || 0} />
@@ -682,6 +998,19 @@ export default function BacktestWorkspace() {
         </div>
       </div>
 
+      {settingsOpen && (
+        <ChartSettingsDialog settings={settings} isDark={isDark} symbol={session?.symbol || ''} appHour12={timeFormat !== '24h'}
+                             templates={settingsTemplates} getRatio={() => chartRef.current?.currentRatio() || 0}
+                             onPreview={(d) => setPreview(d)}
+                             onApply={(d) => { setSavedSettings(d); setPreview(null); setSettingsOpen(false) }}
+                             onCancel={() => { setPreview(null); setSettingsOpen(false) }}
+                             onSaveTemplate={(name, d) => setSettingsTemplates([...settingsTemplates.filter(t => t.name !== name), { name, settings: clone(d) }])}
+                             onDeleteTemplate={(name) => setSettingsTemplates(settingsTemplates.filter(t => t.name !== name))} />
+      )}
+      {ctx && <ChartContextMenu x={ctx.x} y={ctx.y} items={buildMenu(ctx)} onClose={() => setCtx(null)} />}
+      {rewindAsk && <RewindConfirm clock={tzFmt.clock(rewindAsk.T)} summary={rewindAsk.result.summary}
+                                   onCancel={() => setRewindAsk(null)} onConfirm={() => { applyRewind(rewindAsk.T, rewindAsk.result); setRewindAsk(null) }} />}
+      {nameDialog && <NameDialog {...nameDialog} onClose={() => setNameDialog(null)} />}
       {showIndicators && <IndicatorsDialog indicators={indicators} onChange={changeIndicators} onClose={() => setShowIndicators(false)} />}
       {settingsFor && (
         <DrawingSettingsDialog drawing={settingsFor} digits={digits} onClose={() => setSettingsFor(null)}

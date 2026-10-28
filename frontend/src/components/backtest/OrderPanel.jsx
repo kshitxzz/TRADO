@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import { ChevronDown, Minus, Plus } from 'lucide-react'
 import { fmtUsd, fmtFactor } from '../../lib/backtest/stats'
 import { normaliseLots } from '../../lib/backtest/specs'
@@ -56,10 +56,10 @@ const Label = ({ children, right }) => (
   </div>
 )
 
-export default function OrderPanel({
+const OrderPanel = forwardRef(function OrderPanel({
   symbol, spec, digits, quote, ready, ticket, onTicket, suggest, projectTicketPnl, ticketMargin,
   onConfirm, stats, account, openCount,
-}) {
+}, ref) {
   const [advanced, setAdvanced] = useState(false)
   // remembered between tickets, so confirming / cancelling doesn't reset the panel
   const [mode, setMode] = useState('market')            // 'market' | 'limit' | 'stop'
@@ -86,6 +86,19 @@ export default function OrderPanel({
     if (advanced) Object.assign(next, suggest(side, entry))
     onTicket(next)
   }
+  // lets the chart's own buttons and the right-click menu open a ticket here
+  useImperativeHandle(ref, () => ({
+    startTicket(side, { orderType, price } = {}) {
+      const type = orderType || mode
+      if (orderType) setMode(orderType)
+      const entry = side === 'buy' ? quote.ask : quote.bid
+      const next = { side, lots: validLots ? lots : null, orderType: type, entry, sl: null, tp: null, price: type === 'market' ? entry : (price ?? pendingPrice(side, entry, type)) }
+      if (advanced) Object.assign(next, suggest(side, entry))
+      onTicket(next)
+    },
+    getLots: () => (validLots ? lots : null),
+  }))
+
   const toggleAdvanced = () => {
     const next = !advanced
     setAdvanced(next)
@@ -228,4 +241,6 @@ export default function OrderPanel({
       </div>
     </div>
   )
-}
+})
+
+export default OrderPanel
