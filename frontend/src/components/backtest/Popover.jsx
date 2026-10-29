@@ -67,7 +67,7 @@ export default function Popover({
 
   if (!open) return null
   return createPortal(
-    <div ref={ref} className={className}
+    <div ref={ref} className={className} data-bt-popover=""
          style={{
            position: 'fixed', zIndex: 120, left: pos?.left ?? -9999, top: pos?.top ?? -9999,
            maxHeight: pos?.maxH, overflowY: 'auto', visibility: pos ? 'visible' : 'hidden',

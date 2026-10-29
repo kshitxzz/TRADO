@@ -24,7 +24,6 @@ import TableView from '../../components/backtest/TableView'
 import ObjectTree from '../../components/backtest/ObjectTree'
 import { useAuth } from '../../hooks/useAuth'
 import { formatShortDateTime, useTimeFormat } from '../../hooks/useTimeFormat'
-import { useTheme } from '../../hooks/useTheme'
 import * as api from '../../lib/backtest/api'
 import * as E from '../../lib/backtest/engine'
 import { getSpec, priceDigits, marginUsd } from '../../lib/backtest/specs'
@@ -35,7 +34,6 @@ import {
 import { DEFAULT_RECENT_EMOJI } from '../../lib/backtest/emojiData'
 import { mergeSettings, clone, symbolDescription } from '../../lib/backtest/chartSettings'
 import { makeTimeFormatter } from '../../lib/backtest/timefmt'
-import { playSound } from '../../lib/backtest/sound'
 import { TOOLS, cloneDrawing, makeDrawing } from '../../lib/backtest/drawings'
 
 const BASE_TICK_MS = 400
@@ -163,7 +161,6 @@ export default function BacktestWorkspace() {
   const [lockedTime, setLockedTime] = useState(null)
   const [rewindAsk, setRewindAsk] = useState(null)         // { T, result } while waiting for the user to confirm a rewind
   const [nameDialog, setNameDialog] = useState(null)
-  const { isDark } = useTheme()
   const { timeFormat } = useTimeFormat()
   const [ticket, setTicket] = useState(null)
   const [layouts, setLayouts] = useState([])
@@ -322,16 +319,7 @@ export default function BacktestWorkspace() {
     api.saveTrades(user.id, id, trades).catch(() => toast.error('A closed trade could not be synced — it will retry on the next save.'))
   }, [id, user])
 
-  // notifications honour "Show only rejection notifications"; sounds honour "Execution sound"
-  const tn = useMemo(() => ({
-    success: (m, o) => { if (!csRef.current.trading.onlyRejections) toast.success(m, o) },
-    result: (positive, m) => { if (!csRef.current.trading.onlyRejections) (positive ? toast.success : toast.error)(m) },
-  }), [])
-  const execSound = useCallback(() => { const sd = csRef.current.trading.sound; if (sd.on) playSound(sd.kind, sd.volume) }, [])
-  const alertToast = useCallback((m) => {
-    toast(m, { icon: '🔔', duration: csRef.current.alerts.autoHideToasts ? 5000 : Infinity })
-    execSound()
-  }, [execSound])
+  const alertToast = useCallback((m) => toast(m, { icon: '🔔', duration: 5000 }), [])
 
   const announce = useCallback((events) => {
     const closed = []
@@ -340,16 +328,15 @@ export default function BacktestWorkspace() {
         closed.push(ev.trade)
         const t = ev.trade
         const label = t.reason === 'tp' ? 'Take profit hit' : t.reason === 'sl' ? 'Stop loss hit' : t.reason === 'stopout' ? 'Stop-out' : 'Closed'
-        tn.result(t.pnl >= 0, `${label}: ${t.side === 'buy' ? 'Buy' : 'Sell'} ${t.lots} · ${fmtUsd(t.pnl, { sign: true })}`)
+        ;(t.pnl >= 0 ? toast.success : toast.error)(`${label}: ${t.side === 'buy' ? 'Buy' : 'Sell'} ${t.lots} · ${fmtUsd(t.pnl, { sign: true })}`)
       } else if (ev.type === 'filled') {
-        tn.success(`${ev.position.side === 'buy' ? 'Buy' : 'Sell'} order filled @ ${ev.position.entry}`)
+        toast.success(`${ev.position.side === 'buy' ? 'Buy' : 'Sell'} order filled @ ${ev.position.entry}`)
       } else if (ev.type === 'rejected') {
         toast.error('A pending order was cancelled — not enough margin.')
       }
     }
     persistTrades(closed)
-    if (events.some(e => e.type === 'closed' || e.type === 'filled')) execSound()
-  }, [persistTrades, tn, execSound])
+  }, [persistTrades])
 
   /** Step the replay forward n base candles, running every one through the engine. */
   const advance = useCallback((n) => {
@@ -482,21 +469,16 @@ export default function BacktestWorkspace() {
       : E.placePending(engineRef.current, spec, { ...base0, type: o.orderType, price: o.price }, candle, now)
     if (r.error) { toast.error(r.error); return false }
     commit(r.state)
-    tn.success(o.orderType === 'market' || !o.orderType
+    toast.success(o.orderType === 'market' || !o.orderType
       ? `${o.side === 'buy' ? 'Bought' : 'Sold'} ${r.position.lots} @ ${r.position.entry}`
       : `${o.orderType} order placed @ ${r.order.price}`)
-    execSound()
     return true
   }
   const confirmTicket = () => { if (ticket && placeOrder(ticket)) setTicket(null) }
 
-  /** One-click trading executes at once when a volume is typed; otherwise (or when off) it opens the ticket. */
+  /** Buy / Sell from the chart opens the order ticket. */
   const quickTrade = (side, { orderType, price } = {}) => {
-    const lots = orderRef.current?.getLots()
-    const type = orderType || 'market'
-    if (cs.trading.oneClick && lots) { placeOrder({ side, lots, orderType: type, price }); return }
     if (!orderRef.current) return
-    if (!lots && cs.trading.oneClick) toast('Type a volume in the order panel first.', { icon: 'ℹ️' })
     orderRef.current.startTicket(side, { orderType, price })
   }
 
@@ -539,20 +521,8 @@ export default function BacktestWorkspace() {
     if (opened.error) { toast.error(`Couldn’t reverse: ${opened.error}`); return }
     commit(opened.state)
     if (closed.trade) announce([{ type: 'closed', trade: closed.trade }])
-    execSound()
   }
   const markPrice = (pos) => (candle ? (pos.side === 'buy' ? candle.close : candle.close + spread) : pos.entry)
-  /** Profit text in the unit chosen in Settings → Trading → Profit and loss value. */
-  const pnlText = (mode, usd, pos, price) => {
-    if (mode === 'pips') {
-      const diff = (pos.side === 'buy' ? 1 : -1) * (price - pos.entry)
-      const unit = spec.kind === 'forex' ? 'pips' : 'pts'
-      const v = diff / spec.pipSize
-      return `${v >= 0 ? '+' : ''}${v.toFixed(1)} ${unit}`
-    }
-    if (mode === 'percent') { const v = (usd / (Number(session?.start_balance) || 1)) * 100; return `${v >= 0 ? '+' : ''}${v.toFixed(2)}%` }
-    return fmtUsd(usd, { sign: true })
-  }
 
   // levels the chart must keep in view: open positions, pending orders and the order ticket
   const extraPrices = useMemo(() => {
@@ -653,16 +623,8 @@ export default function BacktestWorkspace() {
 
   // ── layouts ────────────────────────────────────────────────────────────
   // ── chart extras: levels, execution marks ───────────────────────────────
-  const dayKeyNow = candle ? tzFmt.dayKey(now - 1) : 0
-  const pdc = useMemo(() => {                       // close of the last candle of the previous day (in the chosen timezone)
-    if (!base || !countRef.current) return null
-    const k = tzFmt.dayKey(base[countRef.current - 1].time)
-    for (let i = countRef.current - 1; i >= 0; i--) if (tzFmt.dayKey(base[i].time) !== k) return base[i].close
-    return null
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [base, dayKeyNow, tzFmt])
   const barEnd = idx && count ? (idx.bars[idx.bucketOf[count - 1] + 1]?.time ?? idx.bars[idx.bucketOf[count - 1]].time + tfSecs) : null
-  const levels = candle ? { pdc, bid: quote.bid, ask: quote.ask, lastClose: candle.close, countdownSecs: barEnd != null ? barEnd - now : null } : null
+  const levels = candle ? { lastClose: candle.close, countdownSecs: barEnd != null ? barEnd - now : null } : null
   const marks = useMemo(() => {
     const out = []
     const label = (side, kind, lots, price, pnl) => (kind === 'entry' ? `${side === 'buy' ? 'Buy' : 'Sell'} ${lots} @ ${price}` : `Close ${pnl >= 0 ? '+' : ''}${pnl}`)
@@ -792,10 +754,7 @@ export default function BacktestWorkspace() {
 
   // ── screenshot / fullscreen ────────────────────────────────────────────
   const screenshot = async () => {
-    const hide = cs.trading.snapshots ? [] : [...(svgRef.current?.querySelectorAll('.bt-trade') || [])]
-    hide.forEach(el => { el.style.display = 'none' })
     const canvas = await chartRef.current?.screenshot(svgRef.current)
-    hide.forEach(el => { el.style.display = '' })
     if (!canvas) return
     canvas.toBlob((blob) => {
       if (!blob) return
@@ -943,11 +902,11 @@ export default function BacktestWorkspace() {
                                   onZoom={(r) => chartRef.current?.zoomTo(r)} trading={trading}
                                   ticket={ticket} onTicketChange={(p) => setTicket(t => (t ? { ...t, ...p } : t))}
                                   svgRef={svgRef} forwardWheelTo={forwardWheel}
-                                  cs={cs} levels={levels} tzFmt={tzFmt} spec={spec} lockedTime={lockedTime} pnlText={pnlText}
+                                  cs={cs} levels={levels} tzFmt={tzFmt} spec={spec} lockedTime={lockedTime}
                                   onCrosshair={crossHook} onPlus={(x, y, price) => setCtx({ x, y, price, time: now, mini: true })} />
                   <StatusLine cs={cs} symbol={session?.symbol || ''} description={description} tfLabel={tfLabel(tf)} spec={spec} digits={digits}
                               getBars={capi.getBars} version={capi.version} onCrosshair={crossHook} quote={candle ? quote : null}
-                              marketOpen={candle ? isMarketOpen(spec, now) : true} clockSecs={now} pdc={pdc}
+                              marketOpen={candle ? isMarketOpen(spec, now) : true} clockSecs={now}
                               onSell={() => quickTrade('sell')} onBuy={() => quickTrade('buy')}
                               indicators={indicators} indicatorValues={() => chartRef.current?.indicatorValues()} onSettings={() => setShowIndicators(true)}
                               onToggle={(iid) => changeIndicators(indicators.map(i => (i.id === iid ? { ...i, visible: i.visible === false } : i)))}
@@ -999,8 +958,7 @@ export default function BacktestWorkspace() {
       </div>
 
       {settingsOpen && (
-        <ChartSettingsDialog settings={settings} isDark={isDark} symbol={session?.symbol || ''} appHour12={timeFormat !== '24h'}
-                             templates={settingsTemplates} getRatio={() => chartRef.current?.currentRatio() || 0}
+        <ChartSettingsDialog settings={settings} appHour12={timeFormat !== '24h'} templates={settingsTemplates}
                              onPreview={(d) => setPreview(d)}
                              onApply={(d) => { setSavedSettings(d); setPreview(null); setSettingsOpen(false) }}
                              onCancel={() => { setPreview(null); setSettingsOpen(false) }}

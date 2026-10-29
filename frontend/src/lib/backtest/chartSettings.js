@@ -1,10 +1,12 @@
 // ─────────────────────────────────────────────────────────────────────────
 // Backtesting — chart settings (pure).
-// One object holds every option of the Settings dialog. Colours that are `null`
-// follow the app theme (light / dark); anything the user changes is stored.
+// One object holds every option of the Chart Settings dialog (Symbol, Status line, Scales and
+// lines, Canvas, Alerts, Events). Colours that are `null` follow the app theme (light / dark);
+// anything the user changes is stored.
 // ─────────────────────────────────────────────────────────────────────────
 
 const UP = '#26B570', DOWN = '#D4263A'
+const BLUE = '#2962FF'
 
 export const DEFAULT_SETTINGS = {
   symbol: {
@@ -16,59 +18,62 @@ export const DEFAULT_SETTINGS = {
     timezone: 'local',               // 'local' | 'UTC' | IANA id
   },
   status: {
-    logo: true, title: true, titleMode: 'symbol-name',   // 'symbol-name' | 'symbol' | 'description'
-    marketStatus: true, chartValues: false, barChange: false, volume: false, lastDayChange: false, buySell: true,
-    indTitles: true, indInputs: true, indValues: true, indBackground: true, indBackgroundOpacity: 0.5,
+    title: true, titleMode: 'symbol-name',   // 'symbol-name' | 'symbol' | 'description'
+    marketStatus: true, chartValues: true, barChange: true, volume: false,
+    indTitles: true, indInputs: true, indValues: true, indBackground: true, indBackgroundColor: 'rgba(17, 17, 22, 0.5)',
   },
   scales: {
-    currencyUnit: 'always',          // 'always' | 'hover' | 'hidden'
-    scaleModes: 'always',
-    lockRatio: false, ratio: 0,
-    placement: 'auto',               // 'auto' | 'left' | 'right'
-    plusButton: true, countdown: true,
+    noOverlap: true, plusButton: true, invert: false, countdown: true,
     symbolLabel: 'name-value-line',  // see SYMBOL_LABEL_MODES
-    symbolLineColor: null, symbolLineStyle: 'solid',
-    prevDayClose: 'hidden', prevDayColor: '#6B7280', prevDayStyle: 'dashed',
+    symbolLineColor: null,
+    labelUp: null, labelDown: null,  // last-price label background; null → follows the candle colours
     indicatorValues: 'value',        // 'hidden' | 'value'
-    highLow: 'hidden', highColor: '#26B570', lowColor: '#D4263A',
-    bidAsk: 'hidden', bidColor: '#3B82F6', askColor: '#D4263A',
+    highLow: 'hidden', highLowColor: '#6B7280',
     dayOfWeek: true, dateFormat: 'dd MMM yy', hours: null,       // hours: null → follow the app's 12 / 24-hour setting
-    saveLeftEdge: false,
   },
   canvas: {
     bgType: 'solid', bg: null, bg2: null,
-    vGrid: { on: true, color: null }, hGrid: { on: true, color: null },
+    vGrid: { on: true, color: null, style: 'solid' }, hGrid: { on: true, color: null, style: 'solid' },
     crosshair: { color: null, style: 'dashed' },
-    watermark: { mode: 'hidden', color: null },
+    watermark: { ticker: false, interval: false, description: false, replay: false, color: null },
     scaleText: { color: null, size: 12 }, scaleLines: { color: null },
     navButtons: 'hover', paneButtons: 'hover',
     margins: { top: 10, bottom: 8, right: 10 },
   },
-  trading: {
-    buySell: true, oneClick: false,
-    sound: { on: false, volume: 0.5, kind: 'calling' },
-    onlyRejections: false,
-    positionsAndOrders: true, reverseButton: true, projectOrder: true,
-    pnl: { on: true, positionsOn: true, positions: 'money', bracketsOn: true, brackets: 'money' },
-    executionMarks: true, executionLabels: false,
-    extendedLines: true, alignment: 'right', snapshots: true,
-  },
-  alerts: { lines: true, color: '#E11D48', onlyActive: true, autoHideToasts: true },
-  events: { daySeparators: false, separatorColor: null },
+  alerts: { lines: true },
+  events: { sessionBreaks: false, color: BLUE, style: 'dashed' },
 }
 
 const isObj = (v) => v && typeof v === 'object' && !Array.isArray(v)
 
-/** Deep-merge saved settings over the defaults, keeping only keys the app knows about. */
-export function mergeSettings(saved, base = DEFAULT_SETTINGS) {
+/** Carry settings saved by the older, larger dialog over to the keys that still exist. */
+function migrate(saved) {
+  if (!isObj(saved)) return saved
+  const s = { ...saved }
+  const sc = s.scales, st = s.status, cv = s.canvas, ev = s.events
+  if (isObj(sc) && sc.highColor && !sc.highLowColor) s.scales = { ...sc, highLowColor: sc.highColor }
+  if (isObj(st) && st.indBackgroundOpacity != null && !st.indBackgroundColor) s.status = { ...st, indBackgroundColor: `rgba(17, 17, 22, ${st.indBackgroundOpacity})` }
+  if (isObj(ev) && ev.daySeparators != null && ev.sessionBreaks == null) s.events = { ...ev, sessionBreaks: !!ev.daySeparators, ...(ev.separatorColor ? { color: ev.separatorColor } : {}) }
+  const wm = isObj(cv) && cv.watermark
+  if (isObj(wm) && wm.mode && wm.ticker == null) {
+    const on = wm.mode !== 'hidden'
+    s.canvas = { ...cv, watermark: { ...wm, ticker: on, interval: wm.mode === 'ticker-interval' || wm.mode === 'ticker-interval-desc', description: wm.mode === 'ticker-interval-desc' } }
+  }
+  return s
+}
+
+function merge(saved, base) {
   const out = {}
   for (const k of Object.keys(base)) {
     const b = base[k], s = saved?.[k]
-    if (isObj(b)) out[k] = mergeSettings(isObj(s) ? s : {}, b)
+    if (isObj(b)) out[k] = merge(isObj(s) ? s : {}, b)
     else out[k] = s === undefined ? b : s
   }
   return out
 }
+
+/** Deep-merge saved settings over the defaults, keeping only keys the app knows about. */
+export const mergeSettings = (saved, base = DEFAULT_SETTINGS) => merge(migrate(saved), base)
 
 export const clone = (o) => JSON.parse(JSON.stringify(o))
 export const sameSettings = (a, b) => JSON.stringify(a) === JSON.stringify(b)
@@ -78,29 +83,22 @@ export const LINE_STYLES = [
   { id: 'solid', label: 'Solid' }, { id: 'dashed', label: 'Dashed' }, { id: 'dotted', label: 'Dotted' },
 ]
 export const TITLE_MODES = [
-  { id: 'symbol-name', label: 'Symbol and name' }, { id: 'symbol', label: 'Symbol' }, { id: 'description', label: 'Description' },
+  { id: 'symbol', label: 'Name' }, { id: 'description', label: 'Description' }, { id: 'symbol-name', label: 'Name and description' },
 ]
 export const VISIBILITY = [
   { id: 'always', label: 'Always visible' }, { id: 'hover', label: 'Visible on mouse over' }, { id: 'hidden', label: 'Hidden' },
 ]
-export const PLACEMENTS = [{ id: 'auto', label: 'Auto' }, { id: 'left', label: 'Left' }, { id: 'right', label: 'Right' }]
 export const SYMBOL_LABEL_MODES = [
   { id: 'name-value-line', label: 'Name, value, line' }, { id: 'name-value', label: 'Name, value' },
   { id: 'value-line', label: 'Value, line' }, { id: 'value', label: 'Value' }, { id: 'line', label: 'Line' }, { id: 'hidden', label: 'Hidden' },
 ]
 export const LEVEL_MODES = [{ id: 'hidden', label: 'Hidden' }, { id: 'line', label: 'Line' }, { id: 'line-label', label: 'Line and label' }]
 export const INDICATOR_VALUE_MODES = [{ id: 'hidden', label: 'Hidden' }, { id: 'value', label: 'Value' }]
-export const WATERMARK_MODES = [
-  { id: 'hidden', label: 'Hidden' }, { id: 'ticker', label: 'Ticker' }, { id: 'ticker-interval', label: 'Ticker and interval' },
-  { id: 'ticker-interval-desc', label: 'Ticker, Interval, Description' },
+export const WATERMARK_PARTS = [
+  { id: 'ticker', label: 'Ticker' }, { id: 'interval', label: 'Interval' }, { id: 'description', label: 'Description' }, { id: 'replay', label: 'Replay mode' },
 ]
-export const PNL_MODES = [{ id: 'money', label: 'Money' }, { id: 'pips', label: 'Pips / points' }, { id: 'percent', label: '% of balance' }]
-export const ALIGNMENTS = [{ id: 'left', label: 'Left' }, { id: 'center', label: 'Center' }, { id: 'right', label: 'Right' }]
 export const HOURS_FORMATS = [{ id: '12', label: '12-hours' }, { id: '24', label: '24-hours' }]
 export const FONT_SIZES = [10, 11, 12, 14, 16, 18, 20].map(n => ({ id: n, label: String(n) }))
-export const SOUND_KINDS = [
-  { id: 'calling', label: 'Calling' }, { id: 'chime', label: 'Chime' }, { id: 'ping', label: 'Ping' }, { id: 'pop', label: 'Pop' }, { id: 'beep', label: 'Beep' },
-]
 
 export const DATE_FORMATS = [
   { id: 'dd MMM yy', label: '29 Sep \'97' }, { id: 'MMM dd yy', label: 'Sep 29 \'97' }, { id: 'dd/MM/yyyy', label: '29/09/1997' },
@@ -172,11 +170,10 @@ export function symbolDescription(symbol = '') {
   if (/^[A-Z]{6}$/.test(s) && CCY[s.slice(0, 3)] && CCY[s.slice(3)]) return `${CCY[s.slice(0, 3)]} / ${CCY[s.slice(3)]}`
   return s
 }
-export const quoteLabel = (symbol = '') => (/USDT$/i.test(symbol) ? 'USDT' : /^[A-Z]{6}$/i.test(symbol) ? symbol.slice(3).toUpperCase() : 'USD')
 
 /** Colours used while a setting is left on "theme default". */
 export function themeColors(isDark) {
   return isDark
-    ? { bg: '#0A0A0D', bg2: '#16131D', grid: 'rgba(255,255,255,0.045)', crosshair: 'rgba(255,255,255,0.45)', scaleText: '#9CA3AF', scaleLine: 'rgba(255,255,255,0.12)', watermark: 'rgba(255,255,255,0.07)', separator: 'rgba(255,255,255,0.14)', crossLabel: '#211D26' }
-    : { bg: '#F7F6FB', bg2: '#ECEAF4', grid: 'rgba(0,0,0,0.07)', crosshair: 'rgba(0,0,0,0.4)', scaleText: '#6B7280', scaleLine: 'rgba(0,0,0,0.14)', watermark: 'rgba(0,0,0,0.07)', separator: 'rgba(0,0,0,0.16)', crossLabel: '#374151' }
+    ? { bg: '#0A0A0D', bg2: '#16131D', grid: 'rgba(255,255,255,0.045)', crosshair: 'rgba(255,255,255,0.45)', scaleText: '#9CA3AF', scaleLine: 'rgba(255,255,255,0.12)', watermark: 'rgba(255,255,255,0.07)', crossLabel: '#211D26' }
+    : { bg: '#F7F6FB', bg2: '#ECEAF4', grid: 'rgba(0,0,0,0.07)', crosshair: 'rgba(0,0,0,0.4)', scaleText: '#6B7280', scaleLine: 'rgba(0,0,0,0.14)', watermark: 'rgba(0,0,0,0.07)', crossLabel: '#374151' }
 }

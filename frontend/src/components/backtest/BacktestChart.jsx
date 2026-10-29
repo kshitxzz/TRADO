@@ -7,7 +7,8 @@ import { useTheme } from '../../hooks/useTheme'
 import { barsAt, partialBar, tfSecs as tfSecsOf } from '../../lib/backtest/data'
 import { createRunner, defOf } from '../../lib/backtest/indicators'
 import { makeProjector } from '../../lib/backtest/projector'
-import { themeColors, quoteLabel } from '../../lib/backtest/chartSettings'
+import { themeColors } from '../../lib/backtest/chartSettings'
+import { parseColor } from '../../lib/backtest/colors'
 
 export const CANDLE_UP = '#26B570'
 export const CANDLE_DOWN = '#D4263A'
@@ -38,6 +39,13 @@ function pointOf(b, prevClose, sy) {
   return p
 }
 const pointsOf = (bars, sy) => bars.map((b, i) => pointOf(b, i ? bars[i - 1].close : null, sy))
+
+/** Black or white text, whichever reads better on the given label colour. */
+function textOn(color) {
+  const p = parseColor(color)
+  if (!p) return '#FFFFFF'
+  return (0.299 * p.r + 0.587 * p.g + 0.114 * p.b) / 255 > 0.6 ? '#000000' : '#FFFFFF'
+}
 
 /** Last defined value of each output — feeds the indicator legend. */
 function trackLast(entry, out) {
@@ -78,6 +86,9 @@ const BacktestChart = forwardRef(function BacktestChart(
   const barsRef = useRef([])
   const tfRef = useRef(tfSecsOf(tf))
   const csRef = useRef(cs)
+  const symRef = useRef(symbol)
+  const lastLineRef = useRef(null)           // the last-price line + label (a custom price line, so its colours are ours)
+  const labelVis = useRef(new Map())         // indicator series → is its axis label currently shown
   const fmtRef = useRef(tzFmt)
   const marksRef = useRef(marks)
   const prev = useRef({ base: null, idx: null, count: 0, tf: null, len: 0 })
@@ -93,14 +104,37 @@ const BacktestChart = forwardRef(function BacktestChart(
 
   tfRef.current = tfSecsOf(tf)
   csRef.current = cs
+  symRef.current = symbol
   fmtRef.current = tzFmt
   marksRef.current = marks
   extraRef.current = extraPrices || []
   const extraKey = (extraPrices || []).join('|')
   const th = themeColors(isDark)
   const sc = cs.scales, cv = cs.canvas, sy = cs.symbol
-  const left = sc.placement === 'left'
-  const scaleId = left ? 'left' : 'right'
+  const scaleId = 'right'
+
+  /** Draw (or update) the last-price line and its axis label from the Symbol settings. */
+  const syncLastPrice = () => {
+    const series = seriesRef.current
+    if (!series) return
+    const c = csRef.current, s2 = c.scales, y = c.symbol
+    const bars = barsRef.current, last = bars[bars.length - 1]
+    const lab = LABEL_MODES[s2.symbolLabel] || LABEL_MODES['name-value-line']
+    if (!last || (!lab.name && !lab.value && !lab.line)) {
+      if (lastLineRef.current) { try { series.removePriceLine(lastLineRef.current) } catch { /* already gone */ } lastLineRef.current = null }
+      return
+    }
+    const prevClose = bars.length > 1 ? bars[bars.length - 2].close : null
+    const up = y.colorByPrevClose ? last.close >= (prevClose ?? last.open) : last.close >= last.open
+    const candle = up ? (y.body.on ? y.body.up : y.borders.up) : (y.body.on ? y.body.down : y.borders.down)
+    const labelBg = (up ? s2.labelUp : s2.labelDown) || candle
+    const opts = {
+      price: last.close, color: lab.line ? (s2.symbolLineColor || labelBg) : CLEAR, lineWidth: 1, lineStyle: LineStyle.Solid,
+      axisLabelVisible: lab.value, title: lab.name ? symRef.current : '', axisLabelColor: labelBg, axisLabelTextColor: textOn(labelBg),
+    }
+    if (lastLineRef.current) lastLineRef.current.applyOptions(opts)
+    else lastLineRef.current = series.createPriceLine(opts)
+  }
 
   // ── create / destroy ───────────────────────────────────────────────────
   useEffect(() => {
@@ -140,7 +174,8 @@ const BacktestChart = forwardRef(function BacktestChart(
 
     return () => {
       indRef.current.clear(); crossCbs.current.clear()
-      projRef.current = null; seriesRef.current = null; chartRef.current = null; markersApi.current = null
+      projRef.current = null; seriesRef.current = null; chartRef.current = null; markersApi.current = null; lastLineRef.current = null
+      labelVis.current.clear()
       prev.current = { base: null, idx: null, count: 0, tf: null, len: 0 }
       setReady(false)
       chart.remove()
@@ -154,39 +189,37 @@ const BacktestChart = forwardRef(function BacktestChart(
     if (!chart || !series || !ready) return
     const lineCol = cv.scaleLines.color || th.scaleLine
     const ch = cv.crosshair.color || th.crosshair, chStyle = LS[cv.crosshair.style] ?? LineStyle.Dashed
-    const scale = {
-      visible: true, borderVisible: true, borderColor: lineCol, minimumWidth: 74,
-      scaleMargins: { top: cv.margins.top / 100, bottom: cv.margins.bottom / 100 },
-      autoScale: scaleMode?.auto !== false,
-      mode: scaleMode?.pct ? PriceScaleMode.Percentage : scaleMode?.log ? PriceScaleMode.Logarithmic : PriceScaleMode.Normal,
-    }
     chart.applyOptions({
       layout: { textColor: cv.scaleText.color || th.scaleText, fontSize: cv.scaleText.size },
       grid: {
-        vertLines: { visible: cv.vGrid.on, color: cv.vGrid.color || th.grid }, horzLines: { visible: cv.hGrid.on, color: cv.hGrid.color || th.grid },
+        vertLines: { visible: cv.vGrid.on, color: cv.vGrid.color || th.grid, style: LS[cv.vGrid.style] ?? LineStyle.Solid },
+        horzLines: { visible: cv.hGrid.on, color: cv.hGrid.color || th.grid, style: LS[cv.hGrid.style] ?? LineStyle.Solid },
       },
       crosshair: {
         vertLine: { color: ch, style: chStyle, width: 1, labelBackgroundColor: th.crossLabel },
         horzLine: { color: ch, style: chStyle, width: 1, labelBackgroundColor: th.crossLabel },
       },
-      leftPriceScale: left ? scale : { visible: false },
-      rightPriceScale: left ? { visible: false } : scale,
+      rightPriceScale: {
+        visible: true, borderVisible: true, borderColor: lineCol, minimumWidth: 74, invertScale: !!sc.invert,
+        scaleMargins: { top: cv.margins.top / 100, bottom: cv.margins.bottom / 100 },
+        autoScale: scaleMode?.auto !== false,
+        mode: scaleMode?.pct ? PriceScaleMode.Percentage : scaleMode?.log ? PriceScaleMode.Logarithmic : PriceScaleMode.Normal,
+      },
       timeScale: {
         borderVisible: true, borderColor: lineCol, rightOffset: cv.margins.right,
         tickMarkFormatter: (t, type) => fmtRef.current.axisTick(t, type),
       },
       localization: { timeFormatter: (t) => fmtRef.current.crosshair(t, tfRef.current) },
     })
-    const lab = LABEL_MODES[sc.symbolLabel] || LABEL_MODES['name-value-line']
     series.applyOptions({
       ...candleOptions(sy), priceScaleId: scaleId,
-      title: lab.name ? symbol : '', lastValueVisible: lab.value, priceLineVisible: lab.line,
-      priceLineColor: sc.symbolLineColor || '', priceLineStyle: LS[sc.symbolLineStyle] ?? LineStyle.Solid,
+      title: '', lastValueVisible: false, priceLineVisible: false,       // the last price is drawn by syncLastPrice()
       priceFormat: { type: 'price', precision: digits, minMove: 1 / 10 ** digits },
     })
     // re-colour existing candles when the per-bar colouring mode changes
     if (barsRef.current.length) series.setData(pointsOf(barsRef.current, sy))
-  }, [cs, scaleMode, isDark, ready, digits, symbol, tzFmt, left, scaleId, th.scaleText, th.scaleLine, th.crosshair, th.grid, th.crossLabel, cv, sc, sy])
+    syncLastPrice()
+  }, [cs, scaleMode, isDark, ready, digits, symbol, tzFmt, th.scaleText, th.scaleLine, th.crosshair, th.grid, th.crossLabel, cv, sc, sy])  // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── indicators: rebuilt whenever the list or its placement changes ──────
   useEffect(() => {
@@ -195,6 +228,7 @@ const BacktestChart = forwardRef(function BacktestChart(
     const map = indRef.current
     for (const entry of map.values()) Object.values(entry.series).forEach(sr => { try { chart.removeSeries(sr) } catch { /* already gone */ } })
     map.clear()
+    labelVis.current.clear()
     const showValues = sc.indicatorValues === 'value'
 
     let pane = 0
@@ -254,8 +288,6 @@ const BacktestChart = forwardRef(function BacktestChart(
   useEffect(() => {
     const api = markersApi.current
     if (!api || !ready) return
-    const t = cs.trading
-    if (!t.executionMarks || !t.positionsAndOrders) { api.setMarkers([]); return }
     const bars = barsRef.current
     const barFor = (time) => {                         // the bar containing `time` (marks use the candle's CLOSE time)
       let lo = 0, hi = bars.length - 1, ans = null
@@ -268,18 +300,18 @@ const BacktestChart = forwardRef(function BacktestChart(
       if (!bar) continue
       const buyLike = (m.kind === 'entry') === (m.side === 'buy')      // entry buy / exit sell → arrow up
       const color = m.kind === 'entry' ? (m.side === 'buy' ? '#22C55E' : '#F43F5E') : (m.pnl >= 0 ? '#22C55E' : '#F43F5E')
-      out.push({ time: bar.time, position: buyLike ? 'belowBar' : 'aboveBar', shape: buyLike ? 'arrowUp' : 'arrowDown', color, text: t.executionLabels ? m.text : '' })
+      out.push({ time: bar.time, position: buyLike ? 'belowBar' : 'aboveBar', shape: buyLike ? 'arrowUp' : 'arrowDown', color, text: '' })
     }
     out.sort((a, b) => a.time - b.time)
     api.setMarkers(out)
-  }, [marks, cs.trading, tf, ready, view?.count, view?.base])
+  }, [marks, tf, ready, view?.count, view?.base])
 
   // ── data: reveal `count` base candles ──────────────────────────────────
   useEffect(() => {
     const chart = chartRef.current, series = seriesRef.current
     if (!chart || !series || !ready) return
     const { base, idx, count } = view || {}
-    if (!base || !idx || !count) { series.setData([]); barsRef.current = []; prev.current = { base: null, idx: null, count: 0, tf: null, len: 0 }; return }
+    if (!base || !idx || !count) { series.setData([]); barsRef.current = []; prev.current = { base: null, idx: null, count: 0, tf: null, len: 0 }; syncLastPrice(); return }
 
     const p = prev.current
     const sameData = p.base === base && p.idx === idx
@@ -303,8 +335,6 @@ const BacktestChart = forwardRef(function BacktestChart(
       const prevRange = ts.getVisibleLogicalRange()
       const prevLen = p.len
       const tfChanged = !(sameData || (p.tf === tf && p.base === base))
-      // remember what time sits at the left edge, so a timeframe change can keep it
-      const leftTime = tfChanged && prevRange && projRef.current ? projRef.current.logicalToTime(prevRange.from) : null
 
       const next = barsAt(base, idx, count)
       barsRef.current = next
@@ -319,38 +349,38 @@ const BacktestChart = forwardRef(function BacktestChart(
       if (!tfChanged) {
         // a jump on the same timeframe: keep the user's framing, follow the newest bar
         if (prevRange && prevLen) ts.setVisibleLogicalRange({ from: prevRange.from + (n - prevLen), to: prevRange.to + (n - prevLen) })
-      } else if (csRef.current.scales.saveLeftEdge && leftTime != null && projRef.current) {
-        const from = projRef.current.timeToLogical(leftTime)
-        const width = prevRange ? prevRange.to - prevRange.from : 124
-        if (from != null) ts.setVisibleLogicalRange({ from, to: from + width })
       } else {
         // first load / timeframe switch: ~110 bars with breathing room on the right
         ts.setVisibleLogicalRange({ from: n - 110, to: n + 14 })
       }
     }
     prev.current = { base, idx, count, tf, len: barsRef.current.length }
-  }, [view, tf, ready, scaleId])
+    syncLastPrice()
+  }, [view, tf, ready, scaleId])  // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── lock price to bar ratio ────────────────────────────────────────────
+  // ── "No overlapping labels": hide an indicator's price label when it would sit on top of another one ──
   useEffect(() => {
-    const chart = chartRef.current, series = seriesRef.current
-    if (!chart || !series || !ready) return
-    if (!(sc.lockRatio && sc.ratio > 0)) return
-    const ts = chart.timeScale()
-    const apply = () => {
-      const r = ts.getVisibleLogicalRange(), last = barsRef.current[barsRef.current.length - 1]
-      if (!r || !last) return
-      const range = sc.ratio * (r.to - r.from), mid = last.close
-      series.priceScale().applyOptions({ autoScale: false })
-      series.priceScale().setVisibleRange({ from: mid - range / 2, to: mid + range / 2 })
+    if (!ready) return
+    const series = seriesRef.current
+    const want = sc.indicatorValues === 'value'
+    const vis = labelVis.current
+    const set = (sr, on) => { if (vis.get(sr) !== on) { vis.set(sr, on); try { sr.applyOptions({ lastValueVisible: on }) } catch { /* series removed */ } } }
+    const entries = []
+    for (const e of indRef.current.values()) if (e.pane === 0) for (const k of Object.keys(e.series)) entries.push({ sr: e.series[k], v: e.last[k] })
+    if (!want || !sc.noOverlap) { entries.forEach(x => set(x.sr, want)); return }
+    const taken = []
+    const lab = LABEL_MODES[sc.symbolLabel] || LABEL_MODES['name-value-line']
+    const last = barsRef.current[barsRef.current.length - 1]
+    const mainY = lab.value && last && series ? series.priceToCoordinate(last.close) : null
+    if (mainY != null) taken.push(mainY)
+    const rows = entries.map(x => ({ ...x, y: x.v == null ? null : x.sr.priceToCoordinate(x.v) })).sort((a, b) => (a.y ?? 0) - (b.y ?? 0))
+    for (const r of rows) {
+      if (r.y == null) { set(r.sr, true); continue }
+      const clash = taken.some(t => Math.abs(t - r.y) < 18)
+      set(r.sr, !clash)
+      if (!clash) taken.push(r.y)
     }
-    apply()
-    ts.subscribeVisibleLogicalRangeChange(apply)
-    return () => {
-      try { ts.unsubscribeVisibleLogicalRangeChange(apply) } catch { /* chart already removed */ }
-      try { series.priceScale().applyOptions({ autoScale: scaleMode?.auto !== false }) } catch { /* ignore */ }
-    }
-  }, [sc.lockRatio, sc.ratio, ready])  // eslint-disable-line react-hooks/exhaustive-deps
+  }, [version, ready, sc.noOverlap, sc.indicatorValues, sc.symbolLabel, indicators])
 
   // ── viewport signature → re-render the overlay when anything moves ─────
   useEffect(() => {
@@ -379,8 +409,7 @@ const BacktestChart = forwardRef(function BacktestChart(
     bars: () => barsRef.current,
     pane: () => {
       const ps = chartRef.current?.paneSize(0)
-      const pl = left ? chartRef.current?.priceScale('left').width() || 0 : 0
-      return { w: ps?.width ?? 0, h: ps?.height ?? 0, x: pl }
+      return { w: ps?.width ?? 0, h: ps?.height ?? 0, x: 0 }
     },
     fit() {
       const n = barsRef.current.length
@@ -414,14 +443,6 @@ const BacktestChart = forwardRef(function BacktestChart(
     onCrosshair(cb) { crossCbs.current.add(cb); return () => crossCbs.current.delete(cb) },
     /** Latest value of every output of every indicator, by indicator id. */
     indicatorValues() { const o = {}; for (const [id, e] of indRef.current) o[id] = e.last; return o },
-    /** Price range per visible bar — what "lock price to bar ratio" holds constant. */
-    currentRatio() {
-      const chart = chartRef.current, series = seriesRef.current
-      const r = chart?.timeScale().getVisibleLogicalRange(), h = chart?.paneSize(0)?.height
-      if (!r || !h) return 0
-      const top = series.coordinateToPrice(0), bottom = series.coordinateToPrice(h)
-      return top == null || bottom == null ? 0 : Number((Math.abs(top - bottom) / (r.to - r.from)).toPrecision(6))
-    },
     /** Chart canvas with the overlay SVG composited on top. */
     async screenshot(svgEl) {
       const chart = chartRef.current
@@ -442,14 +463,14 @@ const BacktestChart = forwardRef(function BacktestChart(
       } catch { /* overlay is a nicety — the plain chart still saves */ }
       return base
     },
-  }), [scaleId, left])
+  }), [])
 
   const api = useMemo(() => ({ projector: projRef.current, version, size, getBars: () => barsRef.current }), [version, size, ready])
 
   // ── chrome: background, watermark, buttons ─────────────────────────────
   const bg = cv.bgType === 'gradient' ? `linear-gradient(180deg, ${cv.bg || th.bg}, ${cv.bg2 || th.bg2})` : (cv.bg || th.bg)
-  const wm = cv.watermark.mode
-  const wmText = wm === 'hidden' ? null : wm === 'ticker' ? symbol : `${symbol}, ${tfName}`
+  const wm = cv.watermark
+  const wmOn = wm.ticker || wm.interval || wm.description || wm.replay
   const showBtn = (mode) => mode === 'always' || (mode === 'hover' && hovered)
   const panes = ready && showBtn(cv.paneButtons) ? (() => {
     try {
@@ -465,19 +486,16 @@ const BacktestChart = forwardRef(function BacktestChart(
   return (
     <div ref={rootRef} className="relative w-full h-full overflow-hidden" style={{ background: bg }}
          onPointerEnter={() => setHovered(true)} onPointerLeave={() => setHovered(false)}>
-      {wmText && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none select-none" style={{ color: cv.watermark.color || th.watermark }}>
-          <span style={{ fontSize: 56, fontWeight: 700, letterSpacing: 1 }}>{wmText}</span>
-          {wm === 'ticker-interval-desc' && description && <span style={{ fontSize: 22, marginTop: 4 }}>{description}</span>}
+      {wmOn && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none select-none" style={{ color: wm.color || th.watermark }}>
+          {wm.ticker && <span style={{ fontSize: 56, fontWeight: 700, letterSpacing: 1 }}>{symbol}</span>}
+          {wm.interval && <span style={{ fontSize: 40, fontWeight: 700, marginTop: 2 }}>{tfName}</span>}
+          {wm.description && description && <span style={{ fontSize: 22, marginTop: 4 }}>{description}</span>}
+          {wm.replay && <span style={{ fontSize: 18, marginTop: 6 }}>Replay mode</span>}
         </div>
       )}
       <div ref={wrapRef} className="absolute inset-0" />
       {ready && children?.(api)}
-
-      {ready && showBtn(sc.currencyUnit) && (
-        <span className="absolute top-1 z-20 text-[10.5px] font-semibold pointer-events-none px-1.5 py-0.5 rounded"
-              style={{ [left ? 'left' : 'right']: 6, background: 'rgba(23,21,29,0.7)', color: 'var(--text-secondary)' }}>{quoteLabel(symbol)}</span>
-      )}
 
       {ready && showBtn(cv.navButtons) && (
         <div className="absolute z-20 flex items-center gap-1" style={{ left: '50%', bottom: 38, transform: 'translateX(-50%)' }}>
@@ -489,8 +507,8 @@ const BacktestChart = forwardRef(function BacktestChart(
         </div>
       )}
 
-      {ready && showBtn(sc.scaleModes) && (
-        <div className="absolute z-20 flex items-center gap-0.5" style={{ [left ? 'left' : 'right']: 4, bottom: 4 }}>
+      {ready && (
+        <div className="absolute z-20 flex items-center gap-0.5" style={{ right: 4, bottom: 4 }}>
           <IconBtn title="Auto (fits data to screen)" active={scaleMode?.auto !== false} onClick={() => onScaleMode({ ...scaleMode, auto: !(scaleMode?.auto !== false) })}>A</IconBtn>
           <IconBtn title="Logarithmic scale" active={!!scaleMode?.log} onClick={() => onScaleMode({ ...scaleMode, log: !scaleMode?.log, pct: false })}>L</IconBtn>
           <IconBtn title="Percentage scale" active={!!scaleMode?.pct} onClick={() => onScaleMode({ ...scaleMode, pct: !scaleMode?.pct, log: false })}>%</IconBtn>
@@ -498,7 +516,7 @@ const BacktestChart = forwardRef(function BacktestChart(
       )}
 
       {panes.map(p => (
-        <div key={p.index} className="absolute z-20 flex items-center gap-1" style={{ right: left ? undefined : 84, left: left ? 84 : undefined, top: p.top + 4 }}>
+        <div key={p.index} className="absolute z-20 flex items-center gap-1" style={{ right: 84, top: p.top + 4 }}>
           <IconBtn title={maxPane === p.index ? 'Restore pane' : 'Maximize pane'} active={maxPane === p.index} onClick={() => setMaxPane(m => (m === p.index ? null : p.index))}><Maximize2 size={12} /></IconBtn>
           <IconBtn title="Remove this indicator" onClick={() => { setMaxPane(null); onClosePane?.(p.ids) }}><X size={13} /></IconBtn>
         </div>
