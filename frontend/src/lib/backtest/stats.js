@@ -4,6 +4,7 @@
 // trade: { side:'buy'|'sell', pnl:number, openedAt:unix, closedAt:unix, ... }
 // ─────────────────────────────────────────────────────────────────────────
 
+export const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
 // Market-time day key (UTC) — a backtest "day" is the day on the chart, not the user's wall clock.
@@ -20,6 +21,7 @@ export const EMPTY_STATS = {
   streaks: { current: { type: null, count: 0 }, bestWin: 0, worstLoss: 0 },
   bestDay: null, worstDay: null, tradingDays: 0, profitDays: 0, lossDays: 0,
   equity: [], drawdown: [], monthly: [], avgHoldSecs: 0,
+  weekdays: WEEKDAYS.map(label => ({ label, trades: 0, pnl: 0 })),
 }
 
 export function computeStats(trades = [], startBalance = 0) {
@@ -79,6 +81,12 @@ export function computeStats(trades = [], startBalance = 0) {
     mm.trades += 1; mm.pnl += t.pnl; mm.wins += t.pnl > 0 ? 1 : 0
     months.set(m, mm)
   }
+  // trades and P&L per weekday (market-time day, Monday first)
+  const weekdays = WEEKDAYS.map(label => ({ label, trades: 0, pnl: 0 }))
+  for (const t of sorted) {
+    const w = weekdays[(new Date(t.closedAt * 1000).getUTCDay() + 6) % 7]
+    w.trades += 1; w.pnl += t.pnl
+  }
   const dayList = [...days.entries()].map(([date, pnl]) => ({ date, pnl }))
   const bestDay = dayList.reduce((a, b) => (!a || b.pnl > a.pnl ? b : a), null)
   const worstDay = dayList.reduce((a, b) => (!a || b.pnl < a.pnl ? b : a), null)
@@ -111,6 +119,7 @@ export function computeStats(trades = [], startBalance = 0) {
       return { key, label: `${MONTHS[+m - 1]} ${y}`, ...v, winRate: v.trades ? (v.wins / v.trades) * 100 : 0 }
     }),
     avgHoldSecs: holds.reduce((s, n) => s + n, 0) / holds.length,
+    weekdays,
   }
 }
 

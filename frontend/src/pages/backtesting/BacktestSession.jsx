@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import toast from 'react-hot-toast'
-import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid, ReferenceLine } from 'recharts'
+import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid, ReferenceLine, ReferenceDot } from 'recharts'
 import {
-  ArrowLeft, Play, RotateCcw, Trash2, Loader2, TrendingUp, Percent, Hash, BarChart3, Zap, TrendingDown,
+  ArrowLeft, Play, RotateCcw, Trash2, Loader2, TrendingUp, Target, Activity, BarChart3, Zap, TrendingDown,
   Flame, Trophy, CalendarDays, Clock, AlertTriangle,
 } from 'lucide-react'
 import PageWrapper from '../../components/layout/PageWrapper'
@@ -14,40 +14,109 @@ import { tfLabel } from '../../lib/backtest/data'
 import { getSpec, priceDigits } from '../../lib/backtest/specs'
 import { formatShortDateTime } from '../../hooks/useTimeFormat'
 
-const clr = (n) => (n > 0 ? 'var(--positive-green)' : n < 0 ? 'var(--negative-red)' : 'var(--text-primary)')
+const GREEN = 'var(--positive-green)', RED = 'var(--negative-red)'
+const clr = (n) => (n > 0 ? GREEN : n < 0 ? RED : 'var(--text-primary)')
 const fmtDate = (iso) => new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
 const shortDay = (secs) => new Date(secs * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+const dayLabel = (key) => new Date(`${key}T00:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })
 // time axis labels: dates for long ranges, date + time when everything happened within a couple of days
 const tickFor = (points) => {
   const ts = points.map(p => p.t)
   const span = ts.length ? Math.max(...ts) - Math.min(...ts) : 0
   return (secs) => (span < 3 * 86400 ? formatShortDateTime(secs * 1000) : shortDay(secs))
 }
+// compact axis money; `span` is the visible range, so neighbouring ticks never collapse to the same label ($1.0M, $1.0M …)
+const compactUsd = (v, span = 0) => {
+  const a = Math.abs(v), sign = v < 0 ? '-' : ''
+  if (a >= 1e6) return `${sign}$${(a / 1e6).toFixed(span < 5e4 ? 3 : span < 5e5 ? 2 : 1)}M`
+  if (a >= 1e4) return `${sign}$${(a / 1e3).toFixed(span < 2e3 ? 2 : 1)}K`
+  return `${sign}$${Math.round(a).toLocaleString('en-US')}`
+}
+const streakText = (st) => (st.count ? `${st.count} ${st.type === 'win' ? (st.count === 1 ? 'Win' : 'Wins') : (st.count === 1 ? 'Loss' : 'Losses')}` : '—')
 const REASON = { tp: 'Take profit', sl: 'Stop loss', manual: 'Manual', stopout: 'Stop-out' }
 
-function StatCard({ label, value, sub, icon: Icon, color, children }) {
+const AXIS = { fill: '#6B7280', fontSize: 10.5 }
+const GRID = 'rgba(255,255,255,0.05)'
+const BAR_NEUTRAL = 'linear-gradient(90deg, #5B21B6, #8B5CF6)'
+const BAR_GAIN = 'linear-gradient(90deg, #15803D, #22C55E)'
+const BAR_LOSS = 'linear-gradient(90deg, #BE123C, #F43F5E)'
+
+// ── building blocks ──────────────────────────────────────────────────────
+const Panel = ({ title, icon: Icon, sub, children, className = '', right }) => (
+  <section className={`rounded-2xl p-5 min-w-0 ${className}`} style={{ background: '#0F0F12', border: '1px solid var(--border-subtle)' }}>
+    <header className="flex items-start justify-between gap-3 mb-4">
+      <div>
+        <h2 className="flex items-center gap-2 text-[12px] font-bold tracking-wider uppercase" style={{ color: 'var(--text-primary)' }}>
+          {Icon && <Icon size={14} style={{ color: 'var(--text-muted)' }} />}{title}
+        </h2>
+        {sub && <p className="text-[11px] mt-1.5" style={{ color: 'var(--text-muted)' }}>{sub}</p>}
+      </div>
+      {right}
+    </header>
+    {children}
+  </section>
+)
+
+const Tile = ({ label, value, sub, color, icon: Icon, tint, inline, className = '' }) => (
+  <div className={`flex items-center gap-3 rounded-xl px-4 py-3.5 min-w-0 ${className}`} style={{ background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(255,255,255,0.04)' }}>
+    {Icon && (
+      <span className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: tint ? `${tint}22` : 'rgba(255,255,255,0.05)' }}>
+        <Icon size={16} style={{ color: tint || 'var(--text-muted)' }} />
+      </span>
+    )}
+    <div className="min-w-0">
+      <p className="text-[9.5px] font-semibold tracking-wider uppercase" style={{ color: 'var(--text-muted)' }}>{label}</p>
+      <p className="text-[15px] font-bold tabular-nums mt-1 leading-tight truncate" style={{ color: color || 'var(--text-primary)' }}>
+        {value}{inline && <span className="ml-2 text-[10.5px] font-medium" style={{ color: 'var(--text-muted)' }}>{inline}</span>}
+      </p>
+      {sub && <p className="text-[10.5px] mt-1 tabular-nums" style={{ color: 'var(--text-muted)' }}>{sub}</p>}
+    </div>
+  </div>
+)
+
+function Kpi({ label, icon: Icon, children, sub }) {
   return (
-    <div className="glass-card p-4 min-w-0">
-      <div className="flex items-center justify-between mb-2">
-        <p className="text-[10.5px] font-semibold tracking-wider uppercase" style={{ color: 'var(--text-muted)' }}>{label}</p>
+    <div className="rounded-2xl px-5 py-4 min-w-0 flex flex-col" style={{ background: '#0F0F12', border: '1px solid var(--border-subtle)' }}>
+      <div className="flex items-center justify-between mb-2.5">
+        <p className="text-[10px] font-semibold tracking-wider uppercase" style={{ color: 'var(--text-muted)' }}>{label}</p>
         <Icon size={14} style={{ color: 'var(--text-muted)' }} />
       </div>
-      <p className="text-[22px] font-bold tabular-nums leading-tight" style={{ color: color || 'var(--text-primary)' }}>{value}</p>
       {children}
-      {sub && <p className="text-[11.5px] mt-1 tabular-nums" style={{ color: 'var(--text-muted)' }}>{sub}</p>}
+      {sub && <div className="text-[10.5px] mt-2 tabular-nums">{sub}</div>}
     </div>
   )
 }
 
-function Row({ icon: Icon, label, value, color, sub }) {
+/** Progress ring (win rate). */
+function Ring({ pct, size = 38, color = 'var(--positive-green)' }) {
+  const r = size / 2 - 3, c = 2 * Math.PI * r, v = Math.max(0, Math.min(100, pct))
   return (
-    <div className="flex items-center gap-3 py-2.5" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-      {Icon && <span className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(255,255,255,0.04)' }}><Icon size={14} style={{ color: 'var(--text-muted)' }} /></span>}
-      <div className="flex-1 min-w-0">
-        <p className="text-[12.5px]" style={{ color: 'var(--text-secondary)' }}>{label}</p>
-        {sub && <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>{sub}</p>}
-      </div>
-      <p className="text-[13px] font-semibold tabular-nums" style={{ color: color || 'var(--text-primary)' }}>{value}</p>
+    <svg width={size} height={size} className="flex-shrink-0 -rotate-90">
+      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="4" />
+      {v > 0 && <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={color} strokeWidth="4" strokeLinecap="round" strokeDasharray={`${(v / 100) * c} ${c}`} />}
+    </svg>
+  )
+}
+
+/** One row per weekday: label · bar · value. `signed` colours losses red and scales by the largest absolute value. */
+function WeekBars({ rows, signed = false, fmt, empty }) {
+  const max = Math.max(...rows.map(r => Math.abs(r.v)), 0)
+  return (
+    <div className="space-y-2.5">
+      {rows.map(r => {
+        const w = max > 0 ? (Math.abs(r.v) / max) * 100 : 0
+        const bar = !signed ? BAR_NEUTRAL : r.v < 0 ? BAR_LOSS : BAR_GAIN
+        return (
+          <div key={r.label} className="flex items-center gap-3">
+            <span className="w-8 text-[11px] flex-shrink-0" style={{ color: 'var(--text-muted)' }}>{r.label}</span>
+            <div className="flex-1 h-[18px] rounded-md overflow-hidden" style={{ background: 'rgba(255,255,255,0.04)' }}>
+              <div className="h-full rounded-md" style={{ width: r.v === 0 ? 2 : `${Math.max(w, 2)}%`, background: r.v === 0 ? 'rgba(139,92,246,0.6)' : bar, transition: 'width 500ms ease' }} />
+            </div>
+            <span className="min-w-[68px] text-right text-[11px] font-bold tabular-nums" style={{ color: r.v === 0 ? 'var(--text-muted)' : signed ? clr(r.v) : 'var(--text-primary)' }}>{r.v === 0 ? '—' : fmt(r.v)}</span>
+          </div>
+        )
+      })}
+      {empty && <p className="text-[11px] pt-1" style={{ color: 'var(--text-muted)' }}>{empty}</p>}
     </div>
   )
 }
@@ -58,18 +127,13 @@ const ChartTip = ({ active, payload, mode }) => {
   return (
     <div className="rounded-lg px-3 py-2 text-[12px]" style={{ background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', boxShadow: '0 8px 30px rgba(0,0,0,0.4)' }}>
       <p style={{ color: 'var(--text-muted)' }}>{formatShortDateTime(p.t * 1000)}</p>
-      <p className="font-semibold tabular-nums" style={{ color: 'var(--text-primary)' }}>{mode === 'dd' ? fmtUsd(p.dd) : fmtUsd(p.balance)}</p>
+      <p className="font-semibold tabular-nums" style={{ color: 'var(--text-primary)' }}>{mode === 'dd' ? `${fmtUsd(p.dd)} (${p.pct.toFixed(2)}%)` : fmtUsd(p.balance)}</p>
     </div>
   )
 }
 
 function Card({ title, children, className = '' }) {
-  return (
-    <div className={`glass-card p-5 ${className}`}>
-      <p className="text-[11px] font-bold tracking-wider uppercase mb-3" style={{ color: 'var(--text-muted)' }}>{title}</p>
-      {children}
-    </div>
-  )
+  return <Panel title={title} className={className}>{children}</Panel>
 }
 
 export default function BacktestSession() {
@@ -135,114 +199,177 @@ export default function BacktestSession() {
   const equity = stats.equity.map(p => ({ ...p }))
   const gain = stats.netPnl >= 0
   const lineColor = gain ? '#22C55E' : '#F43F5E'
+  const lastEq = equity[equity.length - 1]
+  const eqSpan = equity.length ? Math.max(...equity.map(p => p.balance)) - Math.min(...equity.map(p => p.balance)) : 0
+  const dd = stats.drawdown.length ? [{ t: equity[0].t, dd: 0, pct: 0 }, ...stats.drawdown] : []
+  const lastDd = dd[dd.length - 1]
+  const winShare = stats.trades ? (stats.wins / stats.trades) * 100 : 0
+  const decided = stats.wins + stats.losses + stats.breakeven
+  const streak = stats.streaks.current
 
   return (
     <PageWrapper>
-      <div className="max-w-6xl mx-auto space-y-4">
+      <div className="max-w-[1500px] mx-auto space-y-4">
         {/* header */}
-        <div className="flex flex-wrap items-center gap-3">
-          <Link to="/backtesting" className="p-2 rounded-lg hover:bg-white/10" style={{ color: 'var(--text-secondary)' }} title="All sessions"><ArrowLeft size={18} /></Link>
-          <PairIcon symbol={session.symbol} size={34} />
+        <div className="flex flex-wrap items-center gap-3 pb-1">
+          <Link to="/backtesting" className="p-2 -ml-2 rounded-lg hover:bg-white/10" style={{ color: 'var(--text-secondary)' }} title="All sessions"><ArrowLeft size={18} /></Link>
+          <PairIcon symbol={session.symbol} size={36} />
           <div className="min-w-0">
             <div className="flex items-center gap-2.5">
-              <h1 className="text-[18px] font-bold truncate" style={{ color: 'var(--text-primary)' }}>{session.name}</h1>
-              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full" style={{ background: completed ? 'rgba(34,197,94,0.14)' : 'rgba(139,92,246,0.16)', color: completed ? 'var(--positive-green)' : 'var(--accent-purple-light)' }}>{completed ? 'Completed' : 'Active'}</span>
+              <h1 className="text-[20px] font-bold truncate" style={{ color: 'var(--text-primary)' }}>{session.name}</h1>
+              <span className="inline-flex items-center gap-1 text-[10.5px] font-semibold px-2.5 py-[3px] rounded-full"
+                    style={{ background: completed ? 'rgba(34,197,94,0.14)' : 'rgba(139,92,246,0.16)', color: completed ? GREEN : 'var(--accent-purple-light)' }}>
+                {completed ? <Trophy size={10} /> : <Play size={10} />}{completed ? 'Completed' : 'Active'}
+              </span>
             </div>
-            <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
-              {session.symbol} · {tfLabel(session.base_tf)}{session.strategy ? ` · ${session.strategy}` : ''} · {fmtDate(session.start_at)} – {fmtDate(new Date(new Date(session.end_at) - 1))}
+            <p className="text-[12px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+              <span className="font-semibold" style={{ color: 'var(--text-secondary)' }}>{session.symbol}</span> • {tfLabel(session.base_tf)}{session.strategy ? ` • ${session.strategy}` : ''} • {fmtDate(session.start_at)} – {fmtDate(new Date(new Date(session.end_at) - 1))}
             </p>
           </div>
           <div className="flex-1" />
-          <button onClick={reset} disabled={busy || (!hasProgress && !trades.length)} className="px-3 py-2 rounded-lg text-[12.5px] font-semibold flex items-center gap-1.5 hover:bg-white/5 disabled:opacity-40" style={{ color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)' }}><RotateCcw size={14} /> Reset</button>
-          <button onClick={remove} disabled={busy} className="p-2 rounded-lg hover:bg-white/5 disabled:opacity-40" style={{ border: '1px solid var(--border-subtle)' }} title="Delete session"><Trash2 size={15} style={{ color: 'var(--negative-red)' }} /></button>
-          <Link to={`/backtesting/${id}/chart`} className="btn-primary px-5 py-2.5 rounded-lg text-[13px] font-semibold text-white flex items-center gap-2">
+          <button onClick={reset} disabled={busy || (!hasProgress && !trades.length)} className="h-10 px-3.5 rounded-lg text-[12.5px] font-semibold flex items-center gap-1.5 hover:bg-white/5 disabled:opacity-40" style={{ color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)' }}><RotateCcw size={14} /> Reset</button>
+          <button onClick={remove} disabled={busy} className="h-10 w-10 flex items-center justify-center rounded-lg hover:bg-white/5 disabled:opacity-40" style={{ border: '1px solid var(--border-subtle)' }} title="Delete session"><Trash2 size={15} style={{ color: RED }} /></button>
+          <Link to={`/backtesting/${id}/chart`} className="btn-primary h-10 px-5 rounded-lg text-[13px] font-semibold text-white flex items-center gap-2">
             <Play size={14} /> {completed ? 'Review chart' : hasProgress ? 'Continue backtesting' : 'Start Backtesting'}
           </Link>
         </div>
 
-        {/* stat cards */}
-        <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
-          <StatCard label="Net P&L" icon={TrendingUp} value={fmtUsd(stats.netPnl, { sign: true })} color={clr(stats.netPnl)}
-                    sub={`${stats.returnPct >= 0 ? '+' : ''}${stats.returnPct.toFixed(2)}% from ${fmtUsd(start, { dp: 0 })}`} />
-          <StatCard label="Win rate" icon={Percent} value={`${stats.winRate.toFixed(1)}%`} sub={`${stats.wins}W / ${stats.losses}L`} />
-          <StatCard label="Total trades" icon={Hash} value={stats.trades} sub={stats.breakeven ? `${stats.breakeven} breakeven` : undefined} />
-          <StatCard label="Profit factor" icon={BarChart3} value={fmtFactor(stats.profitFactor)} sub={`${fmtUsd(stats.grossProfit, { sign: true })} / -${fmtUsd(stats.grossLoss)}`} />
-          <StatCard label="Expectancy" icon={Zap} value={fmtUsd(stats.expectancy, { sign: true })} color={clr(stats.expectancy)} sub="per trade" />
-          <StatCard label="Max drawdown" icon={TrendingDown} value={fmtUsd(-stats.maxDrawdown)} color={stats.maxDrawdown > 0 ? 'var(--negative-red)' : undefined} sub={stats.maxDrawdown > 0 ? `${stats.maxDrawdownPct.toFixed(2)}% from peak` : undefined} />
+        {/* KPI row */}
+        <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+          <Kpi label="Net P&L" icon={TrendingUp}
+               sub={<><span style={{ color: clr(stats.returnPct) }}>{stats.returnPct >= 0 ? '+' : ''}{stats.returnPct.toFixed(2)}%</span> <span style={{ color: 'var(--text-muted)' }}>from {fmtUsd(start)}</span></>}>
+            <p className="text-[26px] font-bold tabular-nums leading-none" style={{ color: clr(stats.netPnl) }}>{fmtUsd(stats.netPnl, { sign: true })}</p>
+          </Kpi>
+          <Kpi label="Win rate" icon={Target}
+               sub={<><span style={{ color: GREEN }}>{stats.wins}W</span> <span style={{ color: 'var(--text-muted)' }}>/</span> <span style={{ color: RED }}>{stats.losses}L</span>{stats.breakeven ? <span style={{ color: 'var(--text-muted)' }}> / {stats.breakeven}BE</span> : null}</>}>
+            <div className="flex items-center gap-3">
+              <Ring pct={stats.winRate} />
+              <p className="text-[26px] font-bold tabular-nums leading-none" style={{ color: 'var(--text-primary)' }}>{stats.winRate.toFixed(1)}%</p>
+            </div>
+          </Kpi>
+          <Kpi label="Closed trades" icon={Activity}>
+            <p className="text-[26px] font-bold tabular-nums leading-none" style={{ color: 'var(--text-primary)' }}>{stats.trades}</p>
+            <div className="mt-3 h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.08)' }} title={`${winShare.toFixed(0)}% winners`}>
+              <div className="h-full rounded-full" style={{ width: `${winShare}%`, background: 'var(--accent-purple)', transition: 'width 500ms ease' }} />
+            </div>
+          </Kpi>
+          <Kpi label="Profit factor" icon={BarChart3}
+               sub={<><span style={{ color: GREEN }}>{fmtUsd(stats.grossProfit, { sign: true })}</span> <span style={{ color: 'var(--text-muted)' }}>/</span> <span style={{ color: RED }}>{fmtUsd(-stats.grossLoss)}</span></>}>
+            <p className="text-[26px] font-bold tabular-nums leading-none" style={{ color: 'var(--text-primary)' }}>{fmtFactor(stats.profitFactor)}</p>
+          </Kpi>
+          <Kpi label="Expectancy" icon={Zap} sub={<span style={{ color: 'var(--text-muted)' }}>per trade</span>}>
+            <p className="text-[26px] font-bold tabular-nums leading-none" style={{ color: clr(stats.expectancy) }}>{fmtUsd(stats.expectancy, { sign: true })}</p>
+          </Kpi>
+          <Kpi label="Max drawdown" icon={TrendingDown} sub={<span style={{ color: stats.maxDrawdown > 0 ? RED : 'var(--text-muted)' }}>{stats.maxDrawdown > 0 ? `-${stats.maxDrawdownPct.toFixed(2)}% from peak` : 'No drawdown yet'}</span>}>
+            <p className="text-[26px] font-bold tabular-nums leading-none" style={{ color: stats.maxDrawdown > 0 ? RED : 'var(--text-primary)' }}>{fmtUsd(-stats.maxDrawdown)}</p>
+          </Kpi>
         </div>
 
-        {/* charts */}
-        <div className="grid lg:grid-cols-5 gap-3">
-          <Card title="Performance" className="lg:col-span-3">
-            <div className="h-[240px]">
+        {/* performance + drawdown */}
+        <div className="grid xl:grid-cols-[1.65fr_1fr] gap-3">
+          <Panel title="Performance">
+            <div className="h-[260px]">
               {equity.length < 2 ? (
                 <div className="h-full flex items-center justify-center text-[12.5px]" style={{ color: 'var(--text-muted)' }}>Close trades to see the equity curve</div>
               ) : (
                 <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={equity} margin={{ top: 6, right: 6, left: 0, bottom: 0 }}>
-                    <defs><linearGradient id="eq" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={lineColor} stopOpacity={0.35} /><stop offset="100%" stopColor={lineColor} stopOpacity={0} /></linearGradient></defs>
-                    <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false} />
-                    <XAxis dataKey="t" type="number" scale="time" domain={['dataMin', 'dataMax']} tickFormatter={tickFor(equity)} tick={{ fill: '#6B7280', fontSize: 11 }} axisLine={false} tickLine={false} minTickGap={60} />
-                    <YAxis domain={['auto', 'auto']} tickFormatter={(v) => `$${Math.round(v).toLocaleString()}`} tick={{ fill: '#6B7280', fontSize: 11 }} axisLine={false} tickLine={false} width={64} />
-                    <Tooltip content={<ChartTip />} />
-                    <ReferenceLine y={start} stroke="rgba(255,255,255,0.25)" strokeDasharray="4 4" />
-                    <Area type="linear" dataKey="balance" stroke={lineColor} strokeWidth={2} fill="url(#eq)" />
+                  <AreaChart data={equity} margin={{ top: 8, right: 4, left: 0, bottom: 0 }}>
+                    <defs><linearGradient id="eq" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={lineColor} stopOpacity={0.32} /><stop offset="100%" stopColor={lineColor} stopOpacity={0} /></linearGradient></defs>
+                    <CartesianGrid stroke={GRID} vertical={false} strokeDasharray="3 5" />
+                    <XAxis dataKey="t" type="number" scale="time" domain={['dataMin', 'dataMax']} tickFormatter={tickFor(equity)} tick={AXIS} axisLine={false} tickLine={false} minTickGap={70} />
+                    <YAxis orientation="right" domain={['auto', 'auto']} tickFormatter={(v) => compactUsd(v, eqSpan)} tick={AXIS} axisLine={false} tickLine={false} width={66} />
+                    <Tooltip content={<ChartTip />} cursor={{ stroke: 'rgba(255,255,255,0.18)' }} />
+                    <ReferenceLine y={start} stroke="rgba(255,255,255,0.22)" strokeDasharray="4 4" />
+                    <Area type="linear" dataKey="balance" stroke={lineColor} strokeWidth={2} fill="url(#eq)" activeDot={{ r: 4 }} />
+                    {lastEq && <ReferenceDot x={lastEq.t} y={lastEq.balance} r={4} fill={lineColor} stroke="#fff" strokeWidth={1.5} ifOverflow="extendDomain" />}
                   </AreaChart>
                 </ResponsiveContainer>
               )}
             </div>
-          </Card>
-          <Card title="Drawdown" className="lg:col-span-2">
-            <div className="h-[240px]">
-              {stats.drawdown.length < 1 ? (
+          </Panel>
+          <Panel title="Drawdown">
+            <div className="h-[260px]">
+              {dd.length < 2 ? (
                 <div className="h-full flex items-center justify-center text-[12.5px]" style={{ color: 'var(--text-muted)' }}>Close trades to see drawdown</div>
               ) : (
                 <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={stats.drawdown} margin={{ top: 6, right: 6, left: 0, bottom: 0 }}>
-                    <defs><linearGradient id="dd" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#F43F5E" stopOpacity={0} /><stop offset="100%" stopColor="#F43F5E" stopOpacity={0.4} /></linearGradient></defs>
-                    <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false} />
-                    <XAxis dataKey="t" type="number" scale="time" domain={['dataMin', 'dataMax']} tickFormatter={tickFor(stats.drawdown)} tick={{ fill: '#6B7280', fontSize: 11 }} axisLine={false} tickLine={false} minTickGap={60} />
-                    <YAxis tickFormatter={(v) => `$${Math.round(v).toLocaleString()}`} tick={{ fill: '#6B7280', fontSize: 11 }} axisLine={false} tickLine={false} width={64} />
-                    <Tooltip content={<ChartTip mode="dd" />} />
-                    <Area type="stepAfter" dataKey="dd" stroke="#F43F5E" strokeWidth={2} fill="url(#dd)" />
+                  <AreaChart data={dd} margin={{ top: 8, right: 4, left: 0, bottom: 0 }}>
+                    <defs><linearGradient id="dd" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#F43F5E" stopOpacity={0} /><stop offset="100%" stopColor="#F43F5E" stopOpacity={0.38} /></linearGradient></defs>
+                    <CartesianGrid stroke={GRID} vertical={false} strokeDasharray="3 5" />
+                    <XAxis dataKey="t" type="number" scale="time" domain={['dataMin', 'dataMax']} tickFormatter={tickFor(dd)} tick={AXIS} axisLine={false} tickLine={false} minTickGap={70} />
+                    <YAxis orientation="right" domain={['auto', 0]} tickFormatter={(v) => `${v.toFixed(2)}%`} tick={AXIS} axisLine={false} tickLine={false} width={54} />
+                    <Tooltip content={<ChartTip mode="dd" />} cursor={{ stroke: 'rgba(255,255,255,0.18)' }} />
+                    <Area type="monotone" dataKey="pct" stroke="#F43F5E" strokeWidth={2} fill="url(#dd)" activeDot={{ r: 4 }} />
+                    {lastDd && <ReferenceDot x={lastDd.t} y={lastDd.pct} r={4} fill="#F43F5E" stroke="#fff" strokeWidth={1.5} />}
                   </AreaChart>
                 </ResponsiveContainer>
               )}
             </div>
-          </Card>
+          </Panel>
         </div>
 
-        {/* breakdown + streaks */}
-        <div className="grid lg:grid-cols-2 gap-3">
-          <Card title="Trade breakdown">
-            <div className="grid sm:grid-cols-2 gap-x-6">
-              <div>
-                <Row label="Long" value={`${stats.long.wins}W / ${stats.long.losses}L`} sub={`${stats.long.winRate.toFixed(1)}% win rate`} />
-                <Row label="Short" value={`${stats.short.wins}W / ${stats.short.losses}L`} sub={`${stats.short.winRate.toFixed(1)}% win rate`} />
-                <Row label="Trading days" value={stats.tradingDays} sub={`${stats.profitDays} profit / ${stats.lossDays} loss`} />
-              </div>
-              <div>
-                <Row label="Avg win" value={fmtUsd(stats.avgWin, { sign: true })} color={stats.avgWin ? 'var(--positive-green)' : undefined} />
-                <Row label="Avg loss" value={fmtUsd(stats.avgLoss, { sign: true })} color={stats.avgLoss ? 'var(--negative-red)' : undefined} />
-                <Row label="Largest win" value={fmtUsd(stats.largestWin, { sign: true })} color={stats.largestWin ? 'var(--positive-green)' : undefined} />
-                <Row label="Largest loss" value={fmtUsd(stats.largestLoss, { sign: true })} color={stats.largestLoss ? 'var(--negative-red)' : undefined} />
-              </div>
+        {/* trade breakdown + streaks */}
+        <div className="grid xl:grid-cols-2 gap-3">
+          <Panel title="Trade breakdown">
+            <div className="grid sm:grid-cols-2 gap-3">
+              <Tile label="Long" value={`${stats.long.wins}W / ${stats.long.losses}L`} sub={`${stats.long.winRate.toFixed(1)}% win rate`} />
+              <Tile label="Short" value={`${stats.short.wins}W / ${stats.short.losses}L`} sub={`${stats.short.winRate.toFixed(1)}% win rate`} />
+              <Tile label="Avg win" value={fmtUsd(stats.avgWin, { sign: true })} color={stats.avgWin ? GREEN : undefined} />
+              <Tile label="Avg loss" value={fmtUsd(stats.avgLoss, { sign: true })} color={stats.avgLoss ? RED : undefined} />
+              <Tile label="Largest win" value={fmtUsd(stats.largestWin, { sign: true })} color={stats.largestWin ? GREEN : undefined} />
+              <Tile label="Largest loss" value={fmtUsd(stats.largestLoss, { sign: true })} color={stats.largestLoss ? RED : undefined} />
+              <Tile label="Avg hold time" value={stats.trades ? fmtDuration(stats.avgHoldSecs) : '—'} sub={stats.trades ? 'market time' : undefined} />
+              <Tile label="Trading days" value={stats.tradingDays} sub={`${stats.profitDays} profit / ${stats.lossDays} loss`} />
             </div>
-          </Card>
-          <Card title="Streaks & records">
-            <div className="grid sm:grid-cols-2 gap-x-6">
-              <div>
-                <Row icon={Flame} label="Current streak" value={stats.streaks.current.count ? `${stats.streaks.current.count} ${stats.streaks.current.type === 'win' ? (stats.streaks.current.count === 1 ? 'win' : 'wins') : (stats.streaks.current.count === 1 ? 'loss' : 'losses')}` : '—'} color={stats.streaks.current.type === 'win' ? 'var(--positive-green)' : stats.streaks.current.type === 'loss' ? 'var(--negative-red)' : undefined} />
-                <Row icon={Trophy} label="Best win streak" value={stats.streaks.bestWin || '—'} color={stats.streaks.bestWin ? 'var(--positive-green)' : undefined} />
-                <Row icon={TrendingDown} label="Worst loss streak" value={stats.streaks.worstLoss || '—'} color={stats.streaks.worstLoss ? 'var(--negative-red)' : undefined} />
-              </div>
-              <div>
-                <Row icon={CalendarDays} label="Best day" value={stats.bestDay ? fmtUsd(stats.bestDay.pnl, { sign: true }) : '—'} sub={stats.bestDay?.date} color={stats.bestDay?.pnl > 0 ? 'var(--positive-green)' : undefined} />
-                <Row icon={CalendarDays} label="Worst day" value={stats.worstDay ? fmtUsd(stats.worstDay.pnl, { sign: true }) : '—'} sub={stats.worstDay?.date} color={stats.worstDay?.pnl < 0 ? 'var(--negative-red)' : undefined} />
-                <Row icon={Clock} label="Time backtesting" value={fmtDuration(session.time_spent_secs)} sub={stats.trades ? `avg hold ${fmtDuration(stats.avgHoldSecs)} (market time)` : undefined} />
-              </div>
+          </Panel>
+          <Panel title="Streaks & records">
+            <div className="grid sm:grid-cols-2 gap-3">
+              <Tile icon={Flame} label="Current streak" value={streakText(streak)} color={streak.type === 'win' ? GREEN : streak.type === 'loss' ? RED : undefined} tint={streak.type === 'win' ? '#22C55E' : streak.type === 'loss' ? '#F43F5E' : undefined} />
+              <Tile icon={Trophy} label="Best win streak" value={stats.streaks.bestWin ? `${stats.streaks.bestWin} ${stats.streaks.bestWin === 1 ? 'Win' : 'Wins'}` : '—'} color={stats.streaks.bestWin ? GREEN : undefined} tint="#22C55E" />
+              <Tile icon={TrendingDown} label="Worst loss streak" value={stats.streaks.worstLoss ? `${stats.streaks.worstLoss} ${stats.streaks.worstLoss === 1 ? 'Loss' : 'Losses'}` : '—'} color={stats.streaks.worstLoss ? RED : undefined} tint="#F43F5E" />
+              <Tile icon={CalendarDays} label="Best day" value={stats.bestDay ? fmtUsd(stats.bestDay.pnl, { sign: true }) : '—'} inline={stats.bestDay ? dayLabel(stats.bestDay.date) : undefined} color={stats.bestDay?.pnl > 0 ? GREEN : undefined} tint="#22C55E" />
+              <Tile icon={CalendarDays} label="Worst day" value={stats.worstDay ? fmtUsd(stats.worstDay.pnl, { sign: true }) : '—'} inline={stats.worstDay ? dayLabel(stats.worstDay.date) : undefined} color={stats.worstDay?.pnl < 0 ? RED : undefined} tint="#F43F5E" />
+              <Tile icon={Clock} label="Time backtesting" value={fmtDuration(session.time_spent_secs)} className="sm:col-span-2" />
             </div>
-          </Card>
+          </Panel>
+        </div>
+
+        {/* distributions */}
+        <div className="grid lg:grid-cols-3 gap-3">
+          <Panel title="Win/Loss distribution" icon={BarChart3}>
+            <div className="flex h-10 rounded-xl overflow-hidden" style={{ background: 'rgba(255,255,255,0.04)' }}>
+              {decided === 0 ? (
+                <div className="flex-1 flex items-center justify-center text-[11px]" style={{ color: 'var(--text-muted)' }}>No closed trades yet</div>
+              ) : (<>
+                {stats.wins > 0 && <div className="flex items-center justify-center text-[11px] font-bold text-white" style={{ flex: stats.wins, background: BAR_GAIN }}>{stats.wins}W</div>}
+                {stats.breakeven > 0 && <div className="flex items-center justify-center text-[11px] font-bold text-white" style={{ flex: stats.breakeven, background: '#4B5563' }}>{stats.breakeven}BE</div>}
+                {stats.losses > 0 && <div className="flex items-center justify-center text-[11px] font-bold text-white" style={{ flex: stats.losses, background: BAR_LOSS }}>{stats.losses}L</div>}
+              </>)}
+            </div>
+            <div className="mt-5 space-y-3">
+              {[
+                ['Gross profit', GREEN, fmtUsd(stats.grossProfit, { sign: true }), GREEN],
+                ['Gross loss', RED, fmtUsd(-stats.grossLoss), RED],
+                ['Net result', 'var(--accent-purple)', fmtUsd(stats.netPnl, { sign: true }), clr(stats.netPnl)],
+              ].map(([k, dot, v, c]) => (
+                <div key={k} className="flex items-center gap-2.5 text-[11.5px]">
+                  <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: dot }} />
+                  <span style={{ color: 'var(--text-muted)' }}>{k}</span>
+                  <span className="flex-1" />
+                  <span className="font-bold tabular-nums" style={{ color: c }}>{v}</span>
+                </div>
+              ))}
+            </div>
+          </Panel>
+          <Panel title="Trade distribution" icon={Activity} sub="Trades per day of the week">
+            <WeekBars rows={stats.weekdays.map(w => ({ label: w.label, v: w.trades }))} fmt={(v) => v} />
+            <div className="mt-4 pt-3 flex items-center gap-2 text-[11px]" style={{ borderTop: '1px solid var(--border-subtle)', color: 'var(--text-muted)' }}>
+              <span className="w-1.5 h-1.5 rounded-full" style={{ background: 'var(--accent-purple)' }} /> Total: {stats.trades} closed {stats.trades === 1 ? 'trade' : 'trades'}
+            </div>
+          </Panel>
+          <Panel title="Day performance" icon={CalendarDays} sub="P&L by day of the week">
+            <WeekBars rows={stats.weekdays.map(w => ({ label: w.label, v: w.pnl }))} signed fmt={(v) => fmtUsd(v, { sign: true })} />
+          </Panel>
         </div>
 
         {/* monthly */}
