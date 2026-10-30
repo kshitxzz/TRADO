@@ -91,6 +91,22 @@ export function baseFor(tf, currentBase) {
 // History shown to the left of the start date, per base timeframe.
 const WARMUP_SECS = { '1m': 2 * 86400, '5m': 10 * 86400, '15m': 30 * 86400, '1h': 180 * 86400 }
 export const MAX_BASE_CANDLES = 60000
+
+// Long sessions can't hold every 1m / 5m candle, so a fine timeframe is loaded as a WINDOW around the
+// replay position and extended as the replay moves on. WINDOW_CANDLES is both the first window and each extension.
+export const WINDOW_CANDLES = 20000
+
+/**
+ * Window of `baseTf` candles around the market moment `clockSec`: some history to the left, then as much
+ * future as fits. `more` is true when the window stops short of `endSec` (it is extended while replaying).
+ */
+export function planWindow(baseTf, clockSec, endSec) {
+  const step = tfSecs(baseTf)
+  const fromSec = floorTo(clockSec - WARMUP_SECS[baseTf], 86400)          // day-aligned, so the cache is reused
+  const histBars = Math.ceil((clockSec - fromSec) / step)
+  const toSec = Math.min(endSec, clockSec + Math.max(WINDOW_CANDLES - histBars, WINDOW_CANDLES / 2) * step)
+  return { fromSec, toSec, more: toSec < endSec }
+}
 const CHUNK_BARS = 1400   // stays under every provider's per-request cap
 
 // ── Symbols ──────────────────────────────────────────────────────────────
@@ -127,7 +143,7 @@ export function describeSource(raw) {
 export const isSupportedSymbol = (raw) => !!describeSource(raw)?.ok
 
 // ── Time-grid helpers ────────────────────────────────────────────────────
-const floorTo = (t, step) => Math.floor(t / step) * step
+function floorTo(t, step) { return Math.floor(t / step) * step }
 
 /** Range → number of base candles to load (incl. warm-up). */
 export function plannedCandles(baseKey, startSec, endSec) {
@@ -265,20 +281,22 @@ async function fetchChunk(symbol, interval, from, to, tries = 3) {
 }
 
 /**
- * Load every base candle for a session: [start − warm-up, end].
+ * Load every base candle for a session: [start − warm-up, end] — or, when `fromSec` / `toSec` are given,
+ * just that window (see planWindow).
  * @param onProgress ({ loaded, total }) => void
  * @returns {{ base: Candle[], baseSecs, warmupIndex }} warmupIndex = first base candle at/after the session start
  */
-export async function loadSessionData({ symbol, baseTf, startSec, endSec, onProgress, signal }) {
+export async function loadSessionData({ symbol, baseTf, startSec, endSec, fromSec, toSec, onProgress, signal }) {
   const step = tfSecs(baseTf)
-  const total = plannedCandles(baseTf, startSec, endSec)
+  const windowed = fromSec != null
+  const total = windowed ? Math.ceil((toSec - fromSec) / step) + 1 : plannedCandles(baseTf, startSec, endSec)
   if (total > MAX_BASE_CANDLES) {
     const e = new Error(`That range needs about ${total.toLocaleString()} ${baseTf} candles (max ${MAX_BASE_CANDLES.toLocaleString()}). Shorten the dates or pick a coarser timeframe.`)
     e.code = 'TOO_LARGE'; throw e
   }
 
-  const from = floorTo(startSec - WARMUP_SECS[baseTf], step)
-  const to = Math.min(floorTo(endSec, step), floorTo(Date.now() / 1000, step))
+  const from = windowed ? floorTo(fromSec, step) : floorTo(startSec - WARMUP_SECS[baseTf], step)
+  const to = Math.min(floorTo(windowed ? toSec : endSec, step), floorTo(Date.now() / 1000, step))
   const key = `${normaliseSymbol(symbol)}|${baseTf}|${from}|${to}`
 
   const mem = MEM.get(key)
@@ -319,6 +337,6 @@ export async function loadSessionData({ symbol, baseTf, startSec, endSec, onProg
   return finish(base)
 
   function finish(candles) {
-    return { base: candles, baseSecs: step, startIndex: firstIndexAtOrAfter(candles, step, startSec) }
+    return { base: candles, baseSecs: step, startIndex: firstIndexAtOrAfter(candles, step, windowed ? fromSec : startSec) }
   }
 }

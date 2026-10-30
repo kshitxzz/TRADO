@@ -127,10 +127,10 @@ const BacktestChart = forwardRef(function BacktestChart(
     const prevClose = bars.length > 1 ? bars[bars.length - 2].close : null
     const up = y.colorByPrevClose ? last.close >= (prevClose ?? last.open) : last.close >= last.open
     const candle = up ? (y.body.on ? y.body.up : y.borders.up) : (y.body.on ? y.body.down : y.borders.down)
-    const labelBg = (up ? s2.labelUp : s2.labelDown) || candle
+    const labelBg = s2.labelBg || candle
     const opts = {
       price: last.close, color: lab.line ? (s2.symbolLineColor || labelBg) : CLEAR, lineWidth: 1, lineStyle: LineStyle.Solid,
-      axisLabelVisible: lab.value, title: lab.name ? symRef.current : '', axisLabelColor: labelBg, axisLabelTextColor: textOn(labelBg),
+      axisLabelVisible: lab.value, title: lab.name ? symRef.current : '', axisLabelColor: labelBg, axisLabelTextColor: s2.labelText || textOn(labelBg),
     }
     if (lastLineRef.current) lastLineRef.current.applyOptions(opts)
     else lastLineRef.current = series.createPriceLine(opts)

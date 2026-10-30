@@ -24,7 +24,7 @@ const Td = ({ children, style }) => <td className="px-4 py-1.5 tabular-nums" sty
 const Side = ({ side }) => <span className="font-semibold" style={{ color: side === 'buy' ? '#22C55E' : '#F43F5E' }}>{side === 'buy' ? 'Buy' : 'Sell'}</span>
 
 export default function PositionsPanel({
-  positions, orders, closed, digits, pnlOf, onClose, onCloseAll, onCancelOrder, floating, fmtTime,
+  positions, orders, closed, digits, pnlOf, onClose, onCloseAll, onCancelOrder, floating, fmtTime, contentHeight,
 }) {
   const when = (s) => (fmtTime ? fmtTime(s) : formatShortDateTime(s * 1000))
   const [tab, setTab] = useState('positions')
@@ -48,7 +48,7 @@ export default function PositionsPanel({
       </div>
 
       {open && (
-        <div className="overflow-auto" style={{ maxHeight: 170, borderTop: '1px solid var(--border-subtle)' }}>
+        <div className="overflow-auto" style={{ ...(contentHeight != null ? { height: contentHeight } : { maxHeight: 170 }), borderTop: '1px solid var(--border-subtle)' }}>
           {tab === 'positions' && (
             <Table cols={['Side', 'Lots', 'Entry', 'SL', 'TP', 'Opened', 'P&L', '']} empty="No open positions."
               rows={positions.map(p => {

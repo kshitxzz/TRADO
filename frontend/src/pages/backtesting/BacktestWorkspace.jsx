@@ -10,6 +10,7 @@ import PairIcon from '../../components/ui/PairIcon'
 import BacktestChart from '../../components/backtest/BacktestChart'
 import DrawingOverlay from '../../components/backtest/DrawingOverlay'
 import DrawingToolbar from '../../components/backtest/DrawingToolbar'
+import Splitter from '../../components/backtest/Splitter'
 import DrawingStyleBar, { DrawingSettingsDialog } from '../../components/backtest/DrawingStyleBar'
 import IndicatorsDialog from '../../components/backtest/IndicatorsDialog'
 import LayoutMenu from '../../components/backtest/LayoutMenu'
@@ -29,7 +30,7 @@ import * as E from '../../lib/backtest/engine'
 import { getSpec, priceDigits, marginUsd } from '../../lib/backtest/specs'
 import { computeStats, fmtUsd } from '../../lib/backtest/stats'
 import {
-  tfSecs as tfSecsOf, tfLabel, isValidTf, baseFor, DEFAULT_FAVORITE_TFS, loadSessionData, buildTfIndex, candlesToNextBar, firstIndexAtOrAfter,
+  tfSecs as tfSecsOf, tfLabel, isValidTf, baseFor, DEFAULT_FAVORITE_TFS, loadSessionData, buildTfIndex, candlesToNextBar, firstIndexAtOrAfter, planWindow, plannedCandles, MAX_BASE_CANDLES, WINDOW_CANDLES,
 } from '../../lib/backtest/data'
 import { DEFAULT_RECENT_EMOJI } from '../../lib/backtest/emojiData'
 import { mergeSettings, clone, symbolDescription } from '../../lib/backtest/chartSettings'
@@ -194,6 +195,16 @@ export default function BacktestWorkspace() {
   const base = data?.base
   const baseSecs = data?.baseSecs || 900
   const baseTf = data?.baseTf || session?.base_tf || '15m'
+  // ── resizable panels: the order panel (width) and the positions panel (height); remembered per browser ──
+  const ORDER_W = 268
+  const [layout, setLayout] = useState(() => {
+    try { const v = JSON.parse(localStorage.getItem('trado_bt_layout') || 'null'); return { orderW: Number(v?.orderW) || ORDER_W, posH: Number(v?.posH) || null, orderOpen: v?.orderOpen !== false } } catch { return { orderW: ORDER_W, posH: null, orderOpen: true } }
+  })
+  useEffect(() => { try { localStorage.setItem('trado_bt_layout', JSON.stringify(layout)) } catch { /* private mode */ } }, [layout])
+  const bodyRef = useRef(null), posRef = useRef(null), dragFrom = useRef(0)
+  const clampN = (n, lo, hi) => Math.max(lo, Math.min(hi, n))
+  const moreRef = useRef(null)                 // set while the loaded candles stop short of the session end (fine timeframes load in windows)
+  moreRef.current = data?.more || null
   const spread = Number(session?.spread) || 0
 
   const endCount = useMemo(() => {
@@ -206,7 +217,7 @@ export default function BacktestWorkspace() {
     [base, baseSecs, session])
   const candle = base && count > 0 ? base[count - 1] : null
   const now = candle ? candle.time + baseSecs : 0
-  const atEnd = !!base && count >= endCount
+  const atEnd = !!base && count >= endCount && !data?.more
   const baseDigits = priceDigits(spec, candle?.close)
   const digits = cs.symbol.precision === 'default' ? baseDigits : cs.symbol.precision
   const tzFmt = useMemo(() => makeTimeFormatter({ scales: cs.scales, timezone: cs.symbol.timezone, appHour12: timeFormat !== '24h' }),
@@ -267,7 +278,16 @@ export default function BacktestWorkspace() {
         const trades = await api.listTrades(id)
         const startSec = Math.floor(new Date(row.start_at).getTime() / 1000)
         const endSec = Math.floor(new Date(row.end_at).getTime() / 1000)
-        const d = await loadSessionData({ symbol: row.symbol, baseTf: row.base_tf, startSec, endSec, signal: ctl.signal, onProgress: (p) => !cancelled && setProgress(p) })
+        const onProgress = (p) => !cancelled && setProgress(p)
+        // a range too long to hold at this candle size (e.g. a 1m session over months) opens as a window around where the replay is
+        let more = null, d
+        if (plannedCandles(row.base_tf, startSec, endSec) > MAX_BASE_CANDLES) {
+          const w = planWindow(row.base_tf, row.cursor_time ? Number(row.cursor_time) : startSec, endSec)
+          d = await loadSessionData({ symbol: row.symbol, baseTf: row.base_tf, fromSec: w.fromSec, toSec: w.toSec, signal: ctl.signal, onProgress })
+          if (w.more) more = { endSec }
+        } else {
+          d = await loadSessionData({ symbol: row.symbol, baseTf: row.base_tf, startSec, endSec, signal: ctl.signal, onProgress })
+        }
         if (cancelled) return
 
         const step = d.baseSecs
@@ -282,13 +302,13 @@ export default function BacktestWorkspace() {
         idxCache.current = new Map()
         engineRef.current = st; countRef.current = initial
         history.current = { past: [], future: [], committed: row.drawings || [] }
-        setSession(row); setData({ ...d, baseTf: row.base_tf }); setEngine(st); setCount(initial)
+        setSession(row); setData({ ...d, baseTf: row.base_tf, more }); setEngine(st); setCount(initial)
         setDrawings(row.drawings || []); setIndicators(row.indicators || [])
         setTf(isValidTf(row.chart_tf) && tfSecsOf(row.chart_tf) >= step && (row.chart_tf.slice(-1) !== 'm' && row.chart_tf.slice(-1) !== 'h' || tfSecsOf(row.chart_tf) % step === 0) ? row.chart_tf : row.base_tf)
         setPhase('ready')
 
         const lastBar = d.base[d.base.length - 1]
-        if (lastBar.time + step < endSec - step * 3 && endSec < Date.now() / 1000) {
+        if (!more && lastBar.time + step < endSec - step * 3 && endSec < Date.now() / 1000) {
           toast(`Market data for ${row.symbol} ends ${formatShortDateTime(lastBar.time * 1000)} — the replay stops there.`, { icon: 'ℹ️', duration: 6000 })
         }
       } catch (e) {
@@ -309,6 +329,34 @@ export default function BacktestWorkspace() {
     return idxCache.current.get(key)
   }, [base, tf])
   const view = useMemo(() => (base && idx ? { base, idx, count } : null), [base, idx, count])
+
+  // ── windowed candles: fetch the next stretch shortly before the replay reaches the end of what is loaded ──
+  const extending = useRef(false)
+  const extendRetryAt = useRef(0)
+  useEffect(() => {
+    const more = data?.more
+    if (!more || !base || !session || extending.current || Date.now() < extendRetryAt.current) return
+    if (count < base.length - Math.min(400, Math.floor(base.length * 0.1))) return
+    extending.current = true
+    ;(async () => {
+      try {
+        const step = baseSecs
+        const fromSec = base[base.length - 1].time + step
+        const toSec = Math.min(more.endSec, fromSec + WINDOW_CANDLES * step)
+        const d = await loadSessionData({ symbol: session.symbol, baseTf, fromSec, toSec })
+        const lastT = base[base.length - 1].time
+        const fresh = d.base.filter(c => c.time > lastT)
+        idxCache.current = new Map()
+        setData(prev => (prev && prev.base === base ? { ...prev, base: base.concat(fresh), more: toSec < more.endSec ? more : null } : prev))
+        if (!fresh.length) { setData(prev => (prev ? { ...prev, more: null } : prev)); toast(`Market data for ${session.symbol} ends here — the replay stops.`, { icon: 'ℹ️', duration: 6000 }) }
+      } catch (e) {
+        if (e?.code === 'NO_DATA') { setData(prev => (prev ? { ...prev, more: null } : prev)); toast(`Market data for ${session.symbol} ends here — the replay stops.`, { icon: 'ℹ️', duration: 6000 }) }
+        else { extendRetryAt.current = Date.now() + 15000; toast.error(e?.message || 'Could not load the next candles — will retry.') }
+      } finally {
+        extending.current = false
+      }
+    })()
+  }, [count, data, base, baseSecs, baseTf, session])
   const tfSecs = tfSecsOf(tf)
 
   // ── trading helpers ────────────────────────────────────────────────────
@@ -371,7 +419,11 @@ export default function BacktestWorkspace() {
         for (const id of hit.keys()) { const a = live.find(x => x.id === id); alertToast(`Alert: ${session.symbol} reached ${a.points[0].price.toFixed(digits)}`) }
       }
     }
-    if (target >= endCount) { setPlaying(false); toast('You reached the end of the session range.', { icon: '🏁' }) }
+    if (target >= endCount) {
+      setPlaying(false)
+      if (moreRef.current) toast('Loading the next candles… press play again in a moment.', { icon: '⏳' })
+      else toast('You reached the end of the session range.', { icon: '🏁' })
+    }
     return target - cur
   }, [base, endCount, spec, baseSecs, schedule, announce, alertToast, session?.symbol, digits])
 
@@ -479,6 +531,7 @@ export default function BacktestWorkspace() {
   /** Buy / Sell from the chart opens the order ticket. */
   const quickTrade = (side, { orderType, price } = {}) => {
     if (!orderRef.current) return
+    setLayout(l => (l.orderOpen ? l : { ...l, orderOpen: true }))          // the ticket lives in the order panel — show it
     orderRef.current.startTicket(side, { orderType, price })
   }
 
@@ -597,13 +650,23 @@ export default function BacktestWorkspace() {
     try {
       const startSec = Math.floor(new Date(session.start_at).getTime() / 1000)
       const endSec = Math.floor(new Date(session.end_at).getTime() / 1000)
-      const d = await loadSessionData({ symbol: session.symbol, baseTf: need, startSec, endSec, onProgress: (p) => setReload({ tf: k, pct: Math.round((p.loaded / Math.max(1, p.total)) * 100) }) })
       const clockNow = base[countRef.current - 1].time + baseSecs                       // the market moment we are at
+      const onProgress = (p) => setReload({ tf: k, pct: Math.round((p.loaded / Math.max(1, p.total)) * 100) })
+      let d, more = null, windowed = false
+      if (plannedCandles(need, startSec, endSec) <= MAX_BASE_CANDLES) {
+        d = await loadSessionData({ symbol: session.symbol, baseTf: need, startSec, endSec, onProgress })
+      } else {
+        // the whole range is too long at this candle size: load a window around now, and keep extending it as the replay moves on
+        const w = planWindow(need, clockNow, endSec)
+        d = await loadSessionData({ symbol: session.symbol, baseTf: need, fromSec: w.fromSec, toSec: w.toSec, onProgress })
+        windowed = true
+        if (w.more) more = { endSec }
+      }
       const idx2 = firstIndexAtOrAfter(d.base, d.baseSecs, clockNow + 1)
       if (idx2 < 40) throw new Error(`Not enough ${tfLabel(need)} history before this point for ${session.symbol}.`)
       idxCache.current = new Map()
       countRef.current = idx2
-      setData({ ...d, baseTf: need })
+      setData({ ...d, baseTf: need, more, windowed })
       setCount(idx2)
       setTf(k)
       setSession(sess => ({ ...sess, base_tf: need }))
@@ -815,7 +878,9 @@ export default function BacktestWorkspace() {
   const clock = candle ? tzFmt.clock(now) : ''
   const startSec = session ? Math.floor(new Date(session.start_at).getTime() / 1000) : 0
   const endSec = session ? Math.floor(new Date(session.end_at).getTime() / 1000) : 0
-  const prog = endCount > initialCount ? (count - initialCount) / (endCount - initialCount) : 0
+  const prog = data?.more || data?.windowed
+    ? Math.max(0, Math.min(1, (now - startSec) / Math.max(1, endSec - startSec)))
+    : endCount > initialCount ? (count - initialCount) / (endCount - initialCount) : 0
   const toInput = (s) => { const d = new Date(s * 1000), p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}` }
 
   if (phase === 'error') {
@@ -884,7 +949,7 @@ export default function BacktestWorkspace() {
         </div>
 
         {/* ── body ── */}
-        <div className="flex-1 min-h-0 flex">
+        <div ref={bodyRef} className="flex-1 min-h-0 flex">
           <DrawingToolbar tool={tool} onTool={(t) => { setTool(t); setSelecting(false); if (t !== 'cursor') setSelectedId(null) }}
                           magnet={magnet} onMagnet={() => setMagnet(m => !m)} stay={stay} onStay={() => setStay(s => !s)}
                           lockAll={lockAll} onLock={() => setLockAll(l => !l)} hideAll={hideAll} onHide={() => setHideAll(h => !h)}
@@ -944,11 +1009,24 @@ export default function BacktestWorkspace() {
                        onJump={(v) => seekTo(new Date(v).getTime() / 1000)} progress={prog} atEnd={atEnd}
                        minDate={candle ? toInput(now) : undefined} maxDate={endSec ? toInput(endSec) : undefined} />
 
-            <PositionsPanel fmtTime={tzFmt.dateTime} positions={engine?.positions || []} orders={engine?.orders || []} closed={engine?.closed || []} digits={digits}
-                            pnlOf={pnlOf} onClose={closePosition} onCloseAll={closeAllPositions} onCancelOrder={cancelOrder} floating={acct.floating} />
+            <Splitter orientation="horizontal" title="Drag to resize · double-click to reset"
+                      onDragStart={() => { dragFrom.current = layout.posH ?? Math.max(60, (posRef.current?.offsetHeight || 0) - 38) }}
+                      onDrag={(dy) => setLayout(l => ({ ...l, posH: clampN(dragFrom.current - dy, 60, Math.min(720, (bodyRef.current?.clientHeight || 800) * 0.65)) }))}
+                      onReset={() => setLayout(l => ({ ...l, posH: null }))} />
+            <div ref={posRef}>
+              <PositionsPanel fmtTime={tzFmt.dateTime} positions={engine?.positions || []} orders={engine?.orders || []} closed={engine?.closed || []} digits={digits}
+                              pnlOf={pnlOf} onClose={closePosition} onCloseAll={closeAllPositions} onCancelOrder={cancelOrder} floating={acct.floating} contentHeight={layout.posH} />
+            </div>
           </div>
 
-          <div className="hidden md:block flex-shrink-0">
+          <div className="hidden md:flex flex-shrink-0">
+            <Splitter orientation="vertical" title="Drag to resize · double-click to reset" collapsed={!layout.orderOpen}
+                      onToggle={() => setLayout(l => ({ ...l, orderOpen: !l.orderOpen }))}
+                      onDragStart={() => { dragFrom.current = layout.orderW }}
+                      onDrag={(dx) => setLayout(l => ({ ...l, orderW: clampN(dragFrom.current - dx, 240, Math.min(560, (bodyRef.current?.clientWidth || 1200) - 420)) }))}
+                      onReset={() => setLayout(l => ({ ...l, orderW: ORDER_W }))} />
+          </div>
+          <div className="hidden md:block flex-shrink-0" style={{ width: layout.orderOpen ? layout.orderW : 0, overflow: layout.orderOpen ? undefined : 'hidden' }}>
             <OrderPanel ref={orderRef} symbol={session?.symbol || ''} spec={spec} digits={digits} quote={quote} ready={!!candle && phase === 'ready'}
                         ticket={ticket} onTicket={setTicket} suggest={suggest} projectTicketPnl={trading.projectTicketPnl}
                         ticketMargin={(t) => marginUsd(spec, t.lots, t.entry || candle?.close || 0, session?.leverage || 100)}

@@ -51,6 +51,12 @@ export default function StatusLine({
 
   const title = st.titleMode === 'symbol' ? symbol : st.titleMode === 'description' ? description : `${symbol} · ${description}`
   const showHeader = st.title || st.marketStatus
+  const showValues = bar && (st.chartValues || st.barChange || st.volume)
+  // Canvas → Scales → Text colour also colours this line; without a custom colour it follows the app theme
+  const tc = cs.canvas.scaleText.color
+  const fg = tc || 'var(--text-primary)'
+  const mutedStyle = tc ? { opacity: 0.65 } : { color: 'var(--text-muted)' }
+  const shadow = tc ? undefined : '0 1px 3px rgba(0,0,0,0.5)'
 
   const ivals = indicatorValues?.() || {}
   const spread = quote ? quote.ask - quote.bid : 0
@@ -58,12 +64,23 @@ export default function StatusLine({
   return (
     <div className="absolute top-2 left-3 z-20 flex flex-col items-start gap-1 max-w-[78%] max-h-[70%] overflow-y-auto [&::-webkit-scrollbar]:hidden select-none"
          data-v={version} onPointerDown={(e) => e.stopPropagation()}>
-      {showHeader && (
-        <div className="flex items-center gap-2 text-[13px] font-semibold px-1" style={{ color: 'var(--text-primary)', textShadow: '0 1px 3px rgba(0,0,0,0.5)' }}>
-          {st.title && <span className="whitespace-nowrap">{title} <span style={{ color: 'var(--text-muted)' }}>· {tfLabel}</span></span>}
-          {st.marketStatus && (
-            <span title={marketOpen ? 'Market is open' : 'Market is closed'} className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-                  style={{ background: marketOpen ? '#22C55E' : '#F43F5E', boxShadow: `0 0 0 3px ${marketOpen ? 'rgba(34,197,94,0.18)' : 'rgba(244,63,94,0.18)'}` }} />
+      {(showHeader || showValues) && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 px-1" style={{ color: fg, textShadow: shadow }}>
+          {showHeader && (
+            <div className="flex items-center gap-2 text-[13px] font-semibold">
+              {st.title && <span className="whitespace-nowrap">{title} <span style={mutedStyle}>· {tfLabel}</span></span>}
+              {st.marketStatus && (
+                <span title={marketOpen ? 'Market is open' : 'Market is closed'} className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+                      style={{ background: marketOpen ? '#22C55E' : '#F43F5E', boxShadow: `0 0 0 3px ${marketOpen ? 'rgba(34,197,94,0.18)' : 'rgba(244,63,94,0.18)'}` }} />
+              )}
+            </div>
+          )}
+          {showValues && (
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11.5px] tabular-nums font-normal">
+              {st.chartValues && <span><span style={mutedStyle}>O</span> <b style={{ color: col }}>{f(bar.open)}</b> <span style={mutedStyle}>H</span> <b style={{ color: col }}>{f(bar.high)}</b> <span style={mutedStyle}>L</span> <b style={{ color: col }}>{f(bar.low)}</b> <span style={mutedStyle}>C</span> <b style={{ color: col }}>{f(bar.close)}</b></span>}
+              {st.barChange && chg != null && <span style={{ color: chg >= 0 ? UP : DOWN }}>{sgn(chg)} ({pct(chg, prev.close)})</span>}
+              {st.volume && <span><span style={mutedStyle}>Vol</span> <b style={{ color: col }}>{volFmt(bar.volume || 0)}</b></span>}
+            </div>
           )}
         </div>
       )}
@@ -74,19 +91,11 @@ export default function StatusLine({
                   style={{ background: 'rgba(244,63,94,0.16)', border: '1px solid rgba(244,63,94,0.55)', color: '#FB7185' }}>
             <span className="opacity-70 mr-1">SELL</span>{quote.bid.toFixed(digits)}
           </button>
-          <span className="self-center text-[10px] tabular-nums" style={{ color: 'var(--text-muted)' }}>{spread.toFixed(digits <= 2 ? 2 : Math.min(digits, 5))}</span>
+          <span className="self-center text-[10px] tabular-nums" style={{ ...mutedStyle, color: tc || 'var(--text-muted)' }}>{spread.toFixed(digits <= 2 ? 2 : Math.min(digits, 5))}</span>
           <button type="button" onClick={onBuy} title="Buy at the ask" className="h-7 px-2.5 rounded-md text-[11.5px] font-bold tabular-nums hover:brightness-125 transition"
                   style={{ background: 'rgba(59,130,246,0.16)', border: '1px solid rgba(59,130,246,0.55)', color: '#60A5FA' }}>
             <span className="opacity-70 mr-1">BUY</span>{quote.ask.toFixed(digits)}
           </button>
-        </div>
-      )}
-
-      {bar && (st.chartValues || st.barChange || st.volume) && (
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 px-1 text-[11.5px] tabular-nums" style={{ color: 'var(--text-muted)', textShadow: '0 1px 3px rgba(0,0,0,0.5)' }}>
-          {st.chartValues && <span>O <b style={{ color: col }}>{f(bar.open)}</b> H <b style={{ color: col }}>{f(bar.high)}</b> L <b style={{ color: col }}>{f(bar.low)}</b> C <b style={{ color: col }}>{f(bar.close)}</b></span>}
-          {st.barChange && chg != null && <span style={{ color: chg >= 0 ? UP : DOWN }}>{sgn(chg)} ({pct(chg, prev.close)})</span>}
-          {st.volume && <span>Vol <b style={{ color: col }}>{volFmt(bar.volume || 0)}</b></span>}
         </div>
       )}
 

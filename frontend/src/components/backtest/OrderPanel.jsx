@@ -131,7 +131,7 @@ const OrderPanel = forwardRef(function OrderPanel({
   const pnlColor = (n) => (n > 0 ? 'var(--positive-green)' : n < 0 ? 'var(--negative-red)' : 'var(--text-primary)')
 
   return (
-    <div className="h-full flex flex-col overflow-y-auto" style={{ width: 268, background: 'var(--bg-card)', borderLeft: '1px solid var(--border-subtle)' }}>
+    <div className="h-full flex flex-col overflow-y-auto" style={{ width: '100%', background: 'var(--bg-card)', borderLeft: '1px solid var(--border-subtle)' }}>
       <div className="px-4 pt-3.5 pb-2.5 flex items-center justify-between">
         <span className="text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>{symbol}</span>
         <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'rgba(139,92,246,0.14)', color: 'var(--accent-purple-light)' }}>{openCount} open</span>

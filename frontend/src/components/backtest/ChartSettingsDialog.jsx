@@ -80,7 +80,7 @@ export default function ChartSettingsDialog({ settings, onPreview, onApply, onCa
   const S = draft.symbol, ST = draft.status, SC = draft.scales, C = draft.canvas, A = draft.alerts, E = draft.events
   const hoursNow = SC.hours ?? (appHour12 ? '12' : '24')
   const dateOptions = DATE_FORMATS.map(o => ({ ...o, label: SC.dayOfWeek ? `Mon ${o.label}` : o.label }))
-  const candleUp = S.body.on ? S.body.up : S.borders.up, candleDown = S.body.on ? S.body.down : S.borders.down
+  const candleUp = S.body.on ? S.body.up : S.borders.up
 
   // ── draggable title bar ────────────────────────────────────────────────
   const boxRef = useRef(null)
@@ -184,8 +184,8 @@ export default function ChartSettingsDialog({ settings, onPreview, onApply, onCa
                   <Swatch value={SC.symbolLineColor} auto="#9CA3AF" onChange={(v) => update('scales', { symbolLineColor: v })} title="Last price line" />
                 </Field>
                 <Field label="Symbol label color">
-                  <Swatch value={SC.labelUp} auto={candleUp} opacity={false} onChange={(v) => update('scales', { labelUp: v })} title="Label — price up" />
-                  <Swatch value={SC.labelDown} auto={candleDown} opacity={false} onChange={(v) => update('scales', { labelDown: v })} title="Label — price down" />
+                  <Swatch value={SC.labelBg} auto={candleUp} opacity={false} onChange={(v) => update('scales', { labelBg: v })} title="Label background" />
+                  <Swatch value={SC.labelText} auto="#FFFFFF" opacity={false} onChange={(v) => update('scales', { labelText: v })} title="Label text" />
                 </Field>
                 <Field label="Indicators and financials"><TvSelect value={SC.indicatorValues} options={INDICATOR_VALUE_MODES} onChange={(v) => update('scales', { indicatorValues: v })} width={150} /></Field>
                 <Field label="High and low">

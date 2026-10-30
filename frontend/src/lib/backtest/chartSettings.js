@@ -26,7 +26,7 @@ export const DEFAULT_SETTINGS = {
     noOverlap: true, plusButton: true, invert: false, countdown: true,
     symbolLabel: 'name-value-line',  // see SYMBOL_LABEL_MODES
     symbolLineColor: null,
-    labelUp: null, labelDown: null,  // last-price label background; null → follows the candle colours
+    labelBg: null, labelText: null,  // last-price label: background (null → follows the candle colour) and text (null → black / white, whichever reads better)
     indicatorValues: 'value',        // 'hidden' | 'value'
     highLow: 'hidden', highLowColor: '#6B7280',
     dayOfWeek: true, dateFormat: 'dd MMM yy', hours: null,       // hours: null → follow the app's 12 / 24-hour setting
