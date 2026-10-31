@@ -269,16 +269,103 @@ Respond ONLY with a JSON object like: {"tips":["...","...","..."]}`,
   res.json({ aiAvailable: true, content: result.text, scope })
 })
 
+// ── POST /api/ai/coach-plan ── Turns a chat message into 0–2 "visual specs"
+// (which chart to draw, for which period/filters). Gemini only PLANS here — it
+// never sees trade rows and never produces a number. The frontend computes every
+// figure deterministically from the real trades (lib/coachVisuals.js).
+const VISUAL_KINDS = ['pnl_timeline', 'equity', 'breakdown', 'whatif', 'adherence']
+const VISUAL_PERIODS = ['today', 'yesterday', 'this_week', 'last_week', 'last_7_days', 'this_month', 'last_month', 'last_30_days', 'last_90_days', 'this_quarter', 'this_year', 'all_time', 'custom']
+const VISUAL_DIMS = ['strategy', 'symbol', 'session', 'weekday', 'hour', 'side']
+const strList = (v, max = 12) => (Array.isArray(v) ? v : []).filter(x => typeof x === 'string' || typeof x === 'number').slice(0, max).map(x => (typeof x === 'string' ? x.slice(0, 40) : x))
+const isoDate = (v) => (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : undefined)
+
+function sanitizeVisualSpec(raw = {}) {
+  if (!raw || !VISUAL_KINDS.includes(raw.kind)) return null
+  const f = raw.filters || {}
+  const spec = {
+    kind: raw.kind,
+    period: VISUAL_PERIODS.includes(raw.period) ? raw.period : 'last_30_days',
+    customStart: isoDate(raw.customStart), customEnd: isoDate(raw.customEnd),
+    filters: {
+      strategies: strList(f.strategies), symbols: strList(f.symbols), sides: strList(f.sides, 2), sessions: strList(f.sessions, 3),
+      excludeWeekdays: strList(f.excludeWeekdays, 7), onlyWeekdays: strList(f.onlyWeekdays, 7),
+    },
+  }
+  if (spec.period === 'custom' && !spec.customStart) spec.period = 'last_30_days'
+  if (VISUAL_DIMS.includes(raw.groupBy)) spec.groupBy = raw.groupBy
+  if (['profit_factor', 'win_rate'].includes(raw.metric)) spec.metric = raw.metric
+  if (['auto', 'day', 'week', 'month'].includes(raw.interval)) spec.interval = raw.interval
+  if (raw.kind === 'whatif') {
+    const w = raw.whatIf || {}
+    if (!VISUAL_DIMS.includes(w.dimension) || !strList(w.values).length) return null
+    spec.whatIf = { dimension: w.dimension, mode: w.mode === 'only' ? 'only' : 'exclude', values: strList(w.values) }
+  }
+  return spec
+}
+
+router.post('/coach-plan', AI_LIMITER, async (req, res) => {
+  const { message = '', strategies = [], symbols = [], previousSpecs = [], today } = req.body || {}
+  const todayStr = isoDate(today) || new Date().toISOString().slice(0, 10)
+
+  const prompt = `You are the planning step of a trading-journal AI coach. Decide whether the trader's message is best answered with one or two charts, and if so describe them as JSON. You do NOT answer the question and you never output numbers about their trades.
+
+Today is ${todayStr}. Weekday numbers: Sunday=0, Monday=1, Tuesday=2, Wednesday=3, Thursday=4, Friday=5, Saturday=6.
+The trader's strategy names: ${JSON.stringify(strList(strategies, 30))}
+The trader's symbols: ${JSON.stringify(strList(symbols, 40))}
+Chart specs shown in the previous reply (use them to resolve follow-ups like "same but excluding Fridays"): ${JSON.stringify(Array.isArray(previousSpecs) ? previousSpecs.slice(0, 2) : [])}
+
+Chart kinds:
+- "pnl_timeline": P&L over a period (bars) plus a cumulative line. Use for "show my P&L", "how did I do last month", "results this week".
+- "equity": cumulative equity curve with drawdown. Use for "equity curve", "drawdown", "account growth".
+- "breakdown": P&L and profit factor grouped by one dimension. Needs "groupBy": strategy | symbol | session | weekday | hour | side. Optional "metric": "profit_factor" (default) or "win_rate". Use for "which strategy/pair/session/day/hour is best or worst".
+- "whatif": actual vs projected result if a rule had been applied. Needs "whatIf": {"dimension": one of the groupBy values, "mode": "exclude" or "only", "values": [..]}. For weekday use numbers; for hour use hour numbers 0-23; for strategy/symbol/session use the names. Use for "what if I skipped Fridays", "what if I only traded London".
+- "adherence": how well the trader followed their trading plan/checklist and daily loss limit. Use for "did I follow my plan", "discipline", "rule adherence".
+
+Fields for every spec: "kind", "period" (one of ${VISUAL_PERIODS.join(', ')}; use "custom" with "customStart"/"customEnd" as YYYY-MM-DD only for explicit date ranges; "last 3 months" = last_90_days), "filters": {"strategies": [], "symbols": [], "sides": [], "sessions": [], "excludeWeekdays": [], "onlyWeekdays": []}. Put things like "excluding Fridays" in filters.excludeWeekdays, "only Gap and Go trades" in filters.strategies. Match strategy and symbol names to the lists above when they clearly refer to the same thing, otherwise copy what the trader said.
+If no period is mentioned use "last_30_days" (or the previous spec's period for a follow-up).
+Return at most 2 specs. If the message is general advice, psychology, a greeting, or otherwise does not need a chart of their data, return an empty list. The message may be in any language.
+
+Respond with ONLY JSON: {"visuals": [ ... ]}
+
+Trader's message: ${JSON.stringify(String(message).slice(0, 600))}`
+
+  const result = await callGemini(prompt, { json: true, temperature: 0.1, maxOutputTokens: 600 })
+  if (!result.ok) return res.json({ aiAvailable: false, reason: result.reason, message: result.message })
+  const parsed = parseJsonLoose(result.text)
+  if (!parsed || !Array.isArray(parsed.visuals)) return res.json({ aiAvailable: false, reason: 'bad_json', message: 'Planner returned an unreadable response.' })
+  res.json({ aiAvailable: true, visuals: parsed.visuals.map(sanitizeVisualSpec).filter(Boolean).slice(0, 2) })
+})
+
 // ── POST /api/ai/chat ── Free-form AI coach chat
+// When the frontend has drawn charts for this question it also sends
+// `visualFacts` (numbers computed from the real trades). Gemini narrates those
+// and must not use any other figures for the charted period.
 router.post('/chat', AI_LIMITER, async (req, res) => {
-  const { message, tradeContext = [], conversationHistory = [] } = req.body
+  const { message, tradeContext = [], conversationHistory = [], visualFacts = [], visualNotes = [], hasVisuals = false } = req.body
   const ctx = buildTradeContext(tradeContext)
+  const facts = (Array.isArray(visualFacts) ? visualFacts : []).filter(f => typeof f === 'string').slice(0, 60).map(f => f.slice(0, 400))
+  const notes = (Array.isArray(visualNotes) ? visualNotes : []).filter(f => typeof f === 'string').slice(0, 6).map(f => f.slice(0, 300))
+
+  let visualBlock = ''
+  if (hasVisuals && facts.length) {
+    visualBlock = `
+
+CHARTS: One or more charts built from the trader's real trades are shown directly under your reply. These are the exact figures in them — they are the ONLY numbers you may use for what the charts cover (ignore any conflicting figure in the summary above):
+${facts.map(f => `- ${f}`).join('\n')}
+Write a short reply (2–4 sentences) that gives the headline answer and the one or two most useful takeaways, and refer to "the chart below". Do not list every figure — the chart shows them. Wrap at most two key labels in **double asterisks** (e.g. **What-If**: ...) to highlight them. Do not repeat any "Findings" the chart already lists.`
+  }
+  if (notes.length) {
+    visualBlock += `
+
+NOTES ABOUT THE DATA (state these plainly and do not invent data to fill the gap):
+${notes.map(n => `- ${n}`).join('\n')}`
+  }
 
   const systemCtx = `You are Trado AI — an expert, empathetic trading coach.
 You have access to this trader's real data:
 ${ctx.summary}
 
-Be concise, specific, and helpful. Use the trader's actual data when answering. If you don't have enough data, say so. Never make up numbers.
+Be concise, specific, and helpful. Use the trader's actual data when answering. If you don't have enough data, say so. Never make up numbers.${visualBlock}
 
 LANGUAGE — critical: respond in the SAME language (and the same casual/formal tone) as the user's latest message below. If they write in Hindi, reply in Hindi. If they write in Hinglish (a Hindi-English mix, e.g. "yaar mujhe nahi pata mai kaha galti krr raha hu"), reply in that same natural Hinglish mix — don't switch to pure English or pure Hindi. If they write in English, reply in English. Match whatever language or mix they use, every message, even if it changes partway through the conversation.`
 

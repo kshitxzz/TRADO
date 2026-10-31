@@ -4,10 +4,17 @@ import {
   Shield, AlertTriangle, Clock, Target, Brain,
 } from 'lucide-react'
 import { computeStats, formatPnl } from '../../lib/utils'
+import { useAuth } from '../../hooks/useAuth'
+import { buildVisual, localPlan } from '../../lib/coachVisuals'
+import CoachVisual, { CoachText } from './CoachVisuals'
 
 const BACKEND = import.meta.env.VITE_BACKEND_URL || 'http://localhost:4000'
 
 const QUICK_ACTIONS = [
+  { icon: BarChart3,     label: 'Show my P&L for last month' },
+  { icon: Target,        label: 'Which strategy performs best?' },
+  { icon: Shield,        label: 'How well did I follow my plan this month?' },
+  { icon: Clock,         label: 'What if I skipped Fridays?' },
   { icon: BarChart3,     label: 'Analyze my recent trades' },
   { icon: TrendingDown,  label: 'Why am I losing?' },
   { icon: TrendingUp,    label: 'Improve my win rate' },
@@ -27,6 +34,7 @@ const FOLLOW_UPS = [
 
 export default function AICoachTab({ user, trades }) {
   const stats = computeStats(trades)
+  const { profile } = useAuth()
   const [messages, setMessages] = useState([])
   const [input, setInput]       = useState('')
   const [loading, setLoading]   = useState(false)
@@ -34,6 +42,23 @@ export default function AICoachTab({ user, trades }) {
   const bottomRef = useRef(null)
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages, loading])
+
+  // Step 1: ask the planner which visuals (if any) the question calls for.
+  // Falls back to a small keyword planner so charts still show if Gemini is down.
+  async function planVisuals(text) {
+    const strategies = [...new Set(trades.map(t => t.strategy).filter(Boolean))].slice(0, 30)
+    const symbols = [...new Set(trades.map(t => t.symbol).filter(Boolean))].slice(0, 40)
+    const previousSpecs = [...messages].reverse().find(m => m.role === 'ai' && m.specs?.length)?.specs || []
+    try {
+      const res = await fetch(`${BACKEND}/api/ai/coach-plan`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: text, strategies, symbols, previousSpecs, today: new Date().toISOString().slice(0, 10) }),
+      })
+      const data = await res.json()
+      if (data.aiAvailable && Array.isArray(data.visuals)) return data.visuals
+    } catch { /* fall through to the local planner */ }
+    return localPlan(text)
+  }
 
   async function send(msg) {
     const text = (msg || input).trim()
@@ -44,13 +69,25 @@ export default function AICoachTab({ user, trades }) {
 
     const newHistory = [...history, { role: 'user', text }]
     try {
+      const specs = (await planVisuals(text)).slice(0, 2)
+      const visuals = [], visualFacts = [], visualNotes = []
+      specs.forEach(spec => {
+        const built = buildVisual(spec, trades, { coachSettings: profile?.coach_settings })
+        if (built.visual) { visuals.push(built.visual); visualFacts.push(...built.facts) }
+        else if (built.note) visualNotes.push(built.note)
+        if (built.notes?.length) visualNotes.push(...built.notes)
+      })
+
       const res = await fetch(`${BACKEND}/api/ai/chat`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, tradeContext: trades.slice(0, 40), conversationHistory: history.slice(-6) }),
+        body: JSON.stringify({
+          message: text, tradeContext: trades.slice(0, 40), conversationHistory: history.slice(-6),
+          visualFacts, visualNotes, hasVisuals: visuals.length > 0,
+        }),
       })
       const data = await res.json()
       const aiText = data.aiAvailable ? data.content : (data.message || 'Trado AI is unavailable right now — try again shortly.')
-      setMessages(m => [...m, { role: 'ai', text: aiText }])
+      setMessages(m => [...m, { role: 'ai', text: aiText, visuals, specs }])
       setHistory([...newHistory, { role: 'ai', text: aiText }])
     } catch {
       setMessages(m => [...m, { role: 'ai', text: 'Could not reach the AI coach — check your connection and try again.' }])
@@ -135,7 +172,7 @@ export default function AICoachTab({ user, trades }) {
                   <Bot size={13} className="text-white" />
                 </div>
               )}
-              <div className="max-w-[80%] rounded-2xl px-4 py-3 text-sm whitespace-pre-wrap"
+              <div className={`${m.visuals?.length ? 'w-full max-w-[92%]' : 'max-w-[80%]'} rounded-2xl px-4 py-3 text-sm`}
                    style={{
                      background: m.role === 'user' ? 'var(--accent-purple)' : 'var(--bg-hover, rgba(255,255,255,0.04))',
                      color: m.role === 'user' ? 'white' : 'var(--text-primary)',
@@ -143,7 +180,12 @@ export default function AICoachTab({ user, trades }) {
                      borderRadius: m.role === 'user' ? '16px 16px 4px 16px' : '16px 16px 16px 4px',
                      lineHeight: '1.6',
                    }}>
-                {m.text}
+                <div className="whitespace-pre-wrap">{m.role === 'ai' ? <CoachText text={m.text} /> : m.text}</div>
+                {m.visuals?.length > 0 && (
+                  <div className="mt-3 space-y-3">
+                    {m.visuals.map((v, vi) => <CoachVisual key={vi} visual={v} />)}
+                  </div>
+                )}
               </div>
             </div>
           ))}
