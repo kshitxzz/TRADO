@@ -42,6 +42,26 @@ node ingest.mjs --check --out ..\..\frontend\public\market-data
 Then commit and push from the repo root (`git add -A`, then check `git status`) — Cloudflare serves `frontend/public/market-data`. `frontend/public/_headers` makes month files cache forever
 (their URL carries a content hash) and the manifest revalidate every time.
 
+## Keeping it current
+
+You do **not** need to run this every month. Finished months never change, so history you already have stays valid forever.
+Run it only when you want newer data in the app — a good rhythm is **once a month, on or after the 3rd**.
+
+- The app always works with whatever the manifest lists. A session cannot run past the last stored candle; it stops there with a clear message.
+- A month counts as **final** only once it was fetched at least 2 days after it ended. A month captured part-way (say on the 20th) is completed
+  automatically by the next run, so it is never left cut off.
+- Each run re-downloads only the current month (and the previous one until it settles), so it is quick. Each run changes that one file in git
+  (about 0.4 MB per symbol), so monthly is kinder to the repo than daily.
+- In the first days of a month the current month may be empty — that is normal; run again later.
+
+Quick monthly routine:
+
+```powershell
+cd tools\data-store
+node ingest.mjs --symbols XAUUSD,EURUSD,GBPUSD,USDJPY --from 2024-01 --out ..\..\frontend\public\market-data
+cd ..\..; git add -A; git status --short; git commit -m "Update market data"; git push
+```
+
 ## When it grows: Cloudflare R2 instead of git
 
 Past a handful of symbols the folder gets too big for git. Move it to R2 (free tier: 10 GB, no egress fees):

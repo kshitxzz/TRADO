@@ -8,7 +8,8 @@
 // Options:  --force  re-download months that are already on disk
 //           --cache  folder for dukascopy-node's download cache (default: your OS temp folder — never inside the repo)
 //
-// Safe to re-run: finished months are skipped (the current, still-growing month is always refreshed).
+// Safe to re-run: FINAL months are skipped. A month is final only once it was fetched at least 2 days after it ended, so a month
+// that was captured part-way through (say on the 20th) is automatically completed by the next run — never left cut off.
 // Every month is validated, written, then READ BACK and compared before it is added to the manifest.
 // The manifest is saved after EVERY month, so an interrupted run leaves a valid, usable store behind.
 // Month files found on disk without a manifest entry are verified and adopted instead of re-downloaded.
@@ -42,6 +43,8 @@ const SPIKE = 0.05                     // a >5 % one-minute move is reported (ne
 export const defaultCacheDir = () => path.join(os.tmpdir(), 'trado-dukascopy-cache')
 
 const sha = (buf) => createHash('sha1').update(buf).digest('hex').slice(0, 10)
+const FINAL_AFTER = 2 * 86400            // a month is final once fetched this long after it ended (Dukascopy publishes with a delay)
+const TAIL_SLACK = 5 * 86400             // a stored month whose last candle is further than this from its end is treated as cut off
 const nextMonthKey = (m) => monthsBetween(monthStart(m), monthStart(m) + 40 * 86400)[1]
 
 /** The real download — needs Chromium once, because Dukascopy protects its free feed with an AWS WAF challenge. */
@@ -78,6 +81,10 @@ export async function runIngest({ symbols, from, to, outDir, force = false, fetc
   const manPath = path.join(outDir, 'manifest.json')
   const man = readJson(manPath, null) || { version: 1, source: 'Dukascopy', priceType: 'bid', symbols: {} }
   const currentMonth = monthKey(now / 1000)
+  const nowSec = now / 1000
+  const isFinal = (m, lastCandle) => nowSec >= monthStart(nextMonthKey(m)) + FINAL_AFTER && lastCandle >= monthStart(nextMonthKey(m)) - TAIL_SLACK
+  // manifests written by earlier versions have no "fin" flag: work it out from what is stored
+  for (const s of Object.values(man.symbols)) for (const [k, e] of Object.entries(s.months)) if (e.fin === undefined) e.fin = isFinal(k, e.l)
 
   const save = () => { man.generated = new Date(now).toISOString(); fs.writeFileSync(manPath, JSON.stringify(man)) }
   const refreshBounds = (entry) => {
@@ -96,15 +103,15 @@ export async function runIngest({ symbols, from, to, outDir, force = false, fetc
 
     for (const m of months) {
       const file = path.join(outDir, sym, `${m}.bin.gz`)
-      if (!force && entry.months[m] && fs.existsSync(file) && m !== currentMonth) { log(`${sym} ${m}  already stored — skipped`); started = true; continue }
+      if (!force && entry.months[m]?.fin && fs.existsSync(file)) { log(`${sym} ${m}  already stored — skipped`); started = true; continue }
 
-      // a finished month that is on disk but missing from the manifest (an interrupted older run): verify it and adopt it
-      if (!force && !entry.months[m] && m !== currentMonth && fs.existsSync(file)) {
+      // a COMPLETE month that is on disk but missing from the manifest (an interrupted older run): verify it and adopt it
+      if (!force && !entry.months[m] && fs.existsSync(file)) {
         try {
           const gz = fs.readFileSync(file)
           const d = decodeMonth(gunzipSync(gz))
-          if (d.monthStart === monthStart(m) && d.digits === digits && d.candles.length) {
-            entry.months[m] = { n: d.candles.length, h: sha(gz), f: d.candles[0].time, l: d.candles[d.candles.length - 1].time }
+          if (d.monthStart === monthStart(m) && d.digits === digits && d.candles.length && isFinal(m, d.candles[d.candles.length - 1].time)) {
+            entry.months[m] = { n: d.candles.length, h: sha(gz), f: d.candles[0].time, l: d.candles[d.candles.length - 1].time, fin: true }
             refreshBounds(entry); man.symbols[sym] = entry; save()
             started = true
             log(`${sym} ${m}  ${String(d.candles.length).padStart(6)} candles  found on disk, verified and adopted`)
@@ -135,7 +142,7 @@ export async function runIngest({ symbols, from, to, outDir, force = false, fetc
       }
       fs.mkdirSync(path.dirname(file), { recursive: true })
       fs.writeFileSync(file, gz)
-      entry.months[m] = { n: candles.length, h: sha(gz), f: candles[0].time, l: candles[candles.length - 1].time }
+      entry.months[m] = { n: candles.length, h: sha(gz), f: candles[0].time, l: candles[candles.length - 1].time, fin: isFinal(m, candles[candles.length - 1].time) }
       refreshBounds(entry); man.symbols[sym] = entry; save()                 // progress is never lost to a later failure
       const notes = inspect(candles)
       log(`${sym} ${m}  ${String(candles.length).padStart(6)} candles  ${(gz.length / 1024).toFixed(0)} KB${report.repaired || report.duplicates || report.invalid ? `  (source fixes: ${report.invalid} invalid, ${report.repaired} repaired, ${report.duplicates} duplicate)` : ''}`)

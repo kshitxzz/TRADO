@@ -30,12 +30,12 @@ function dukascopyRows(fromIso, toIso, { flats = 0 } = {}) {
 const SOURCE = dukascopyRows('2026-06-01T00:00:00Z', '2026-11-01T00:00:00Z')
 const NOW = Z('2026-10-20T12:00:00Z') * 1000
 
-const fakeFetch = (calls = [], { skipMonth } = {}) => async (instrument, month) => {
+const fakeFetch = (calls = [], { skipMonth, until = Infinity } = {}) => async (instrument, month) => {
   calls.push(`${instrument}:${month}`)
   if (month === skipMonth) return []
   const lo = Z(`${month}-01T00:00:00Z`)
-  // like the real API, also hand back a candle just outside the month — the tool must drop it
-  return SOURCE.filter(r => r.timestamp / 1000 >= lo - 120 && r.timestamp / 1000 < lo + 32 * 86400)
+  // like the real API, also hand back a candle just outside the month — the tool must drop it; `until` = data that exists "so far"
+  return SOURCE.filter(r => r.timestamp / 1000 >= lo - 120 && r.timestamp / 1000 < lo + 32 * 86400 && r.timestamp / 1000 < until)
 }
 
 test('ingest → verify → the browser loader reads back exactly what Dukascopy gave us', async () => {
@@ -166,4 +166,44 @@ test('a corrupt file on disk is NOT adopted — it is downloaded again', async (
 
 test('the default download cache lives outside the repository', () => {
   assert.ok(path.resolve(defaultCacheDir()).startsWith(path.resolve(os.tmpdir())))
+})
+
+// ── a month captured part-way must be completed later ────────────────────
+const last = (man, m = '2026-10') => man.symbols.XAUUSD.months[m]
+
+test('a month captured mid-month is completed by the next run (never left cut off)', async () => {
+  const out = tmp()
+  const m1 = await runIngest({ symbols: ['XAUUSD'], from: '2026-09', to: '2026-10', outDir: out, fetchMonth: fakeFetch([], { until: Z('2026-10-20T00:00:00Z') }), now: Z('2026-10-20T12:00:00Z') * 1000, log: quiet })
+  assert.equal(last(m1).fin, false)
+  assert.ok(last(m1).l < Z('2026-10-20T00:00:00Z'))
+  const calls = []
+  const m2 = await runIngest({ symbols: ['XAUUSD'], from: '2026-09', to: '2026-11', outDir: out, fetchMonth: fakeFetch(calls), now: Z('2026-11-05T12:00:00Z') * 1000, log: quiet })
+  assert.ok(calls.includes('xauusd:2026-10'), 'October is fetched again')
+  assert.ok(!calls.includes('xauusd:2026-09'), 'September was already final')
+  assert.equal(last(m2).fin, true)
+  assert.ok(last(m2).l > Z('2026-10-29T00:00:00Z'), 'October now runs to the end of the month')
+  assert.deepEqual(verifyStore(out), [])
+})
+
+test('a month fetched less than 2 days after it ended is not yet final, and is refreshed once it settles', async () => {
+  const out = tmp()
+  const m1 = await runIngest({ symbols: ['XAUUSD'], from: '2026-10', to: '2026-10', outDir: out, fetchMonth: fakeFetch(), now: Z('2026-11-01T12:00:00Z') * 1000, log: quiet })
+  assert.equal(last(m1).fin, false)
+  const calls = [], calls2 = []
+  const m2 = await runIngest({ symbols: ['XAUUSD'], from: '2026-10', to: '2026-10', outDir: out, fetchMonth: fakeFetch(calls), now: Z('2026-11-04T12:00:00Z') * 1000, log: quiet })
+  assert.deepEqual(calls, ['xauusd:2026-10'])
+  assert.equal(last(m2).fin, true)
+  await runIngest({ symbols: ['XAUUSD'], from: '2026-10', to: '2026-10', outDir: out, fetchMonth: fakeFetch(calls2), now: Z('2026-12-01T12:00:00Z') * 1000, log: quiet })
+  assert.deepEqual(calls2, [])                                                          // final means final: never downloaded again
+})
+
+test('manifests from earlier versions (no "fin" flag) are migrated from what is stored', async () => {
+  const out = tmp()
+  await runIngest({ symbols: ['XAUUSD'], from: '2026-08', to: '2026-10', outDir: out, fetchMonth: fakeFetch([], { until: Z('2026-10-20T00:00:00Z') }), now: Z('2026-10-20T12:00:00Z') * 1000, log: quiet })
+  const mp = path.join(out, 'manifest.json'), man = JSON.parse(fs.readFileSync(mp))
+  for (const e of Object.values(man.symbols.XAUUSD.months)) delete e.fin
+  fs.writeFileSync(mp, JSON.stringify(man))
+  const calls = []
+  await runIngest({ symbols: ['XAUUSD'], from: '2026-08', to: '2026-11', outDir: out, fetchMonth: fakeFetch(calls), now: Z('2026-11-05T12:00:00Z') * 1000, log: quiet })
+  assert.deepEqual(calls.sort(), ['xauusd:2026-10', 'xauusd:2026-11'])                 // Aug + Sep were complete; the cut-off October is detected and refetched
 })
