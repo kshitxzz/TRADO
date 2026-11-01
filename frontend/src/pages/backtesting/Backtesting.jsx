@@ -9,7 +9,6 @@ import NewSessionModal from '../../components/backtest/NewSessionModal'
 import { useAuth } from '../../hooks/useAuth'
 import * as api from '../../lib/backtest/api'
 import { computeStats, fmtUsd, fmtFactor } from '../../lib/backtest/stats'
-import { tfLabel } from '../../lib/backtest/data'
 
 const fmtDate = (iso) => new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
 const clr = (n) => (n > 0 ? 'var(--positive-green)' : n < 0 ? 'var(--negative-red)' : 'var(--text-primary)')
@@ -25,7 +24,7 @@ function SessionCard({ s, stats, onDelete }) {
         <PairIcon symbol={s.symbol} size={36} />
         <div className="min-w-0 flex-1">
           <p className="text-[14px] font-semibold truncate" style={{ color: 'var(--text-primary)' }}>{s.name}</p>
-          <p className="text-[11.5px] truncate" style={{ color: 'var(--text-muted)' }}>{s.symbol} · {tfLabel(s.base_tf)}{s.strategy ? ` · ${s.strategy}` : ''}</p>
+          <p className="text-[11.5px] truncate" style={{ color: 'var(--text-muted)' }}>{s.symbol}{s.strategy ? ` · ${s.strategy}` : ''}</p>
         </div>
         <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full" style={{
           background: s.status === 'completed' ? 'rgba(34,197,94,0.14)' : 'rgba(139,92,246,0.16)',

@@ -30,7 +30,7 @@ import * as E from '../../lib/backtest/engine'
 import { getSpec, priceDigits, marginUsd } from '../../lib/backtest/specs'
 import { computeStats, fmtUsd } from '../../lib/backtest/stats'
 import {
-  tfSecs as tfSecsOf, tfLabel, isValidTf, baseFor, DEFAULT_FAVORITE_TFS, loadSessionData, buildTfIndex, candlesToNextBar, firstIndexAtOrAfter, planWindow, plannedCandles, MAX_BASE_CANDLES, WINDOW_CANDLES,
+  tfSecs as tfSecsOf, tfLabel, isValidTf, BASE_TF, BASE_SECS, anchorFor, DEFAULT_FAVORITE_TFS, loadSessionData, buildTfIndex, candlesToNextBar, firstIndexAtOrAfter, planWindow, plannedCandles, MAX_BASE_CANDLES, WINDOW_CANDLES,
 } from '../../lib/backtest/data'
 import { DEFAULT_RECENT_EMOJI } from '../../lib/backtest/emojiData'
 import { mergeSettings, clone, symbolDescription } from '../../lib/backtest/chartSettings'
@@ -143,7 +143,6 @@ export default function BacktestWorkspace() {
   const [recentEmoji, setRecentEmoji] = useStored('trado_bt_recent_emoji', DEFAULT_RECENT_EMOJI)
   const [favTfs, setFavTfs] = useStored('trado_bt_fav_tfs', DEFAULT_FAVORITE_TFS)
   const [customTfs, setCustomTfs] = useStored('trado_bt_custom_tfs', [])
-  const [reload, setReload] = useState(null)               // { tf, pct } while finer candles load for a new timeframe
   const [indicators, setIndicators] = useState([])
   const [showIndicators, setShowIndicators] = useState(false)
   const [settingsFor, setSettingsFor] = useState(null)
@@ -193,8 +192,10 @@ export default function BacktestWorkspace() {
 
   const spec = useMemo(() => getSpec(session?.symbol || ''), [session?.symbol])
   const base = data?.base
-  const baseSecs = data?.baseSecs || 900
-  const baseTf = data?.baseTf || session?.base_tf || '15m'
+  // Every session replays on 1-minute candles; each chart timeframe is built from them (so timeframes can never disagree).
+  const baseSecs = BASE_SECS
+  const baseTf = BASE_TF
+  const anchor = useMemo(() => anchorFor(session?.symbol || ''), [session?.symbol])   // where daily / weekly candles start
   // ── resizable panels: the order panel (width) and the positions panel (height); remembered per browser ──
   const ORDER_W = 268
   const [layout, setLayout] = useState(() => {
@@ -281,12 +282,12 @@ export default function BacktestWorkspace() {
         const onProgress = (p) => !cancelled && setProgress(p)
         // a range too long to hold at this candle size (e.g. a 1m session over months) opens as a window around where the replay is
         let more = null, d
-        if (plannedCandles(row.base_tf, startSec, endSec) > MAX_BASE_CANDLES) {
-          const w = planWindow(row.base_tf, row.cursor_time ? Number(row.cursor_time) : startSec, endSec)
-          d = await loadSessionData({ symbol: row.symbol, baseTf: row.base_tf, fromSec: w.fromSec, toSec: w.toSec, signal: ctl.signal, onProgress })
+        if (plannedCandles(startSec, endSec) > MAX_BASE_CANDLES) {
+          const w = planWindow(row.cursor_time ? Number(row.cursor_time) : startSec, endSec)
+          d = await loadSessionData({ symbol: row.symbol, fromSec: w.fromSec, toSec: w.toSec, signal: ctl.signal, onProgress })
           if (w.more) more = { endSec }
         } else {
-          d = await loadSessionData({ symbol: row.symbol, baseTf: row.base_tf, startSec, endSec, signal: ctl.signal, onProgress })
+          d = await loadSessionData({ symbol: row.symbol, startSec, endSec, signal: ctl.signal, onProgress })
         }
         if (cancelled) return
 
@@ -294,7 +295,7 @@ export default function BacktestWorkspace() {
         const initial = row.cursor_time
           ? firstIndexAtOrAfter(d.base, step, Number(row.cursor_time) + 1)
           : firstIndexAtOrAfter(d.base, step, startSec + step)
-        if (initial < 40) throw new Error(`There isn't enough ${row.base_tf} history before ${new Date(row.start_at).toLocaleDateString()} for ${row.symbol} (the feed starts ${formatShortDateTime(d.base[0].time * 1000)}). Create a session with a later start date.`)
+        if (initial < 40) throw new Error(`There isn't enough verified price history before ${new Date(row.start_at).toLocaleDateString()} for ${row.symbol} (the data starts ${formatShortDateTime(d.base[0].time * 1000)}). Create a session with a later start date.`)
 
         const st0 = E.createState({ balance: Number(row.start_balance), leverage: row.leverage, spread: Number(row.spread) || 0 })
         const st = E.hydrateState(st0, { positions: row.state?.positions || [], orders: row.state?.orders || [], closed: trades })
@@ -302,9 +303,9 @@ export default function BacktestWorkspace() {
         idxCache.current = new Map()
         engineRef.current = st; countRef.current = initial
         history.current = { past: [], future: [], committed: row.drawings || [] }
-        setSession(row); setData({ ...d, baseTf: row.base_tf, more }); setEngine(st); setCount(initial)
+        setSession({ ...row, base_tf: BASE_TF }); setData({ ...d, more }); setEngine(st); setCount(initial)
         setDrawings(row.drawings || []); setIndicators(row.indicators || [])
-        setTf(isValidTf(row.chart_tf) && tfSecsOf(row.chart_tf) >= step && (row.chart_tf.slice(-1) !== 'm' && row.chart_tf.slice(-1) !== 'h' || tfSecsOf(row.chart_tf) % step === 0) ? row.chart_tf : row.base_tf)
+        setTf(isValidTf(row.chart_tf) ? row.chart_tf : '15m')
         setPhase('ready')
 
         const lastBar = d.base[d.base.length - 1]
@@ -325,9 +326,9 @@ export default function BacktestWorkspace() {
   const idx = useMemo(() => {
     if (!base) return null
     const key = `${tf}`
-    if (!idxCache.current.has(key)) idxCache.current.set(key, buildTfIndex(base, tf))
+    if (!idxCache.current.has(key)) idxCache.current.set(key, buildTfIndex(base, tf, { anchor, hist: data?.hist }))
     return idxCache.current.get(key)
-  }, [base, tf])
+  }, [base, tf, anchor, data?.hist])
   const view = useMemo(() => (base && idx ? { base, idx, count } : null), [base, idx, count])
 
   // ── windowed candles: fetch the next stretch shortly before the replay reaches the end of what is loaded ──
@@ -343,7 +344,7 @@ export default function BacktestWorkspace() {
         const step = baseSecs
         const fromSec = base[base.length - 1].time + step
         const toSec = Math.min(more.endSec, fromSec + WINDOW_CANDLES * step)
-        const d = await loadSessionData({ symbol: session.symbol, baseTf, fromSec, toSec })
+        const d = await loadSessionData({ symbol: session.symbol, fromSec, toSec, history: false })
         const lastT = base[base.length - 1].time
         const fresh = d.base.filter(c => c.time > lastT)
         idxCache.current = new Map()
@@ -356,7 +357,7 @@ export default function BacktestWorkspace() {
         extending.current = false
       }
     })()
-  }, [count, data, base, baseSecs, baseTf, session])
+  }, [count, data, base, baseSecs, session])
   const tfSecs = tfSecsOf(tf)
 
   // ── trading helpers ────────────────────────────────────────────────────
@@ -635,48 +636,10 @@ export default function BacktestWorkspace() {
     if (window.confirm('Remove all drawings from this chart?')) { changeDrawings([], true); setSelectedId(null) }
   }
 
-  /**
-   * Switch the chart timeframe. Higher / equal timeframes are built from the loaded candles instantly.
-   * A finer one (or one that doesn't divide evenly) loads finer candles once, then continues from the same moment.
-   */
-  const changeTf = async (k) => {
+  /** Switch the chart timeframe. Every timeframe is built from the loaded 1m candles, so this is instant and never reloads data. */
+  const changeTf = (k) => {
     if (!isValidTf(k) || k === tf) return
-    const need = baseFor(k, baseTf)
-    if (!need) { toast.error('That interval can’t be built from the available data.'); return }
-    if (need === baseTf) { setTf(k); schedule(); return }
-
-    setPlaying(false); setSelecting(false)
-    setReload({ tf: k, pct: 0 })
-    try {
-      const startSec = Math.floor(new Date(session.start_at).getTime() / 1000)
-      const endSec = Math.floor(new Date(session.end_at).getTime() / 1000)
-      const clockNow = base[countRef.current - 1].time + baseSecs                       // the market moment we are at
-      const onProgress = (p) => setReload({ tf: k, pct: Math.round((p.loaded / Math.max(1, p.total)) * 100) })
-      let d, more = null, windowed = false
-      if (plannedCandles(need, startSec, endSec) <= MAX_BASE_CANDLES) {
-        d = await loadSessionData({ symbol: session.symbol, baseTf: need, startSec, endSec, onProgress })
-      } else {
-        // the whole range is too long at this candle size: load a window around now, and keep extending it as the replay moves on
-        const w = planWindow(need, clockNow, endSec)
-        d = await loadSessionData({ symbol: session.symbol, baseTf: need, fromSec: w.fromSec, toSec: w.toSec, onProgress })
-        windowed = true
-        if (w.more) more = { endSec }
-      }
-      const idx2 = firstIndexAtOrAfter(d.base, d.baseSecs, clockNow + 1)
-      if (idx2 < 40) throw new Error(`Not enough ${tfLabel(need)} history before this point for ${session.symbol}.`)
-      idxCache.current = new Map()
-      countRef.current = idx2
-      setData({ ...d, baseTf: need, more, windowed })
-      setCount(idx2)
-      setTf(k)
-      setSession(sess => ({ ...sess, base_tf: need }))
-      schedule()
-      toast.success(`Now replaying with ${tfLabel(need)} candles for the ${tfLabel(k)} chart.`)
-    } catch (e) {
-      toast.error(e.message || 'Could not load finer candles for that timeframe.')
-    } finally {
-      setReload(null)
-    }
+    setTf(k); schedule()
   }
   const pickEmoji = (e) => {
     setEmoji(e)
@@ -902,9 +865,8 @@ export default function BacktestWorkspace() {
   }
 
   const loadingMsg = phase === 'loading'
-    ? (progress ? `Loading ${session?.symbol || ''} ${session?.base_tf || ''} candles… ${Math.round((progress.loaded / Math.max(1, progress.total)) * 100)}%` : 'Opening session…')
+    ? (progress ? `Loading ${session?.symbol || ''} 1m candles… ${Math.round((progress.loaded / Math.max(1, progress.total)) * 100)}%` : 'Opening session…')
     : null
-  const reloadMsg = reload ? `Loading finer candles for the ${tfLabel(reload.tf)} chart… ${reload.pct}%` : null
 
   return (
     <PageWrapper flush>
@@ -959,7 +921,7 @@ export default function BacktestWorkspace() {
             <div ref={boxRef} className="flex-1 min-h-0 relative" onPointerDown={onBoxPointerDown} onContextMenu={onContextMenu} style={{ cursor: selecting ? 'crosshair' : undefined }}>
               <BacktestChart ref={chartRef} view={view} tf={tf} tfName={tfLabel(tf)} digits={digits} indicators={indicators} cs={cs} tzFmt={tzFmt}
                              symbol={session?.symbol || ''} description={description} scaleMode={scaleMode} onScaleMode={setScaleMode} marks={marks}
-                             loading={loadingMsg || reloadMsg} extraPrices={extraPrices} onClosePane={(ids) => changeIndicators(indicators.filter(i => !ids.includes(i.id)))}>
+                             loading={loadingMsg} extraPrices={extraPrices} onClosePane={(ids) => changeIndicators(indicators.filter(i => !ids.includes(i.id)))}>
                 {(capi) => (<>
                   <DrawingOverlay api={capi} getPane={() => chartRef.current?.pane() || { w: 0, h: 0, x: 0 }} tfSecs={tfSecs} tfKey={tf} digits={digits}
                                   drawings={drawings} onDrawingsChange={changeDrawings} selectedId={selectedId} onSelect={setSelectedId}

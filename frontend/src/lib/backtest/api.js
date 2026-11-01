@@ -37,7 +37,7 @@ export async function createSession(userId, p) {
     strategy: p.strategy?.trim() || null,
     symbol: p.symbol,
     base_tf: p.baseTf,
-    chart_tf: p.baseTf,
+    chart_tf: p.chartTf || '15m',
     start_at: p.startAt,
     end_at: p.endAt,
     start_balance: p.balance,

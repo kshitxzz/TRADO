@@ -1,0 +1,14 @@
+{
+  "name": "trado-data-store",
+  "private": true,
+  "type": "module",
+  "description": "Ingests Dukascopy 1-minute bid candles into the Trado market-data store",
+  "scripts": {
+    "ingest": "node ingest.mjs",
+    "check": "node ingest.mjs --check",
+    "test": "node --test ingest.test.mjs"
+  },
+  "dependencies": {
+    "dukascopy-node": "^1.51.1"
+  }
+}

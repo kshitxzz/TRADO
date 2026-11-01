@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { X, Plus, ChevronDown, Search, BookOpen, Loader2, AlertCircle } from 'lucide-react'
 import PairIcon from '../ui/PairIcon'
-import { BASE_TFS, MAX_BASE_CANDLES, describeSource, plannedCandles, searchSymbols, tfLabel } from '../../lib/backtest/data'
+import { BASE_TF, describeSource, sessionCoverage, searchSymbols } from '../../lib/backtest/data'
 import { getSpec } from '../../lib/backtest/specs'
 import { normaliseSymbol } from '../../lib/binanceDirect'
 
@@ -57,7 +57,7 @@ function Combo({ value, onChange, options, placeholder, icon, allowCustom, custo
   )
 }
 
-function SymbolField({ value, onChange }) {
+function SymbolField({ value, onChange, cov }) {
   const [open, setOpen] = useState(false)
   const ref = useRef(null)
   useEffect(() => {
@@ -67,7 +67,7 @@ function SymbolField({ value, onChange }) {
     return () => window.removeEventListener('pointerdown', h)
   }, [open])
   const groups = useMemo(() => searchSymbols(value), [value])
-  const src = value ? describeSource(value) : null
+  const src = value ? (cov || describeSource(value)) : null      // the store check (once it answers) replaces the static note
   return (
     <div ref={ref} className="relative">
       <div className="relative">
@@ -98,7 +98,7 @@ function SymbolField({ value, onChange }) {
 export default function NewSessionModal({ strategies = [], onCreate, onClose }) {
   const [f, setF] = useState({
     name: '', description: '', strategy: '', symbol: '',
-    start: '', end: '', balance: '10000', leverage: 100, baseTf: '15m', spread: '0',
+    start: '', end: '', balance: '10000', leverage: 100, spread: '0',
   })
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
@@ -107,18 +107,28 @@ export default function NewSessionModal({ strategies = [], onCreate, onClose }) 
   const sym = normaliseSymbol(f.symbol)
   const spec = sym ? getSpec(sym) : null
   const range = f.start && f.end ? { s: new Date(`${f.start}T00:00:00`).getTime() / 1000, e: new Date(`${f.end}T00:00:00`).getTime() / 1000 + 86400 } : null
-  const planned = range && range.e > range.s ? plannedCandles(f.baseTf, range.s, range.e) : null
-  const tooBig = planned != null && planned > MAX_BASE_CANDLES
+  // does the data feed really have this symbol? (the market-data store is checked, not assumed)
+  const [cov, setCov] = useState(null)
+  useEffect(() => {
+    setCov(null)
+    if (!sym || !describeSource(sym)?.ok) return
+    let live = true
+    sessionCoverage(sym).then(c => { if (live) setCov(c) })
+    return () => { live = false }
+  }, [sym])
 
   const validate = () => {
     if (!f.name.trim()) return 'Give the session a name.'
     if (!sym || !describeSource(sym)?.ok) return 'Choose a symbol that has a data feed.'
+    if (!cov) return 'Still checking the data feed for this symbol — try again in a moment.'
+    if (!cov.ok) return cov.note
     if (!f.start || !f.end) return 'Pick a start and an end date.'
     if (f.end < f.start) return 'The end date must be on or after the start date.'
     if (f.end > today()) return 'The end date cannot be in the future.'
     if (!(Number(f.balance) > 0)) return 'Starting balance must be greater than zero.'
     if (!(Number(f.spread) >= 0)) return 'Spread cannot be negative.'
-    if (tooBig) return `That range needs about ${planned.toLocaleString()} ${f.baseTf} candles (max ${MAX_BASE_CANDLES.toLocaleString()}). Shorten it or pick a coarser precision.`
+    if (cov.first != null && range.s < cov.first + 86400) return `Verified ${sym} data starts ${new Date(cov.first * 1000).toISOString().slice(0, 10)}. Pick a start date at least a day later.`
+    if (cov.last != null && range.s >= cov.last) return `Verified ${sym} data ends ${new Date(cov.last * 1000).toISOString().slice(0, 10)}. Pick an earlier start date.`
     return ''
   }
 
@@ -129,7 +139,7 @@ export default function NewSessionModal({ strategies = [], onCreate, onClose }) 
     setBusy(true)
     try {
       await onCreate({
-        name: f.name, description: f.description, strategy: f.strategy, symbol: sym, baseTf: f.baseTf,
+        name: f.name, description: f.description, strategy: f.strategy, symbol: sym, baseTf: BASE_TF, chartTf: '15m',
         startAt: new Date(`${f.start}T00:00:00`).toISOString(),
         endAt: new Date(range.e * 1000).toISOString(),                  // end date is inclusive
         balance: Number(f.balance), leverage: f.leverage,
@@ -165,7 +175,7 @@ export default function NewSessionModal({ strategies = [], onCreate, onClose }) 
           </div>
           <div>
             <Label>Symbol *</Label>
-            <SymbolField value={f.symbol} onChange={(v) => set({ symbol: v })} />
+            <SymbolField value={f.symbol} onChange={(v) => set({ symbol: v })} cov={cov} />
           </div>
 
           <div className="grid grid-cols-2 gap-3">
@@ -198,25 +208,12 @@ export default function NewSessionModal({ strategies = [], onCreate, onClose }) 
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <Label hint="finest candle">Replay precision</Label>
-              <div className="relative">
-                <select value={f.baseTf} onChange={(e) => set({ baseTf: e.target.value })} className={`${fieldCls} appearance-none pr-8`} style={fieldStyle}>
-                  {BASE_TFS.map(t => <option key={t} value={t}>{tfLabel(t)} candles</option>)}
-                </select>
-                <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: 'var(--text-muted)' }} />
-              </div>
-            </div>
-            <div>
-              <Label hint={spec?.kind === 'forex' ? 'pips' : 'points'}>Spread</Label>
-              <input type="number" min={0} step="any" value={f.spread} onChange={(e) => set({ spread: e.target.value })} className={fieldCls} style={fieldStyle} />
-            </div>
+          <div>
+            <Label hint={spec?.kind === 'forex' ? 'pips' : 'points'}>Spread</Label>
+            <input type="number" min={0} step="any" value={f.spread} onChange={(e) => set({ spread: e.target.value })} className={fieldCls} style={fieldStyle} />
           </div>
-          <p className="text-[11.5px] leading-relaxed -mt-1" style={{ color: tooBig ? 'var(--negative-red)' : 'var(--text-muted)' }}>
-            {planned != null
-              ? `${planned.toLocaleString()} ${f.baseTf} candles will load (including history before the start). Higher timeframes are built from these, so you can switch freely while replaying.`
-              : 'Pick the finest candle you want to replay with — 1m is most precise for SL/TP fills but loads the most data.'}
+          <p className="text-[11.5px] leading-relaxed -mt-1" style={{ color: 'var(--text-muted)' }}>
+            Replays minute by minute on 1-minute candles. Every timeframe (5m, 1h, 4h, daily…) is built from those same candles, so charts always agree and stop-loss / take-profit fills are as precise as the data allows.
           </p>
 
           {err && <p className="flex items-start gap-1.5 text-[12.5px] px-3 py-2 rounded-lg" style={{ background: 'rgba(244,63,94,0.1)', color: 'var(--negative-red)' }}><AlertCircle size={14} className="mt-0.5 flex-shrink-0" />{err}</p>}

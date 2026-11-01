@@ -10,7 +10,6 @@ import PageWrapper from '../../components/layout/PageWrapper'
 import PairIcon from '../../components/ui/PairIcon'
 import * as api from '../../lib/backtest/api'
 import { computeStats, fmtUsd, fmtFactor, fmtDuration } from '../../lib/backtest/stats'
-import { tfLabel } from '../../lib/backtest/data'
 import { getSpec, priceDigits } from '../../lib/backtest/specs'
 import { formatShortDateTime } from '../../hooks/useTimeFormat'
 
@@ -223,7 +222,7 @@ export default function BacktestSession() {
               </span>
             </div>
             <p className="text-[12px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
-              <span className="font-semibold" style={{ color: 'var(--text-secondary)' }}>{session.symbol}</span> • {tfLabel(session.base_tf)}{session.strategy ? ` • ${session.strategy}` : ''} • {fmtDate(session.start_at)} – {fmtDate(new Date(new Date(session.end_at) - 1))}
+              <span className="font-semibold" style={{ color: 'var(--text-secondary)' }}>{session.symbol}</span>{session.strategy ? ` • ${session.strategy}` : ''} • {fmtDate(session.start_at)} – {fmtDate(new Date(new Date(session.end_at) - 1))}
             </p>
           </div>
           <div className="flex-1" />
@@ -427,7 +426,7 @@ export default function BacktestSession() {
               ['Starting balance', fmtUsd(start)],
               ['Leverage', `1:${session.leverage}`],
               ['Spread', Number(session.spread) ? `${(Number(session.spread) / (spec.pipSize || 1)).toFixed(1)} ${spec.kind === 'forex' ? 'pips' : 'pts'}` : 'None'],
-              ['Replay precision', `${tfLabel(session.base_tf)} candles`],
+              ['Replay precision', '1m candles'],
             ].map(([k, v]) => (
               <div key={k}><p style={{ color: 'var(--text-muted)' }}>{k}</p><p className="font-semibold mt-0.5" style={{ color: 'var(--text-primary)' }}>{v}</p></div>
             ))}
