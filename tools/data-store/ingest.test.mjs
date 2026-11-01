@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { runIngest, verifyStore } from './ingest.mjs'
+import { runIngest, verifyStore, defaultCacheDir } from './ingest.mjs'
 import { configureStore, loadStoreCandles, loadStoreHourly, coverage } from '../../frontend/src/lib/backtest/candleStore.js'
 import { aggregate, buildTfIndex, barsAt } from '../../frontend/src/lib/backtest/aggregate.js'
 
@@ -114,4 +114,56 @@ test('verify catches tampering, deletion and a stale manifest', async () => {
   fs.writeFileSync(f, orig)
   assert.deepEqual(verifyStore(out), [])
   assert.deepEqual(verifyStore(tmp()), ['manifest.json missing or not a Trado manifest'])
+})
+
+// ── regressions from the first real run ──────────────────────────────────
+test('an empty CURRENT month (first days of a month, Dukascopy publishes late) is skipped, not a hole', async () => {
+  const out = tmp(), logs = []
+  const man = await runIngest({ symbols: ['XAUUSD'], from: '2026-08', to: '2026-10', outDir: out, fetchMonth: fakeFetch([], { skipMonth: '2026-10' }), now: NOW, log: (m) => logs.push(m) })
+  assert.deepEqual(Object.keys(man.symbols.XAUUSD.months), ['2026-08', '2026-09'])
+  assert.ok(logs.some(l => /no candles yet this month/.test(l)))
+  assert.deepEqual(verifyStore(out), [])
+  // …and when the data does arrive, the next run picks it up
+  const man2 = await runIngest({ symbols: ['XAUUSD'], from: '2026-08', to: '2026-10', outDir: out, fetchMonth: fakeFetch(), now: NOW, log: quiet })
+  assert.deepEqual(Object.keys(man2.symbols.XAUUSD.months), ['2026-08', '2026-09', '2026-10'])
+  assert.deepEqual(verifyStore(out), [])
+})
+
+test('an interrupted run still leaves a valid store (manifest is saved after every month)', async () => {
+  const out = tmp()
+  const flaky = async (inst, m) => { if (m === '2026-09') throw new Error('network died'); return fakeFetch()(inst, m) }
+  await assert.rejects(runIngest({ symbols: ['XAUUSD'], from: '2026-07', to: '2026-10', outDir: out, fetchMonth: flaky, now: NOW, log: quiet }), /network died/)
+  assert.deepEqual(verifyStore(out), [])                                   // what finished is complete and checkable
+  const calls = []
+  const man = await runIngest({ symbols: ['XAUUSD'], from: '2026-07', to: '2026-10', outDir: out, fetchMonth: fakeFetch(calls), now: NOW, log: quiet })
+  assert.deepEqual(calls, ['xauusd:2026-09', 'xauusd:2026-10'])           // July and August were not downloaded again
+  assert.deepEqual(Object.keys(man.symbols.XAUUSD.months), ['2026-07', '2026-08', '2026-09', '2026-10'])
+})
+
+test('month files on disk with no manifest (the state after the first run aborted) are verified and adopted, not re-downloaded', async () => {
+  const out = tmp()
+  await runIngest({ symbols: ['XAUUSD'], from: '2026-07', to: '2026-10', outDir: out, fetchMonth: fakeFetch(), now: NOW, log: quiet })
+  fs.rmSync(path.join(out, 'manifest.json'))
+  assert.match(verifyStore(out).join(), /manifest/)
+  const calls = [], logs = []
+  const man = await runIngest({ symbols: ['XAUUSD'], from: '2026-07', to: '2026-10', outDir: out, fetchMonth: fakeFetch(calls), now: NOW, log: (m) => logs.push(m) })
+  assert.deepEqual(calls, ['xauusd:2026-10'])                              // only the live month goes back to Dukascopy
+  assert.equal(logs.filter(l => /adopted/.test(l)).length, 3)
+  assert.deepEqual(verifyStore(out), [])
+  assert.equal(man.symbols.XAUUSD.first, SOURCE.find(r => r.timestamp / 1000 >= Z('2026-07-01T00:00:00Z')).timestamp / 1000)
+})
+
+test('a corrupt file on disk is NOT adopted — it is downloaded again', async () => {
+  const out = tmp()
+  await runIngest({ symbols: ['XAUUSD'], from: '2026-08', to: '2026-09', outDir: out, fetchMonth: fakeFetch(), now: NOW, log: quiet })
+  fs.rmSync(path.join(out, 'manifest.json'))
+  fs.writeFileSync(path.join(out, 'XAUUSD', '2026-08.bin.gz'), Buffer.from('not a real file'))
+  const calls = []
+  await runIngest({ symbols: ['XAUUSD'], from: '2026-08', to: '2026-09', outDir: out, fetchMonth: fakeFetch(calls), now: NOW, log: quiet })
+  assert.ok(calls.includes('xauusd:2026-08'))
+  assert.deepEqual(verifyStore(out), [])
+})
+
+test('the default download cache lives outside the repository', () => {
+  assert.ok(path.resolve(defaultCacheDir()).startsWith(path.resolve(os.tmpdir())))
 })

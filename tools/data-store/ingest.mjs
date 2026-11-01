@@ -6,14 +6,18 @@
 //   node ingest.mjs --check --out ../../frontend/public/market-data        (verify everything on disk)
 //
 // Options:  --force  re-download months that are already on disk
-//           --cache  folder for dukascopy-node's download cache (default ./.cache)
+//           --cache  folder for dukascopy-node's download cache (default: your OS temp folder — never inside the repo)
 //
 // Safe to re-run: finished months are skipped (the current, still-growing month is always refreshed).
 // Every month is validated, written, then READ BACK and compared before it is added to the manifest.
-// Any hole in a symbol's history aborts the run — a backtest must never silently skip a month.
+// The manifest is saved after EVERY month, so an interrupted run leaves a valid, usable store behind.
+// Month files found on disk without a manifest entry are verified and adopted instead of re-downloaded.
+// A hole in the middle of a symbol's history aborts the run — a backtest must never silently skip a month.
+// (The current month being empty is not a hole: Dukascopy publishes with a delay, so the first days of a month can have no data yet.)
 // ─────────────────────────────────────────────────────────────────────────
 
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { gzipSync, gunzipSync } from 'node:zlib'
 import { createHash } from 'node:crypto'
@@ -34,11 +38,14 @@ export const SYMBOLS = {
 const MAX_BAD_RATIO = 0.001            // more than 0.1 % invalid / repaired rows in a month = something is wrong with the source
 const SPIKE = 0.05                     // a >5 % one-minute move is reported (never removed — real events exist)
 
+/** Outside the repo on purpose: a download cache must never be able to end up in git. */
+export const defaultCacheDir = () => path.join(os.tmpdir(), 'trado-dukascopy-cache')
+
 const sha = (buf) => createHash('sha1').update(buf).digest('hex').slice(0, 10)
 const nextMonthKey = (m) => monthsBetween(monthStart(m), monthStart(m) + 40 * 86400)[1]
 
 /** The real download — needs Chromium once, because Dukascopy protects its free feed with an AWS WAF challenge. */
-export async function dukascopyMonth(instrument, month, { cacheDir = './.cache' } = {}) {
+export async function dukascopyMonth(instrument, month, { cacheDir = defaultCacheDir() } = {}) {
   const { getHistoricalRates } = await import('dukascopy-node')
   return getHistoricalRates({
     instrument, dates: { from: new Date(monthStart(month) * 1000), to: new Date(monthStart(nextMonthKey(month)) * 1000) },
@@ -72,6 +79,13 @@ export async function runIngest({ symbols, from, to, outDir, force = false, fetc
   const man = readJson(manPath, null) || { version: 1, source: 'Dukascopy', priceType: 'bid', symbols: {} }
   const currentMonth = monthKey(now / 1000)
 
+  const save = () => { man.generated = new Date(now).toISOString(); fs.writeFileSync(manPath, JSON.stringify(man)) }
+  const refreshBounds = (entry) => {
+    const keys = Object.keys(entry.months).sort()
+    if (!keys.length) return
+    entry.first = entry.months[keys[0]].f; entry.last = entry.months[keys[keys.length - 1]].l
+  }
+
   for (const sym of symbols) {
     if (!SYMBOLS[sym]) throw new Error(`Unknown symbol ${sym}. Known: ${Object.keys(SYMBOLS).join(', ')}`)
     const [instrument, digits] = SYMBOLS[sym]
@@ -84,12 +98,28 @@ export async function runIngest({ symbols, from, to, outDir, force = false, fetc
       const file = path.join(outDir, sym, `${m}.bin.gz`)
       if (!force && entry.months[m] && fs.existsSync(file) && m !== currentMonth) { log(`${sym} ${m}  already stored — skipped`); started = true; continue }
 
+      // a finished month that is on disk but missing from the manifest (an interrupted older run): verify it and adopt it
+      if (!force && !entry.months[m] && m !== currentMonth && fs.existsSync(file)) {
+        try {
+          const gz = fs.readFileSync(file)
+          const d = decodeMonth(gunzipSync(gz))
+          if (d.monthStart === monthStart(m) && d.digits === digits && d.candles.length) {
+            entry.months[m] = { n: d.candles.length, h: sha(gz), f: d.candles[0].time, l: d.candles[d.candles.length - 1].time }
+            refreshBounds(entry); man.symbols[sym] = entry; save()
+            started = true
+            log(`${sym} ${m}  ${String(d.candles.length).padStart(6)} candles  found on disk, verified and adopted`)
+            continue
+          }
+        } catch { /* unreadable → download it again below */ }
+      }
+
       const rows = await fetchMonth(instrument, m)
       const lo = monthStart(m), hi = monthStart(nextMonthKey(m))
       const raw = rows.map(r => ({ time: Math.floor(r.timestamp / 1000), open: r.open, high: r.high, low: r.low, close: r.close, volume: r.volume })).filter(c => c.time >= lo && c.time < hi)
       const { candles, report } = cleanCandles(raw)
 
       if (!candles.length) {
+        if (started && m === currentMonth) { log(`${sym} ${m}  no candles yet this month (Dukascopy publishes with a delay) — skipped for now, run again later`); continue }
         if (started) throw new Error(`${sym} ${m}: Dukascopy returned no candles inside a series that already started — refusing to leave a hole. Re-run later or check the instrument.`)
         log(`${sym} ${m}  no data yet (before this instrument's history begins) — skipped`); continue
       }
@@ -106,6 +136,7 @@ export async function runIngest({ symbols, from, to, outDir, force = false, fetc
       fs.mkdirSync(path.dirname(file), { recursive: true })
       fs.writeFileSync(file, gz)
       entry.months[m] = { n: candles.length, h: sha(gz), f: candles[0].time, l: candles[candles.length - 1].time }
+      refreshBounds(entry); man.symbols[sym] = entry; save()                 // progress is never lost to a later failure
       const notes = inspect(candles)
       log(`${sym} ${m}  ${String(candles.length).padStart(6)} candles  ${(gz.length / 1024).toFixed(0)} KB${report.repaired || report.duplicates || report.invalid ? `  (source fixes: ${report.invalid} invalid, ${report.repaired} repaired, ${report.duplicates} duplicate)` : ''}`)
       notes.slice(0, 5).forEach(n => log(`   ⚠ ${n}`))
@@ -117,12 +148,11 @@ export async function runIngest({ symbols, from, to, outDir, force = false, fetc
     const expected = monthsBetween(monthStart(keys[0]), monthStart(keys[keys.length - 1]))
     const missing = expected.filter(k => !entry.months[k])
     if (missing.length) throw new Error(`${sym}: hole in history at ${missing.join(', ')} — re-run to fill it.`)
-    entry.first = entry.months[keys[0]].f; entry.last = entry.months[keys[keys.length - 1]].l
-    man.symbols[sym] = entry
+    refreshBounds(entry); man.symbols[sym] = entry; save()
+    log(`${sym}: ${keys.length} months stored, ${keys[0]} → ${keys[keys.length - 1]}`)
   }
 
-  man.generated = new Date(now).toISOString()
-  fs.writeFileSync(manPath, JSON.stringify(man))
+  save()
   const problems = verifyStore(outDir)
   if (problems.length) throw new Error(`Verification failed:\n - ${problems.join('\n - ')}`)
   log(`\nDone. ${Object.keys(man.symbols).length} symbol(s) in ${path.resolve(outDir)} — verified.`)
@@ -171,21 +201,25 @@ function parseArgs(argv) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  // Never call process.exit() straight away: dukascopy-node's headless browser may still be closing, and on Windows that
+  // trips a libuv assertion ("UV_HANDLE_CLOSING"). Set the exit code, let handles close, and only force-exit as a last resort.
+  const finish = (code) => { process.exitCode = code; setTimeout(() => process.exit(code), 4000).unref() }
   try {
     const a = parseArgs(process.argv.slice(2))
     if (!a.out) throw new Error('Missing --out <folder>')
     if (a.check) {
       const p = verifyStore(a.out)
-      if (p.length) { console.error('PROBLEMS:\n - ' + p.join('\n - ')); process.exit(1) }
-      console.log('Store verified: every file matches the manifest.')
+      if (p.length) { console.error('PROBLEMS:\n - ' + p.join('\n - ')); finish(1) }
+      else { console.log('Store verified: every file matches the manifest.'); finish(0) }
     } else {
       if (!a.symbols || !a.from) throw new Error('Usage: node ingest.mjs --symbols XAUUSD,EURUSD --from 2025-01 [--to 2026-10] --out <folder>')
-      const cacheDir = a.cache || './.cache'
+      const cacheDir = a.cache || defaultCacheDir()
       await runIngest({
         symbols: a.symbols.split(',').map(s => s.trim().toUpperCase()).filter(Boolean),
         from: a.from, to: a.to || monthKey(Date.now() / 1000), outDir: a.out, force: a.force,
         fetchMonth: (inst, m) => dukascopyMonth(inst, m, { cacheDir }),
       })
+      finish(0)
     }
-  } catch (e) { console.error(`\n✗ ${e.message}`); process.exit(1) }
+  } catch (e) { console.error(`\n✗ ${e.message}`); finish(1) }
 }

@@ -34,9 +34,12 @@ node ingest.mjs --check --out ..\..\frontend\public\market-data
 - Each month is validated, written, then read back and compared before it joins the manifest.
 - Any hole in a symbol's history stops the run. A month with more than 0.1 % bad source rows is rejected.
 - Warnings (`⚠`) list suspicious minutes (a 5 %+ move, a 6 h+ weekday gap) for you to eyeball. They never change data.
-- `--force` re-downloads everything; `--cache` sets dukascopy-node's download cache (default `.\.cache`).
+- The manifest is saved after every month, so an interrupted run (network drop, Ctrl+C) leaves a valid store and the next run carries on.
+- Month files already on disk but missing from the manifest are verified and adopted instead of downloaded again.
+- An empty *current* month is normal in the first days of a month (Dukascopy publishes with a delay): it is skipped, and the next run picks it up.
+- `--force` re-downloads everything. `--cache` sets dukascopy-node's download cache; the default is your OS temp folder, so it can never end up in git.
 
-Then commit and push `frontend/public/market-data` — Cloudflare serves it. `frontend/public/_headers` makes month files cache forever
+Then commit and push from the repo root (`git add -A`, then check `git status`) — Cloudflare serves `frontend/public/market-data`. `frontend/public/_headers` makes month files cache forever
 (their URL carries a content hash) and the manifest revalidate every time.
 
 ## When it grows: Cloudflare R2 instead of git
@@ -65,6 +68,5 @@ Defined once in `frontend/src/lib/backtest/storeFormat.js`, used by both this to
 ## Tests
 
 ```powershell
-node --test ingest.test.mjs                      # from tools\data-store
-node --test frontend/tests/aggregate.test.mjs frontend/tests/store.test.mjs   # from the repo root
+node --test tools/data-store/ingest.test.mjs frontend/tests/aggregate.test.mjs frontend/tests/store.test.mjs   # from the repo root
 ```

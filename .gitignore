@@ -8,3 +8,4 @@ build/
 *.log
 .vercel
 .railway
+tools/data-store/.cache/
