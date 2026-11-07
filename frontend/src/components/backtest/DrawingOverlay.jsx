@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { TOOLS, makeDrawing, defaultPosition, movePoints, movePositionPoint, visibleOnTf } from '../../lib/backtest/drawings'
+import { TOOLS, makeDrawing, defaultPosition, movePoints, visibleOnTf, applyHandle, simplifyPx } from '../../lib/backtest/drawings'
 import { renderDrawing } from './DrawingShapes'
 import { fmtUsd } from '../../lib/backtest/stats'
+import { useTheme } from '../../hooks/useTheme'
+import { themeColors } from '../../lib/backtest/chartSettings'
 
 const SL_COLOR = '#F43F5E', TP_COLOR = '#3B82F6', BUY = '#22C55E', SELL = '#F43F5E'
 const fmtP = (n, d) => Number(n).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d, useGrouping: false })
@@ -54,6 +56,36 @@ const MiniBtn = ({ x, y, label, color, onClick, title }) => (
 )
 const btnW = (label) => label.length * 6.6 + 12
 
+const AXIS_FONT = '"Trebuchet MS", Roboto, -apple-system, sans-serif'
+const OPEN_SETTINGS = 'bt-open-drawing-settings'
+
+/** Price label on the right scale (selection highlight, line price tags, crosshair while drawing). */
+const PriceTag = ({ x, w, y, text, bg, color = '#fff', icon }) => (
+  <g style={{ pointerEvents: 'none' }}>
+    <rect x={x} y={y - 10} width={w} height={20} fill={bg} />
+    {icon && <><circle cx={x + 11} cy={y} r={5} fill="none" stroke={color} strokeWidth={1} /><path d={`M${x + 11},${y - 2.6} v5.2 M${x + 8.4},${y} h5.2`} stroke={color} strokeWidth={1} /></>}
+    <text x={x + (icon ? 21 : 7)} y={y} dominantBaseline="central" fontSize={11} fill={color} fontFamily={AXIS_FONT}>{text}</text>
+  </g>
+)
+/** Date label on the bottom scale. */
+const TimeTag = ({ x, y, h, paneW, text, bg, color = '#fff' }) => {
+  const tw = text.length * 6.3 + 16
+  const cx = Math.min(Math.max(x, tw / 2), paneW - tw / 2)
+  return (
+    <g style={{ pointerEvents: 'none' }}>
+      <rect x={cx - tw / 2} y={y} width={tw} height={h} fill={bg} />
+      <text x={cx} y={y + h / 2} textAnchor="middle" dominantBaseline="central" fontSize={11} fill={color} fontFamily={AXIS_FONT}>{text}</text>
+    </g>
+  )
+}
+
+const Handle = ({ h, bg, onDown }) => {
+  const common = { fill: bg, stroke: '#2962FF', strokeWidth: 2, style: { pointerEvents: 'auto', cursor: h.cursor || 'pointer' }, onPointerDown: onDown }
+  return h.shape === 'square'
+    ? <rect x={h.x - 5} y={h.y - 5} width={10} height={10} rx={2.5} {...common} />
+    : <circle cx={h.x} cy={h.y} r={5.5} {...common} />
+}
+
 export default function DrawingOverlay({
   api, getPane, tfSecs, tfKey, digits,
   drawings, onDrawingsChange, selectedId, onSelect,
@@ -61,14 +93,18 @@ export default function DrawingOverlay({
   onZoom, trading, ticket, onTicketChange, svgRef, forwardWheelTo,
   cs, levels, tzFmt, spec, lockedTime, onPlus, onCrosshair,
 }) {
+  const { isDark } = useTheme()
+  const th = themeColors(isDark)
   const proj = api.projector
   const pane = getPane()
   const w = pane.w, h = pane.h, paneX = pane.x || 0
+  const chartBg = cs.canvas.bg || th.bg
 
   const [draft, setDraftState] = useState(null)
   const draftRef = useRef(null)
   const setDraft = (d) => { draftRef.current = d; setDraftState(d) }
   const [hover, setHover] = useState(null)
+  const [hoverId, setHoverId] = useState(null)
   const [zoomBox, setZoomBox] = useState(null)
   const [tradeDrag, setTradeDrag] = useState(null)          // { id, key, price }
   const [editing, setEditing] = useState(null)              // drawing id being text-edited
@@ -78,17 +114,20 @@ export default function DrawingOverlay({
   const latest = useRef(drawings)
   const drawingsRef = useRef(drawings)
   drawingsRef.current = drawings
+  const finishedAt = useRef(0)
 
-  const drawingTool = tool && tool !== 'cursor'
+  const eraser = tool === 'eraser'
+  const drawingTool = !!tool && tool !== 'cursor' && !eraser
   const bars = api.getBars()
 
-  const ctx = useMemo(() => ({
+  const ctxBase = useMemo(() => ({
     px: (pt) => proj?.toPx(pt) ?? null,
-    w, h, tfSecs, digits,
+    w, h, tfSecs, digits, spec, lastPrice: levels?.lastClose ?? null,
     barsBetween: (a, b) => proj?.barCountBetween(a, b) ?? 0,
+    yToPrice: (y) => proj?.yToPrice(y), xToTime: (x) => proj?.xToTime(x),
     onRemove: (id) => onDrawingsChange(drawingsRef.current.filter(x => x.id !== id), true),
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [proj, api.version, w, h, tfSecs, digits])
+  }), [proj, api.version, w, h, tfSecs, digits, spec, levels?.lastClose])
 
   const local = (e) => {
     const r = svgRef.current.getBoundingClientRect()
@@ -110,23 +149,42 @@ export default function DrawingOverlay({
     return () => { off(); if (raf) cancelAnimationFrame(raf) }
   }, [onCrosshair])
 
-  // ── Escape cancels a half-drawn shape ──────────────────────────────────
+  // ── Escape cancels a half-drawn shape · Enter finishes a path / polyline ─
   useEffect(() => {
-    const onKey = (e) => { if (e.key === 'Escape') { setDraft(null); setZoomBox(null); setEditing(null) } }
+    const onKey = (e) => {
+      if (e.key === 'Escape') { setDraft(null); setZoomBox(null); setEditing(null) }
+      if (e.key === 'Enter' && draftRef.current?.poly) { e.preventDefault(); finishPoly(draftRef.current) }
+    }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
   useEffect(() => { setDraft(null); setZoomBox(null) }, [tool])
 
   // ── Create ─────────────────────────────────────────────────────────────
   const finalize = useCallback((type, points, extra = {}) => {
     const d = makeDrawing(type, points, extra)
+    finishedAt.current = Date.now()
     onDrawingsChange([...drawingsRef.current, d], true)
     onSelect(d.id)
     setDraft(null)
     if (type === 'text') setEditing(d.id)
     if (!stayInDrawing) onToolChange('cursor')
   }, [onDrawingsChange, onSelect, onToolChange, stayInDrawing])
+
+  /** Path / polyline: the last point is the live cursor preview, so it is dropped when the shape is done. */
+  const finishPoly = (d) => {
+    const pts = d.points.slice(0, -1)
+    if (pts.length < 2) { setDraft(null); return }
+    finalize(d.type, pts)
+  }
+
+  /** Freehand strokes arrive as hundreds of mouse samples — keep the shape, drop the noise. */
+  const simplifyStroke = (pts) => {
+    const pxs = pts.map(p => proj.toPx(p)).filter(Boolean)
+    if (pxs.length !== pts.length) return pts
+    return simplifyPx(pxs, 1.1).map(i => pts[i])
+  }
 
   const onCapDown = (e) => {
     if (e.button !== 0 || !proj) return
@@ -142,6 +200,14 @@ export default function DrawingOverlay({
     if (!spec) return
 
     if (spec.points === 'free') { setDraft({ type: tool, points: [m], free: true }); return }
+    if (spec.points === 'poly') {
+      const d = draftRef.current
+      if (!d) { setDraft({ type: tool, points: [m, m], poly: true }); return }
+      const prev = proj.toPx(d.points[d.points.length - 2])
+      if (prev && Math.hypot(prev.x - p.x, prev.y - p.y) < 6) { finishPoly(d); return }   // a click on the last point ends the shape
+      setDraft({ ...d, points: [...d.points.slice(0, -1), m, m] })
+      return
+    }
     if (spec.kind === 'position') { finalize(tool, defaultPosition(tool, m, bars, tfSecs)); return }
     if (spec.kind === 'emoji') { finalize('emoji', [m], { emoji }); return }
     if (spec.kind === 'text') { finalize('text', [m], { text: '' }); return }
@@ -166,9 +232,10 @@ export default function DrawingOverlay({
     if (d.free) {
       const last = d.points[d.points.length - 1]
       const lp = proj.toPx(last)
-      if (!lp || Math.hypot(lp.x - p.x, lp.y - p.y) > 3) setDraft({ ...d, points: [...d.points, m] })
+      if (!lp || Math.hypot(lp.x - p.x, lp.y - p.y) > 2.5) setDraft({ ...d, points: [...d.points, proj.toMarket(p) || m] })
       return
     }
+    if (d.poly) { setDraft({ ...d, points: [...d.points.slice(0, -1), m] }); return }
     const moved = d.moved || Math.hypot(d.downPx.x - p.x, d.downPx.y - p.y) > 5
     setDraft({ ...d, points: [...d.points.slice(0, -1), m], moved })
   }
@@ -184,7 +251,8 @@ export default function DrawingOverlay({
     }
     const d = draftRef.current
     if (!d) return
-    if (d.free) { if (d.points.length > 1) finalize('brush', d.points); else setDraft(null); return }
+    if (d.free) { if (d.points.length > 1) finalize(d.type, simplifyStroke(d.points)); else setDraft(null); return }
+    if (d.poly) return
     // press-drag-release finishes the point that was being dragged
     if (d.moved && d.points.length === 2) {
       const spec = TOOLS[d.type]
@@ -201,6 +269,7 @@ export default function DrawingOverlay({
   // ── Select / drag ──────────────────────────────────────────────────────
   const beginDrag = (e, d, kind, idx) => {
     e.stopPropagation()
+    if (eraser) { if (e.button === 0) onDrawingsChange(drawingsRef.current.filter(x => x.id !== d.id), true); return }
     onSelect(d.id)
     if (lockAll || d.locked || e.button !== 0 || !proj) return
     e.preventDefault()
@@ -215,22 +284,20 @@ export default function DrawingOverlay({
   const onWinMove = (e) => {
     const g = dragRef.current
     if (!g || !proj) return
-    const m = proj.toMarket(local(e), { magnet: magnet && g.kind === 'handle' })
+    const pxp = local(e)
+    const m = proj.toMarket(pxp, { magnet: magnet && g.kind === 'handle' })
     if (!m) return
     let pts
     if (g.kind === 'move' && g.type === 'alert') {
       pts = g.orig.map(p => ({ time: p.time, price: p.price + (m.price - g.m0.price) }))
     } else if (g.kind === 'move') {
       pts = movePoints(g.orig, m.time - g.m0.time, m.price - g.m0.price)
+    } else if (g.type === 'circle') {
+      const c = proj.toPx(g.orig[0]), r = c ? Math.hypot(pxp.x - c.x, pxp.y - c.y) : 0
+      const edge = c && proj.toMarket({ x: c.x + r, y: c.y })
+      pts = [g.orig[0], edge || g.orig[1]]
     } else {
-      const { type, idx, orig } = g
-      pts = orig.map(p => ({ ...p }))
-      if (type === 'long' || type === 'short') pts = movePositionPoint(orig, idx, m)
-      else if (type === 'rect' && idx === 'c2') { pts[0].time = m.time; pts[1].price = m.price }
-      else if (type === 'rect' && idx === 'c3') { pts[1].time = m.time; pts[0].price = m.price }
-      else if (type === 'hline') pts[0] = { time: orig[0].time, price: m.price }
-      else if (type === 'vline') pts[0] = { time: m.time, price: orig[0].price }
-      else pts[idx] = m
+      pts = applyHandle({ type: g.type, points: g.orig }, g.idx, m, tfSecs)
     }
     g.changed = true
     latest.current = drawingsRef.current.map(d => (d.id === g.id ? { ...d, points: pts } : d))
@@ -246,7 +313,7 @@ export default function DrawingOverlay({
   }
   useEffect(() => () => { window.removeEventListener('pointermove', onWinMove); window.removeEventListener('pointerup', onWinUp) }, [])  // eslint-disable-line
 
-  // ── Trade-line drag (SL / TP / pending price) ──────────────────────────
+    // ── Trade-line drag (SL / TP / pending price) ──────────────────────────
   const beginTradeDrag = (e, id, key, source) => {
     e.stopPropagation(); e.preventDefault()
     if (!proj) return
@@ -274,22 +341,42 @@ export default function DrawingOverlay({
     if (hideAll || !proj) return []
     return drawings
       .filter(d => d.visible !== false && visibleOnTf(d, tfKey) && (d.type !== 'alert' || (cs.alerts.lines && d.active !== false)))
-      .map(d => ({ d, r: renderDrawing(d, ctx) }))
+      .map(d => ({ d, r: renderDrawing(d, { ...ctxBase, selected: d.id === selectedId, hovered: d.id === hoverId }) }))
       .filter(x => x.r)
-  }, [drawings, ctx, hideAll, tfKey, proj])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drawings, ctxBase, hideAll, tfKey, proj, selectedId, hoverId])
 
   const draftRender = useMemo(() => {
     if (!draft || draft.free) return null
-    const d = makeDrawing(draft.type, draft.points, { id: 'draft' })
-    // 3-point tools: until the 3rd point exists, show what we have
-    return renderDrawing(d, ctx)
-  }, [draft, ctx])
+    return renderDrawing(makeDrawing(draft.type, draft.points, { id: 'draft' }), { ...ctxBase, selected: true })
+  }, [draft, ctxBase])
 
-  const brushDraft = draft?.free ? renderDrawing(makeDrawing('brush', draft.points, { id: 'draft' }), ctx) : null
+  const brushDraft = draft?.free ? renderDrawing(makeDrawing(draft.type, draft.points, { id: 'draft' }), { ...ctxBase, selected: false }) : null
   const selected = rendered.find(x => x.d.id === selectedId)
-  const interactive = !drawingTool && !lockAll
+  const interactive = (!drawingTool && !lockAll) || eraser
 
-  // trade lines -----------------------------------------------------------
+  // handles: the draft shows only the points already placed; a selected drawing shows all of them
+  const handleSet = draftRender
+    ? draftRender.handles.filter(hd => typeof hd.idx === 'number' && hd.idx < draft.points.length - 1)
+    : selected && interactive && !eraser && !selected.d.locked ? selected.r.handles : []
+  const handleOwner = draftRender ? null : selected?.d
+
+  // axis highlight (selected / being drawn) + always-on price tags
+  const hi = draftRender || (selected && !hideAll ? selected.r : null)
+  const sz = api.size || { w: 0, h: 0 }
+  const axis = (() => {
+    const priceW = Math.max(0, sz.w - w - paneX)
+    let timeH = Math.max(0, sz.h - h)
+    try {
+      const tbl = svgRef.current?.parentElement?.querySelector('table')
+      const rh = tbl?.rows?.[tbl.rows.length - 1]?.getBoundingClientRect().height
+      if (rh > 12 && rh < 70) timeH = rh
+    } catch { /* keep the size-based estimate */ }
+    return { priceW, timeH, timeY: sz.h - timeH }
+  })()
+  const yClamp = (y) => Math.min(Math.max(y, 0), h)
+
+    // trade lines -----------------------------------------------------------
   const align = 'right'
 
   const positionLines = (trading?.positions || []).map((pos) => {
@@ -443,20 +530,17 @@ export default function DrawingOverlay({
     )
   })() : null
 
+
   // crosshair while a drawing tool is active ------------------------------
+  const crossM = drawingTool && hover && !zoomBox && proj ? proj.toMarket(hover, { magnet }) : null
   const crosshair = drawingTool && hover && !zoomBox && (() => {
-    const m = proj?.toMarket(hover, { magnet })
-    const y = m ? yOf(m.price) : hover.y
-    const x = m ? proj.timeToX(m.time) : hover.x
+    const y = crossM ? yOf(crossM.price) : hover.y
+    const x = crossM ? proj.timeToX(crossM.time) : hover.x
     if (x == null || y == null) return null
     return (
       <g style={{ pointerEvents: 'none' }}>
-        <line x1={0} y1={y} x2={w} y2={y} stroke="rgba(255,255,255,0.4)" strokeDasharray="3 4" />
-        <line x1={x} y1={0} x2={x} y2={h} stroke="rgba(255,255,255,0.4)" strokeDasharray="3 4" />
-        {m && <>
-          <rect x={w - 66} y={y - 10} width={64} height={20} rx={3} fill="#211D26" />
-          <text x={w - 34} y={y} textAnchor="middle" dominantBaseline="central" fontSize={11} fill="#E5E7EB">{fmtP(m.price, digits)}</text>
-        </>}
+        <line x1={0} y1={y} x2={w} y2={y} stroke={th.crosshair} strokeDasharray="3 4" />
+        <line x1={x} y1={0} x2={x} y2={h} stroke={th.crosshair} strokeDasharray="3 4" />
       </g>
     )
   })()
@@ -467,69 +551,110 @@ export default function DrawingOverlay({
   if (!w || !h) return null
 
   return (
-    <svg ref={svgRef} className="bt-overlay absolute top-0 z-10" width={w} height={h}
-         style={{ left: paneX, pointerEvents: 'none', overflow: 'hidden', cursor: drawingTool ? 'crosshair' : undefined }}>
-      {/* drawings */}
-      {rendered.map(({ d, r }) => (
-        <g key={d.id} data-draw-id={d.id} style={{ pointerEvents: interactive ? 'auto' : 'none', cursor: d.locked ? 'default' : 'move' }}
-           opacity={selectedId === d.id ? 1 : 0.96}
-           onPointerDown={(e) => beginDrag(e, d, 'move')}
-           onDoubleClick={() => d.type === 'text' && setEditing(d.id)}>
-          {r.el}
-        </g>
-      ))}
+    <>
+      <svg ref={svgRef} className="bt-overlay absolute top-0 z-10" width={w} height={h}
+           style={{ left: paneX, pointerEvents: 'none', overflow: 'hidden', cursor: drawingTool ? 'crosshair' : undefined }}>
+        {/* drawings */}
+        {rendered.map(({ d, r }) => (
+          <g key={d.id} data-draw-id={d.id} style={{ pointerEvents: interactive ? 'auto' : 'none', cursor: eraser ? 'pointer' : d.locked ? 'default' : 'pointer' }}
+             opacity={eraser && hoverId === d.id ? 0.35 : 1}
+             onPointerDown={(e) => beginDrag(e, d, 'move')}
+             onPointerEnter={() => setHoverId(d.id)} onPointerLeave={() => setHoverId(id => (id === d.id ? null : id))}
+             onDoubleClick={() => {
+               if (Date.now() - finishedAt.current < 500 || eraser) return
+               if (d.type === 'text') setEditing(d.id)
+               else if (d.type !== 'alert') window.dispatchEvent(new CustomEvent(OPEN_SETTINGS, { detail: { id: d.id } }))
+             }}>
+            {r.el}
+          </g>
+        ))}
 
-      {/* in-progress drawing */}
-      {draftRender && <g style={{ pointerEvents: 'none' }} opacity={0.9}>{draftRender.el}</g>}
-      {brushDraft && <g style={{ pointerEvents: 'none' }}>{brushDraft.el}</g>}
+        {/* in-progress drawing */}
+        {draftRender && <g style={{ pointerEvents: 'none' }}>{draftRender.el}</g>}
+        {brushDraft && <g style={{ pointerEvents: 'none' }}>{brushDraft.el}</g>}
 
-      {/* handles for the selected drawing */}
-      {selected && interactive && !selected.d.locked && selected.r.handles.map((hd) => (
-        <circle key={String(hd.idx)} cx={hd.x} cy={hd.y} r={5.5} fill="#fff" stroke={selected.d.style.color} strokeWidth={2}
-                style={{ pointerEvents: 'auto', cursor: 'grab' }} onPointerDown={(e) => beginDrag(e, selected.d, 'handle', hd.idx)} />
-      ))}
+        {/* trading */}
+        {separators}
+        {hlLines}
+        {lockedX != null && <g style={{ pointerEvents: 'none' }}><line x1={lockedX} y1={0} x2={lockedX} y2={h} stroke="#8B5CF6" strokeWidth={1} strokeDasharray="4 3" /></g>}
+        {positionLines}
+        {orderLines}
+        {ticketLines}
+        {countdown}
+        {plus}
 
-      {/* trading */}
-      {separators}
-      {hlLines}
-      {lockedX != null && <g style={{ pointerEvents: 'none' }}><line x1={lockedX} y1={0} x2={lockedX} y2={h} stroke="#8B5CF6" strokeWidth={1} strokeDasharray="4 3" /></g>}
-      {positionLines}
-      {orderLines}
-      {ticketLines}
-      {countdown}
-      {plus}
+        {crosshair}
 
-      {crosshair}
+        {/* handles — hollow, filled with the chart background, blue rim (TradingView) */}
+        {handleSet.map((hd) => (
+          <Handle key={String(hd.idx)} h={hd} bg={chartBg}
+                  onDown={handleOwner ? (e) => beginDrag(e, handleOwner, 'handle', hd.idx) : undefined} />
+        ))}
 
-      {zoomBox && (
-        <rect x={Math.min(zoomBox.x0, zoomBox.x1)} y={Math.min(zoomBox.y0, zoomBox.y1)}
-              width={Math.abs(zoomBox.x1 - zoomBox.x0)} height={Math.abs(zoomBox.y1 - zoomBox.y0)}
-              fill="rgba(139,92,246,0.14)" stroke="#A78BFA" strokeDasharray="4 3" style={{ pointerEvents: 'none' }} />
+        {zoomBox && (
+          <rect x={Math.min(zoomBox.x0, zoomBox.x1)} y={Math.min(zoomBox.y0, zoomBox.y1)}
+                width={Math.abs(zoomBox.x1 - zoomBox.x0)} height={Math.abs(zoomBox.y1 - zoomBox.y0)}
+                fill="rgba(41,98,255,0.28)" stroke="rgba(41,98,255,0.9)" strokeWidth={1} style={{ pointerEvents: 'none' }} />
+        )}
+
+        {/* inline text editor */}
+        {editingDrawing && editPx && (
+          <foreignObject x={editPx.x - 2} y={editPx.y - 17} width={240} height={34}>
+            <input autoFocus defaultValue={editingDrawing.text || ''} placeholder="Add text"
+                   style={{ pointerEvents: 'auto', width: '100%', height: 32, background: chartBg, color: editingDrawing.style?.textColor || '#fff', border: '1px solid #2962FF', borderRadius: 4, padding: '0 8px', fontSize: editingDrawing.style?.fontSize || 14, outline: 'none', fontFamily: AXIS_FONT }}
+                   onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); if (e.key === 'Escape') { e.currentTarget.value = editingDrawing.text || ''; e.currentTarget.blur() } e.stopPropagation() }}
+                   onBlur={(e) => {
+                     const text = e.currentTarget.value.trim()
+                     const next = text
+                       ? drawingsRef.current.map(d => (d.id === editing ? { ...d, text } : d))
+                       : drawingsRef.current.filter(d => d.id !== editing)
+                     setEditing(null)
+                     onDrawingsChange(next, true)
+                   }} />
+          </foreignObject>
+        )}
+
+        {/* capture layer while a tool is active */}
+        {drawingTool && (
+          <rect x={0} y={0} width={w} height={h} fill="transparent" style={{ pointerEvents: 'all', touchAction: 'none' }}
+                onPointerDown={onCapDown} onPointerMove={onCapMove} onPointerUp={onCapUp} onWheel={onCapWheel}
+                onPointerLeave={() => setHover(null)} />
+        )}
+      </svg>
+
+      {/* price / time scale tags: they sit on the chart's own axes, so they get their own layer */}
+      {sz.w > 0 && (
+        <svg className="absolute top-0 z-10" width={sz.w - paneX} height={sz.h} style={{ left: paneX, pointerEvents: 'none', overflow: 'visible' }}>
+          {!hideAll && rendered.flatMap(({ d, r }) => (r.chips || []).map((c, i) => {
+            const y = proj?.priceToY(c.price)
+            return y != null && y >= 0 && y <= h ? <PriceTag key={`${d.id}-${i}`} x={w} w={axis.priceW} y={y} text={Number(c.price).toFixed(digits)} bg={c.color} /> : null
+          }))}
+          {hi?.range && proj && (() => {
+            const { pMin, pMax, tMin, tMax } = hi.range
+            const out = []
+            if (pMin != null) {
+              const y1 = proj.priceToY(pMax), y2 = proj.priceToY(pMin)
+              if (y1 != null && y2 != null) {
+                out.push(<rect key="pb" x={w} y={Math.min(y1, y2)} width={axis.priceW} height={Math.max(1, Math.abs(y2 - y1))} fill="rgba(41,98,255,0.28)" style={{ pointerEvents: 'none' }} />)
+                if (!hi.chips) for (const [k, p, y] of [['pa', pMax, y1], ['pz', pMin, y2]]) { if (y >= 0 && y <= h && (k === 'pa' || pMin !== pMax)) out.push(<PriceTag key={k} x={w} w={axis.priceW} y={y} text={Number(p).toFixed(digits)} bg="#2962FF" />) }
+              }
+            }
+            if (tMin != null && axis.timeH > 0) {
+              const x1 = proj.timeToX(tMin), x2 = proj.timeToX(tMax)
+              if (x1 != null && x2 != null) {
+                out.push(<rect key="tb" x={Math.min(x1, x2)} y={axis.timeY} width={Math.max(1, Math.abs(x2 - x1))} height={axis.timeH} fill="rgba(41,98,255,0.28)" style={{ pointerEvents: 'none' }} />)
+                out.push(<TimeTag key="t1" x={x1} y={axis.timeY} h={axis.timeH} paneW={w} text={tzFmt.crosshair(tMin, tfSecs)} bg="#2962FF" />)
+                if (tMax !== tMin) out.push(<TimeTag key="t2" x={x2} y={axis.timeY} h={axis.timeH} paneW={w} text={tzFmt.crosshair(tMax, tfSecs)} bg="#2962FF" />)
+              }
+            }
+            return out
+          })()}
+          {drawingTool && hover && !zoomBox && crossM && (<>
+            <PriceTag x={w} w={axis.priceW} y={yClamp(proj.priceToY(crossM.price) ?? hover.y)} text={Number(crossM.price).toFixed(digits)} bg={th.crossLabel} icon />
+            {axis.timeH > 0 && <TimeTag x={proj.timeToX(crossM.time) ?? hover.x} y={axis.timeY} h={axis.timeH} paneW={w} text={tzFmt.crosshair(crossM.time, tfSecs)} bg={th.crossLabel} />}
+          </>)}
+        </svg>
       )}
-
-      {/* inline text editor */}
-      {editingDrawing && editPx && (
-        <foreignObject x={editPx.x - 6} y={editPx.y - 16} width={220} height={32}>
-          <input autoFocus defaultValue={editingDrawing.text || ''} placeholder="Type text…"
-                 style={{ pointerEvents: 'auto', width: '100%', height: 30, background: '#131217', color: '#fff', border: '1px solid #8B5CF6', borderRadius: 6, padding: '0 8px', fontSize: 13, outline: 'none' }}
-                 onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); if (e.key === 'Escape') { e.currentTarget.value = editingDrawing.text || ''; e.currentTarget.blur() } e.stopPropagation() }}
-                 onBlur={(e) => {
-                   const text = e.currentTarget.value.trim()
-                   const next = text
-                     ? drawingsRef.current.map(d => (d.id === editing ? { ...d, text } : d))
-                     : drawingsRef.current.filter(d => d.id !== editing)
-                   setEditing(null)
-                   onDrawingsChange(next, true)
-                 }} />
-        </foreignObject>
-      )}
-
-      {/* capture layer while a tool is active */}
-      {drawingTool && (
-        <rect x={0} y={0} width={w} height={h} fill="transparent" style={{ pointerEvents: 'all', touchAction: 'none' }}
-              onPointerDown={onCapDown} onPointerMove={onCapMove} onPointerUp={onCapUp} onWheel={onCapWheel}
-              onPointerLeave={() => setHover(null)} />
-      )}
-    </svg>
+    </>
   )
 }
